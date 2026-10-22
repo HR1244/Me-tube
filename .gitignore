@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+server/venv/
+server/downloads/*
+!server/downloads/.gitkeep
+server/cookies.txt
+.env
+
+# Node & Expo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+*.log
+
+# System
+.DS_Store
+Thumbs.db
