@@ -1,0 +1,1684 @@
+/* =========================================================
+   MeTube Pure OLED Black & White Design System
+   Mobile-First Architecture & Desktop Simulator
+   ========================================================= */
+
+:root {
+  --bg: #0F0F0F;
+  --surface: #181818;
+  --surface-card: #1E1E1E;
+  --surface-pill: #272727;
+  --border: #2A2A2A;
+  --border-subtle: #222222;
+  --text-white: #FFFFFF;
+  --text-gray: #AAAAAA;
+  --text-muted: #717171;
+  --metube-red: #FF0000;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  
+  --safe-top: 42px;
+  --safe-bottom: 16px;
+  --sim-scale: 1;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background-color: #050505;
+  color: var(--text-white);
+  font-family: var(--font-family);
+  overflow: hidden;
+  user-select: none;
+}
+
+/* =========================================================
+   DESKTOP PHONE SIMULATOR WORKSPACE
+   ========================================================= */
+#simulator-workspace {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 50% 15%, #181818 0%, #080808 100%);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Simulator Compact Top Toolbar */
+.sim-toolbar {
+  height: 46px;
+  background: rgba(18, 18, 18, 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 1000;
+  flex-shrink: 0;
+  transition: transform 0.25s ease, height 0.25s ease;
+}
+
+.sim-toolbar.collapsed {
+  transform: translateY(-100%);
+  height: 0;
+  padding: 0;
+  border-bottom: none;
+}
+
+.sim-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sim-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.sim-brand-logo {
+  width: 22px;
+  height: 16px;
+  background: var(--metube-red);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sim-brand-logo svg {
+  width: 8px;
+  height: 8px;
+  fill: #FFF;
+  margin-left: 1px;
+}
+
+.sim-badge {
+  background: #272727;
+  color: var(--text-gray);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-weight: 600;
+}
+
+.sim-toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-select-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #202020;
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--text-white);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sim-select-wrapper select {
+  background: transparent;
+  color: var(--text-white);
+  border: none;
+  outline: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sim-btn {
+  background: #222;
+  border: 1px solid var(--border);
+  color: var(--text-white);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sim-btn:hover {
+  background: #333;
+  border-color: #555;
+}
+
+.sim-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.server-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 230, 118, 0.1);
+  color: #00E676;
+  border: 1px solid rgba(0, 230, 118, 0.3);
+  padding: 3px 8px;
+  border-radius: 12px;
+}
+
+.server-status-pill.offline {
+  background: rgba(255, 68, 68, 0.1);
+  color: #FF4444;
+  border-color: rgba(255, 68, 68, 0.3);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Floating Toolbar Toggle Tab (Always reachable if toolbar is hidden) */
+#sim-toggle-pill {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 1001;
+  background: rgba(30, 30, 30, 0.85);
+  border: 1px solid #444;
+  color: #FFF;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+/* Simulator Canvas Area: Fixes top panel clipping! */
+.sim-viewport-area {
+  flex: 1;
+  display: flex;
+  align-items: flex-start; /* Changed from center to prevent top clipping */
+  justify-content: center;
+  padding: 16px 20px 24px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* =========================================================
+   PHONE DEVICE BEZEL & CHASSIS
+   ========================================================= */
+.phone-chassis {
+  width: 380px;
+  height: 780px;
+  max-height: calc(100vh - 80px);
+  background: #000;
+  border-radius: 44px;
+  padding: 10px;
+  position: relative;
+  box-shadow: 
+    0 0 0 2px #2a2a2a,
+    0 0 0 4px #121212,
+    0 20px 50px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.25s ease;
+  flex-shrink: 0;
+  margin: 0 auto;
+}
+
+/* Preset Device Dimensions */
+.phone-chassis.device-galaxys24 {
+  width: 380px;
+  height: 780px;
+  border-radius: 38px;
+  --safe-top: 38px;
+  --safe-bottom: 16px;
+}
+
+.phone-chassis.device-pixel8 {
+  width: 390px;
+  height: 800px;
+  border-radius: 44px;
+  --safe-top: 40px;
+  --safe-bottom: 18px;
+}
+
+.phone-chassis.device-iphone15 {
+  width: 390px;
+  height: 800px;
+  border-radius: 48px;
+  --safe-top: 44px;
+  --safe-bottom: 20px;
+}
+
+/* Scale adjustments if screen is compact */
+@media (max-height: 820px) {
+  .phone-chassis {
+    height: calc(100vh - 75px);
+    border-radius: 36px;
+    padding: 8px;
+  }
+}
+
+/* Fullscreen Mode (Removes phone bezel for direct testing or mobile browsers) */
+.phone-chassis.device-fullscreen,
+body.is-mobile-device .phone-chassis {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  border: none !important;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+body.is-mobile-device #simulator-workspace .sim-toolbar,
+body.is-mobile-device #sim-toggle-pill {
+  display: none !important;
+}
+
+body.is-mobile-device .sim-viewport-area {
+  padding: 0;
+}
+
+/* Phone Screen Screen Area */
+.phone-screen {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  border-radius: 34px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-chassis.device-fullscreen .phone-screen,
+body.is-mobile-device .phone-screen {
+  border-radius: 0;
+}
+
+/* Device Punch Hole / Dynamic Island */
+.phone-notch-pill {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 12px;
+  background: #000;
+  border-radius: 50%;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.phone-chassis.device-iphone15 .phone-notch-pill {
+  width: 90px;
+  height: 22px;
+  border-radius: 14px;
+}
+
+.phone-chassis.device-fullscreen .phone-notch-pill,
+body.is-mobile-device .phone-notch-pill {
+  display: none;
+}
+
+.notch-camera-dot {
+  width: 8px;
+  height: 8px;
+  background: #0d0d0d;
+  border-radius: 50%;
+  border: 1px solid #1a1a1a;
+}
+
+/* Simulated Phone Status Bar */
+.phone-status-bar {
+  height: var(--safe-top, 38px);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFF;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 500;
+  pointer-events: none;
+}
+
+.phone-chassis.device-fullscreen .phone-status-bar,
+body.is-mobile-device .phone-status-bar {
+  display: none;
+}
+
+.status-time {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-icons {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Simulated Bottom Home Indicator */
+.phone-home-indicator {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+  z-index: 500;
+  pointer-events: none;
+}
+
+.phone-chassis.device-fullscreen .phone-home-indicator,
+body.is-mobile-device .phone-home-indicator {
+  display: none;
+}
+
+/* =========================================================
+   METUBE APP APPLICATION UI
+   ========================================================= */
+.metube-app-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* Fixed Safe Top Header Bar (100% Clickable, Clean Hit Targets) */
+.metube-header {
+  padding-top: max(var(--safe-top, 0px), 10px);
+  padding-bottom: 8px;
+  padding-left: 12px;
+  padding-right: 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  z-index: 200;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.icon-button {
+  background: transparent;
+  border: none;
+  color: var(--text-white);
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.icon-button:active {
+  transform: scale(0.92);
+}
+
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+/* MeTube Red Logo & Bold Text */
+.metube-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.metube-logo-badge {
+  width: 26px;
+  height: 18px;
+  background: var(--metube-red);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metube-logo-badge svg {
+  width: 9px;
+  height: 9px;
+  fill: #FFF;
+  margin-left: 1px;
+}
+
+.metube-brand-text {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-white);
+  letter-spacing: -0.6px;
+}
+
+/* Search Bar (Center/Desktop & Mobile Toggle) */
+.search-back-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-white);
+  padding: 0 10px;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-back-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.header-search-bar {
+  display: none;
+  flex: 1;
+  align-items: center;
+  background: #141414;
+  border: 1px solid #303030;
+  border-radius: 20px;
+  height: 36px;
+  overflow: hidden;
+  margin: 0;
+  transition: all 0.2s ease;
+}
+
+/* When search mode is triggered on phone/mobile */
+.metube-header.search-mode-open #header-left,
+.metube-header.search-mode-open #header-right {
+  display: none !important;
+}
+
+.metube-header.search-mode-open .header-search-bar {
+  display: flex !important;
+  width: 100%;
+}
+
+.metube-header.search-mode-open .search-back-btn {
+  display: flex !important;
+}
+
+/* Desktop / wide screen mode */
+@media (min-width: 680px) {
+  body:not(.is-mobile-device) .phone-chassis.device-fullscreen .metube-header .header-search-bar {
+    display: flex;
+    max-width: 480px;
+    margin: 0 10px;
+  }
+  body:not(.is-mobile-device) .phone-chassis.device-fullscreen .metube-header #btn-open-search {
+    display: none;
+  }
+}
+
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-white);
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.search-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-gray);
+  padding: 0 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-submit-btn {
+  width: 42px;
+  height: 100%;
+  background: #222222;
+  border: none;
+  border-left: 1px solid #303030;
+  color: var(--text-white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-create-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #242424;
+  color: var(--text-white);
+  border: none;
+  padding: 5px 10px;
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.avatar-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background: #651FFF;
+  color: #FFF;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* =========================================================
+   CATEGORY FILTER PILLS (Clean Minimalist Black & White)
+   ========================================================= */
+.category-bar-wrapper {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+
+.category-bar-wrapper::-webkit-scrollbar {
+  display: none;
+}
+
+.cat-pill {
+  background: var(--surface-pill);
+  color: #F1F1F1;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.cat-pill.active {
+  background: #FFFFFF;
+  color: #0F0F0F;
+  font-weight: 700;
+}
+
+.cat-arrow-btn {
+  background: transparent;
+  border: none;
+  color: #FFF;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.cat-filters-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: #FFF;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* =========================================================
+   FEED CONTENT SCROLLER & VIDEO CARDS
+   ========================================================= */
+.app-content-viewport {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: calc(var(--safe-bottom, 0px) + 58px);
+  -webkit-overflow-scrolling: touch;
+}
+
+.feed-container {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Video Card (No "Ad-free" text, Authentic Channel Avatars) */
+.video-card {
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  position: relative;
+}
+
+.video-thumb-container {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  background: #181818;
+}
+
+.video-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s ease;
+}
+
+.video-card:hover .video-thumb-img {
+  transform: scale(1.02);
+}
+
+.badge-duration {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #FFF;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.video-info-row {
+  display: flex;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+/* Actual Channel Avatar Photo Image */
+.channel-avatar-box {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #272727;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.channel-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-text-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.video-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.video-title {
+  color: var(--text-white);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.video-actions-quick {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.quick-btn {
+  background: transparent;
+  border: none;
+  color: #FFF;
+  padding: 4px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.quick-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.video-meta-line {
+  color: var(--text-gray);
+  font-size: 12px;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.channel-name-link {
+  color: var(--text-gray);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+}
+
+.channel-name-link:hover {
+  color: #FFF;
+}
+
+.verified-icon {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #AAAAAA;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.verified-icon svg {
+  width: 8px;
+  height: 8px;
+  fill: #0F0F0F;
+}
+
+/* =========================================================
+   SHORTS SHELF
+   ========================================================= */
+.shorts-shelf {
+  padding: 12px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  margin: 4px 0;
+}
+
+.shorts-shelf-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 10px;
+}
+
+.shorts-shelf-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--metube-red);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shorts-shelf-logo svg {
+  width: 11px;
+  height: 11px;
+  fill: #FFF;
+}
+
+.shorts-shelf-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+}
+
+.shorts-carousel {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 2px;
+}
+
+.shorts-carousel::-webkit-scrollbar {
+  display: none;
+}
+
+.short-card {
+  width: 142px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.short-thumb-wrapper {
+  width: 142px;
+  height: 240px;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  background: #1E1E1E;
+}
+
+.short-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.short-download-quick {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 15px;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFF;
+  cursor: pointer;
+}
+
+.short-info {
+  padding: 6px 2px 0;
+}
+
+.short-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.short-views {
+  color: var(--text-gray);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+/* =========================================================
+   BOTTOM NAVIGATION BAR
+   ========================================================= */
+.metube-bottom-nav {
+  height: calc(52px + var(--safe-bottom, 0px));
+  padding-bottom: var(--safe-bottom, 0px);
+  background: var(--bg);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-gray);
+  font-size: 10px;
+  font-weight: 500;
+  gap: 3px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  flex: 1;
+}
+
+.nav-item svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+}
+
+.nav-item.active {
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.nav-badge-dot {
+  position: relative;
+}
+
+.nav-counter {
+  position: absolute;
+  top: -4px;
+  right: -8px;
+  background: var(--metube-red);
+  color: #FFF;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+
+/* =========================================================
+   LEFT SIDEBAR DRAWER (Pure MeTube Architecture)
+   ========================================================= */
+.sidebar-drawer-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 1000;
+  display: flex;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.sidebar-drawer-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-drawer-content {
+  width: 240px;
+  height: 100%;
+  background: #0F0F0F;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  padding-top: max(var(--safe-top, 0px), 10px);
+}
+
+.sidebar-drawer-overlay.open .sidebar-drawer-content {
+  transform: translateX(0);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+}
+
+.sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+.sidebar-section {
+  padding: 6px 8px;
+}
+
+.sidebar-section-title {
+  color: #FFF;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #F1F1F1;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.sidebar-link:hover,
+.sidebar-link.active {
+  background: #272727;
+  color: #FFF;
+  font-weight: 700;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: #272727;
+  margin: 6px 0;
+}
+
+/* =========================================================
+   VIDEO PLAYER MODAL
+   ========================================================= */
+.player-modal {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  overflow: hidden;
+}
+
+.player-modal.open {
+  transform: translateY(0);
+}
+
+.player-top-bar {
+  padding: max(var(--safe-top, 0px), 8px) 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #000;
+  border-bottom: 1px solid #1c1c1c;
+}
+
+.player-video-wrapper {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-video-wrapper video {
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+.player-video-wrapper iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* Clean Video Loader (Only spinning circle, NO text) */
+.video-loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.player-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #111;
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+}
+
+.speed-select {
+  background: #222;
+  border: 1px solid #333;
+  color: #FFF;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+  cursor: pointer;
+}
+
+.btn-player-action {
+  background: #272727;
+  color: #FFF;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.btn-player-action.active {
+  background: #FFF;
+  color: #000;
+}
+
+.player-details-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.player-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.player-channel-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #181818;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+}
+
+/* =========================================================
+   SNAPTUBE-STYLE DOWNLOAD MODAL
+   ========================================================= */
+.modal-dialog-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.modal-dialog-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal-sheet-box {
+  background: #181818;
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border-top: 1px solid #333;
+  padding-bottom: max(var(--safe-bottom, 0px), 14px);
+  max-height: 85%;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.modal-dialog-overlay.open .modal-sheet-box {
+  transform: translateY(0);
+}
+
+.sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #282828;
+}
+
+.sheet-header-title {
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sheet-scroll-body {
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.preset-category-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--text-gray);
+  margin-bottom: 6px;
+}
+
+.preset-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-card-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #202020;
+  border: 1px solid #2E2E2E;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-card-option.selected {
+  background: #272727;
+  border-color: #FFFFFF;
+}
+
+.preset-left-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.radio-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #666;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preset-card-option.selected .radio-indicator {
+  border-color: #FFF;
+}
+
+.preset-card-option.selected .radio-indicator::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #FFF;
+}
+
+.preset-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.preset-desc {
+  font-size: 10px;
+  color: var(--text-gray);
+  margin-top: 2px;
+}
+
+.preset-size-tag {
+  background: #272727;
+  color: #FFF;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+
+.sheet-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #282828;
+}
+
+.btn-start-download {
+  width: 100%;
+  background: #FFFFFF;
+  color: #0F0F0F;
+  border: none;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+/* =========================================================
+   CHANNEL MODAL
+   ========================================================= */
+.channel-modal {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  z-index: 700;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  overflow: hidden;
+}
+
+.channel-modal.open {
+  transform: translateX(0);
+}
+
+.channel-top-bar {
+  padding: max(var(--safe-top, 0px), 8px) 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.channel-banner-box {
+  width: 100%;
+  height: 110px;
+  background: #1E1E1E;
+}
+
+.channel-banner-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.channel-meta-box {
+  padding: 12px 14px;
+}
+
+.channel-avatar-lg {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: #272727;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.channel-avatar-lg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.channel-action-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.btn-sub-white {
+  background: #FFFFFF;
+  color: #0F0F0F;
+  border: none;
+  padding: 7px 18px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-join-dark {
+  background: #272727;
+  color: #FFFFFF;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* Minimalist Clean Spinner (NO text) */
+.spinner-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255,255,255,0.15);
+  border-top-color: #FFFFFF;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =========================================================
+   SUGGESTED VIDEOS (In Video Player Modal)
+   ========================================================= */
+.player-suggested-section {
+  margin-top: 20px;
+  padding-bottom: 30px;
+}
+
+.suggested-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+
+.suggested-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #FFF;
+}
+
+.suggested-subtitle {
+  font-size: 11px;
+  color: var(--text-gray);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.player-suggested-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.suggested-card {
+  display: flex;
+  gap: 10px;
+  cursor: pointer;
+  background: #141414;
+  border-radius: 10px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.15s ease;
+}
+
+.suggested-card:hover {
+  background: #202020;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.suggested-thumb-box {
+  width: 124px;
+  height: 70px;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+  background: #222;
+}
+
+.suggested-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.suggested-duration-badge {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #FFF;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.suggested-info-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.suggested-video-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #FFF;
+  line-height: 16px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.suggested-channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+  gap: 4px;
+}
+
+.suggested-channel-text {
+  font-size: 11px;
+  color: var(--text-gray);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.suggested-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.suggested-quick-download {
+  background: #252525;
+  border: none;
+  color: #FFF;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.suggested-quick-download:hover {
+  background: var(--metube-red);
+}
+
+.suggested-quick-download svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Feed Infinite Scroll Loader (Minimal spinner, NO text) */
+.feed-loader-bottom {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px 0;
+  width: 100%;
+}
+

@@ -1,0 +1,9 @@
+{
+  "appId": "com.anant.metube",
+  "appName": "MeTube",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}

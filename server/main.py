@@ -5,12 +5,15 @@ import time
 import json
 import logging
 import threading
+import re
+import urllib.request
+import urllib.parse
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 import imageio_ffmpeg
 import yt_dlp
@@ -42,6 +45,10 @@ jobs_lock = threading.Lock()
 
 COOKIES_FILE = BASE_DIR / "cookies.txt"
 
+# In-memory Caches for zero-latency responses
+avatar_cache: Dict[str, str] = {}
+stream_cache: Dict[str, Dict[str, Any]] = {}
+
 def get_base_ydl_opts() -> dict:
     opts = {
         "quiet": True,
@@ -50,12 +57,52 @@ def get_base_ydl_opts() -> dict:
         "js_runtimes": {"node": {}},
         "remote_components": ["ejs:github"],
         "socket_timeout": 30,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb"],
+                "player_skip": ["webpage", "configs"],
+            }
+        },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     }
     if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
         opts["cookiefile"] = str(COOKIES_FILE)
         logger.info(f"Using YouTube cookies from: {COOKIES_FILE}")
     return opts
+
+def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
+    """Scrapes and caches the real official YouTube circular avatar image for a creator."""
+    clean_name = (channel_name or "Creator").strip()
+    fallback_url = f"https://ui-avatars.com/api/?name={urllib.parse.quote(clean_name)}&background=181818&color=ffffff&size=176&bold=true"
+    
+    if channel_id and channel_id in avatar_cache:
+        return avatar_cache[channel_id]
+
+    if not channel_id or not channel_id.startswith("UC"):
+        return fallback_url
+
+    try:
+        url = f"https://www.youtube.com/channel/{channel_id}"
+        req = urllib.request.Request(
+            url, 
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=4) as res:
+            html = res.read().decode("utf-8", errors="ignore")
+            matches = re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html)
+            for m in matches:
+                if "=s" in m:
+                    real_avatar = re.sub(r"=s\d+.*", "=s176-c-k-c0x00ffffff-no-rj", m)
+                    avatar_cache[channel_id] = real_avatar
+                    return real_avatar
+            if matches:
+                avatar_cache[channel_id] = matches[0]
+                return matches[0]
+    except Exception as e:
+        logger.warning(f"Failed to scrape avatar for {channel_id}: {e}")
+
+    avatar_cache[channel_id] = fallback_url
+    return fallback_url
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -76,14 +123,128 @@ def health_check():
         "cookies_path": str(COOKIES_FILE),
     }
 
+@app.get("/api/channel/avatar")
+def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = None):
+    """Returns a direct 302 redirect to the creator's real official YouTube profile image."""
+    avatar_url = resolve_channel_avatar(id, name)
+    return RedirectResponse(url=avatar_url, status_code=302)
+
+def extract_direct_stream_url(video_id: str) -> Optional[str]:
+    """Extracts and caches the direct googlevideo MP4 stream URL using android/ios player clients."""
+    now = time.time()
+    if video_id in stream_cache:
+        cached = stream_cache[video_id]
+        if cached.get("expires", 0) > now and cached.get("url"):
+            return cached["url"]
+
+    opts = get_base_ydl_opts()
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get("formats", []) if info else []
+            progressive = [
+                f for f in formats 
+                if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
+            ]
+            progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
+            chosen_url = None
+            if progressive:
+                chosen_url = progressive[0]["url"]
+            else:
+                for f in formats:
+                    if f.get("url") and f.get("vcodec") != "none":
+                        chosen_url = f["url"]
+                        break
+
+            if chosen_url:
+                stream_cache[video_id] = {
+                    "url": chosen_url,
+                    "expires": now + 7200,
+                    "title": info.get("title", "")
+                }
+                return chosen_url
+    except Exception as e:
+        logger.error(f"Error extracting stream for {video_id}: {e}")
+    return None
+
+@app.get("/api/stream/{video_id}")
+def stream_video_proxy(video_id: str, request: Request):
+    """
+    Native HTTP 206 partial content stream proxy.
+    Streams video/mp4 directly to HTML5 <video> with zero YouTube watermark and zero CORS restrictions.
+    """
+    direct_url = extract_direct_stream_url(video_id)
+    if not direct_url:
+        raise HTTPException(status_code=404, detail="Stream not available")
+
+    range_header = request.headers.get("range")
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    }
+    if range_header:
+        req_headers["Range"] = range_header
+
+    try:
+        req = urllib.request.Request(direct_url, headers=req_headers)
+        upstream = urllib.request.urlopen(req, timeout=20)
+        
+        status_code = upstream.status
+        content_type = upstream.headers.get("Content-Type", "video/mp4")
+        content_length = upstream.headers.get("Content-Length")
+        content_range = upstream.headers.get("Content-Range")
+        accept_ranges = upstream.headers.get("Accept-Ranges", "bytes")
+
+        resp_headers = {
+            "Accept-Ranges": accept_ranges,
+            "Content-Type": content_type,
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+        }
+        if content_length:
+            resp_headers["Content-Length"] = content_length
+        if content_range:
+            resp_headers["Content-Range"] = content_range
+
+        def iter_stream():
+            try:
+                while True:
+                    chunk = upstream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                upstream.close()
+
+        return StreamingResponse(
+            iter_stream(),
+            status_code=status_code,
+            media_type=content_type,
+            headers=resp_headers
+        )
+    except Exception as e:
+        logger.error(f"Stream proxy error for {video_id}: {e}")
+        return RedirectResponse(url=direct_url, status_code=307)
+
 @app.get("/api/trending")
-def get_trending(category: str = Query("all", description="all, music, gaming, tech, news")):
+def get_trending(
+    category: str = Query("all", description="all, shorts, music, gaming, tech, news, podcasts"),
+    page: int = Query(1, description="Page number for continuous infinite feed")
+):
+    page_modifiers = ["today", "viral", "popular", "trending", "featured", "best"]
+    kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]
+    
     category_queries = {
-        "all": "ytsearch20:trending videos today",
-        "music": "ytsearch20:trending official music videos",
-        "gaming": "ytsearch20:trending gaming gameplay",
-        "tech": "ytsearch20:latest tech reviews",
-        "news": "ytsearch20:latest breaking news world",
+        "all": f"ytsearch20:trending videos {kw}",
+        "shorts": f"ytsearch20:#shorts viral {kw}",
+        "music": f"ytsearch20:trending official music {kw}",
+        "gaming": f"ytsearch20:trending gaming {kw}",
+        "tech": f"ytsearch20:tech reviews {kw}",
+        "news": f"ytsearch20:latest news {kw}",
+        "podcasts": f"ytsearch20:trending podcasts {kw}",
+        "unwatched": f"ytsearch20:popular videos {kw}",
+        "live": "ytsearch20:live stream now",
     }
     query = category_queries.get(category.lower(), category_queries["all"])
     
@@ -103,40 +264,49 @@ def get_trending(category: str = Query("all", description="all, music, gaming, t
                 if not v_id:
                     continue
                 
-                # Best thumbnail
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                c_name = item.get("uploader") or item.get("channel") or "Unknown Channel"
+                c_id = item.get("channel_id") or item.get("uploader_id") or ""
                 
                 clean_results.append({
                     "id": v_id,
                     "title": item.get("title") or "Untitled",
-                    "channel": item.get("uploader") or item.get("channel") or "Unknown Channel",
-                    "channel_id": item.get("channel_id") or item.get("uploader_id") or "",
+                    "channel": c_name,
+                    "channel_id": c_id,
                     "channel_url": item.get("channel_url") or item.get("uploader_url") or "",
+                    "channel_avatar": f"/api/channel/avatar?id={c_id}&name={urllib.parse.quote(c_name)}",
                     "duration": item.get("duration"),
                     "duration_string": str(item.get("duration_string") or ""),
                     "view_count": item.get("view_count") or 0,
                     "thumbnail": thumbnail,
                     "url": f"https://www.youtube.com/watch?v={v_id}"
                 })
-            return {"category": category, "videos": clean_results}
+            return {"category": category, "page": page, "videos": clean_results}
     except Exception as e:
         logger.error(f"Error fetching trending: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/search")
-def search_videos(q: str = Query(..., description="Search keyword")):
+def search_videos(
+    q: str = Query(..., description="Search keyword"),
+    page: int = Query(1, description="Page number")
+):
     if not q or not q.strip():
-        return {"query": "", "videos": []}
+        return {"query": "", "page": 1, "videos": []}
     
-    search_query = f"ytsearch25:{q.strip()}"
+    fetch_count = min(100, max(1, page) * 20)
+    search_query = f"ytsearch{fetch_count}:{q.strip()}"
     opts = get_base_ydl_opts()
     opts["extract_flat"] = True
     
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(search_query, download=False)
-            entries = res.get("entries", []) if res else []
+            all_entries = res.get("entries", []) if res else []
+            
+            start_idx = (max(1, page) - 1) * 20
+            entries = all_entries[start_idx : start_idx + 20] if len(all_entries) > start_idx else all_entries
             
             clean_results = []
             for item in entries:
@@ -148,13 +318,16 @@ def search_videos(q: str = Query(..., description="Search keyword")):
                 
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                c_name = item.get("uploader") or item.get("channel") or "Unknown Channel"
+                c_id = item.get("channel_id") or item.get("uploader_id") or ""
                 
                 clean_results.append({
                     "id": v_id,
                     "title": item.get("title") or "Untitled",
-                    "channel": item.get("uploader") or item.get("channel") or "Unknown Channel",
-                    "channel_id": item.get("channel_id") or item.get("uploader_id") or "",
+                    "channel": c_name,
+                    "channel_id": c_id,
                     "channel_url": item.get("channel_url") or item.get("uploader_url") or "",
+                    "channel_avatar": f"/api/channel/avatar?id={c_id}&name={urllib.parse.quote(c_name)}",
                     "duration": item.get("duration"),
                     "duration_string": str(item.get("duration_string") or ""),
                     "view_count": item.get("view_count") or 0,
@@ -181,36 +354,41 @@ def get_video_stream_info(video_id: str):
                 raise HTTPException(status_code=404, detail="Video not found")
             
             formats = info.get("formats", [])
-            
-            # Find progressive mp4 formats (video + audio in one stream for quick playback)
             progressive = [
                 f for f in formats 
                 if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
             ]
-            
-            # Sort progressive by height descending
             progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
             
-            # Find best audio-only stream (for background play or audio-only mode)
             audio_only = [
                 f for f in formats 
                 if f.get("vcodec") == "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
             ]
             audio_only.sort(key=lambda x: x.get("abr") or 0, reverse=True)
             
-            # Best stream url
-            stream_url = progressive[0]["url"] if progressive else (formats[0]["url"] if formats else "")
-            audio_url = audio_only[0]["url"] if audio_only else stream_url
+            raw_stream_url = progressive[0]["url"] if progressive else (formats[0]["url"] if formats else "")
+            audio_url = audio_only[0]["url"] if audio_only else raw_stream_url
             
             thumbs = info.get("thumbnails") or []
             thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+            c_name = info.get("uploader") or info.get("channel") or "Creator"
+            c_id = info.get("channel_id") or info.get("uploader_id") or ""
+            
+            # Cache stream URL for proxy
+            if raw_stream_url:
+                stream_cache[video_id] = {
+                    "url": raw_stream_url,
+                    "expires": time.time() + 7200,
+                    "title": info.get("title", "")
+                }
             
             return {
                 "id": video_id,
                 "title": info.get("title"),
-                "channel": info.get("uploader") or info.get("channel"),
-                "channel_id": info.get("channel_id") or info.get("uploader_id") or "",
+                "channel": c_name,
+                "channel_id": c_id,
                 "channel_url": info.get("channel_url") or info.get("uploader_url") or "",
+                "channel_avatar": f"/api/channel/avatar?id={c_id}&name={urllib.parse.quote(c_name)}",
                 "channel_follower_count": info.get("channel_follower_count"),
                 "description": info.get("description") or "",
                 "duration": info.get("duration"),
@@ -218,9 +396,9 @@ def get_video_stream_info(video_id: str):
                 "view_count": info.get("view_count"),
                 "like_count": info.get("like_count"),
                 "thumbnail": thumbnail,
-                "stream_url": stream_url,
+                "stream_url": f"/api/stream/{video_id}",
+                "direct_stream_url": raw_stream_url,
                 "audio_url": audio_url,
-                "embed_url": f"https://www.youtube.com/embed/{video_id}?autoplay=1&modestbranding=1&rel=0&playsinline=1&enablejsapi=1",
                 "is_short": bool((info.get("duration") and info.get("duration") <= 60) or (info.get("height", 0) > info.get("width", 0))),
                 "is_age_restricted": False,
                 "available_resolutions": [

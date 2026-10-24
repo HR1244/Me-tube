@@ -8,11 +8,16 @@ server/downloads/*
 server/cookies.txt
 .env
 
-# Node & Expo
+# Node & Expo & Capacitor
 mobile/node_modules/
 mobile/.expo/
 mobile/dist/
 mobile/web-build/
+app/node_modules/
+app/dist/
+app/android/.gradle/
+app/android/build/
+app/android/app/build/
 *.log
 
 # System
