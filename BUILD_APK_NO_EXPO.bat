@@ -29,7 +29,7 @@ if "%choice%"=="1" (
     call gradlew.bat assembleDebug
     echo.
     echo If build succeeded, your APK is at:
-    echo app\android\app\build\outputs\apk\debug\app-debug.apk
+    echo app\android\app\build\outputs\apk\debug\MeTube.apk
 )
 
 echo.

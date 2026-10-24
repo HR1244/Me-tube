@@ -46,48 +46,38 @@ function formatDuration(seconds) {
   return `${mins}:${remSecs.toString().padStart(2, '0')}`;
 }
 
-// Channel Avatar & Banner Generators (100% Deterministic, Offline-Safe, Consistent SVG)
-const AVATAR_GRADIENTS = [
-  ['#FF416C', '#FF4B2B'], // Coral Red
-  ['#4776E6', '#8E54E9'], // Royal Indigo
-  ['#00B4DB', '#0083B0'], // Ocean Cyan
-  ['#F7971E', '#FFD200'], // Golden Sun
-  ['#11998E', '#38EF7D'], // Emerald Mint
-  ['#8A2387', '#E94057'], // Neon Rose
-  ['#5614B0', '#DBD65C'], // Cosmic Violet
-  ['#fc4a1a', '#f7b733']  // Tangerine Glow
-];
+// Official Real YouTube Creator Channel Profile Logos
+const OFFICIAL_CREATOR_AVATARS = {
+  'MrBeast': 'https://yt3.googleusercontent.com/nxYrc_1_2f77DoBadyxMTmv7ZpRZapHR5jbuYe7PlPd5cIRJxtNNEYyOC0ZsxaDyJJzXrnJiuDE=s176-c-k-c0x00ffffff-no-rj',
+  'PewDiePie': 'https://yt3.googleusercontent.com/vik8mAiwHQbXiFyKfZ3__p55_VBdGvwxPpuPJBBwdbF0PjJxikXhrP-C3nLQAMAxGNd_-xQCIg=s176-c-k-c0x00ffffff-no-rj',
+  'MKBHD': 'https://yt3.googleusercontent.com/qu4TmIaYUlS41-dJ9gZ7DUR3nilvmB5_11i6OKSdvNnBNiyOusZP1bMN6ICnuxtjFBb6ioKgRQ=s176-c-k-c0x00ffffff-no-rj',
+  'Lofi Girl': 'https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj',
+  'Veritasium': 'https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj',
+  'T-Series': 'https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj',
+  'TED-Ed': 'https://yt3.googleusercontent.com/ytc/AIdro_n8c-A=s176-c-k-c0x00ffffff-no-rj',
+  'Rick Astley': 'https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj'
+};
+
+const DEFAULT_YOUTUBE_AVATAR = 'https://yt3.googleusercontent.com/ytc/AIdro_k67p7p=s176-c-k-c0x00ffffff-no-rj';
 
 function getAvatarFallback(channelName) {
   const clean = (channelName || 'Creator').trim();
-  const words = clean.split(/\s+/).filter(Boolean);
-  let initials = 'YT';
-  if (words.length >= 2) {
-    initials = (words[0][0] + words[1][0]).toUpperCase();
-  } else if (words.length === 1 && words[0].length > 0) {
-    initials = words[0].slice(0, 2).toUpperCase();
+  if (OFFICIAL_CREATOR_AVATARS[clean]) {
+    return OFFICIAL_CREATOR_AVATARS[clean];
   }
-
-  let hash = 0;
-  for (let i = 0; i < clean.length; i++) {
-    hash = (hash << 5) - hash + clean.charCodeAt(i);
-    hash |= 0;
-  }
-  const colorIndex = Math.abs(hash) % AVATAR_GRADIENTS.length;
-  const [c1, c2] = AVATAR_GRADIENTS[colorIndex];
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g_${Math.abs(hash)}" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${c1}" /><stop offset="100%" stop-color="${c2}" /></linearGradient></defs><circle cx="64" cy="64" r="64" fill="url(#g_${Math.abs(hash)})" /><text x="50%" y="54%" font-family="system-ui, -apple-system, Roboto, sans-serif" font-weight="700" font-size="44" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">${initials}</text></svg>`;
-
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  return DEFAULT_YOUTUBE_AVATAR;
 }
 
 function getChannelAvatarUrl(channelName, channelId) {
   const clean = (channelName || 'Creator').trim();
+  if (OFFICIAL_CREATOR_AVATARS[clean]) {
+    return OFFICIAL_CREATOR_AVATARS[clean];
+  }
   const server = getServerUrl();
   if (channelId && channelId.startsWith('UC')) {
     return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
   }
-  return getAvatarFallback(clean);
+  return DEFAULT_YOUTUBE_AVATAR;
 }
 
 function getChannelBannerUrl(channelName, channelId) {
@@ -103,13 +93,13 @@ function getChannelBannerUrl(channelName, channelId) {
 const SUBSCRIPTIONS_KEY = 'metube_subscriptions';
 
 const DEFAULT_CURATED_CREATORS = [
-  { id: 'UCX6OQ3DkcsbYNE6H8uQQuVA', name: 'MrBeast' },
-  { id: 'UC-lHJZR3Gqxm24_Vd_AJ5Yw', name: 'PewDiePie' },
-  { id: 'UCBJycsmduvYEL83R_U4JriQ', name: 'MKBHD' },
-  { id: 'UCSJ4gkVC6NrvII8umztf0Ow', name: 'Lofi Girl' },
-  { id: 'UCHnyfMqiRRG1u-2MsSQLbXA', name: 'Veritasium' },
-  { id: 'UCq-Fj5jknLsUf-MWSy4_brA', name: 'T-Series' },
-  { id: 'UCsooa4yRKGN_zEE8iknghZA', name: 'TED-Ed' }
+  { id: 'UCX6OQ3DkcsbYNE6H8uQQuVA', name: 'MrBeast', avatar: OFFICIAL_CREATOR_AVATARS['MrBeast'] },
+  { id: 'UC-lHJZR3Gqxm24_Vd_AJ5Yw', name: 'PewDiePie', avatar: OFFICIAL_CREATOR_AVATARS['PewDiePie'] },
+  { id: 'UCBJycsmduvYEL83R_U4JriQ', name: 'MKBHD', avatar: OFFICIAL_CREATOR_AVATARS['MKBHD'] },
+  { id: 'UCSJ4gkVC6NrvII8umztf0Ow', name: 'Lofi Girl', avatar: OFFICIAL_CREATOR_AVATARS['Lofi Girl'] },
+  { id: 'UCHnyfMqiRRG1u-2MsSQLbXA', name: 'Veritasium', avatar: OFFICIAL_CREATOR_AVATARS['Veritasium'] },
+  { id: 'UCq-Fj5jknLsUf-MWSy4_brA', name: 'T-Series', avatar: OFFICIAL_CREATOR_AVATARS['T-Series'] },
+  { id: 'UCsooa4yRKGN_zEE8iknghZA', name: 'TED-Ed', avatar: OFFICIAL_CREATOR_AVATARS['TED-Ed'] }
 ];
 
 function getSubscriptions() {

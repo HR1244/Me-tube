@@ -46,13 +46,27 @@ jobs_lock = threading.Lock()
 COOKIES_FILE = BASE_DIR / "cookies.txt"
 
 # In-memory Caches for zero-latency responses
-avatar_cache: Dict[str, str] = {}
+avatar_cache: Dict[str, str] = {
+    "UCX6OQ3DkcsbYNE6H8uQQuVA": "https://yt3.googleusercontent.com/nxYrc_1_2f77DoBadyxMTmv7ZpRZapHR5jbuYe7PlPd5cIRJxtNNEYyOC0ZsxaDyJJzXrnJiuDE=s176-c-k-c0x00ffffff-no-rj",
+    "MrBeast": "https://yt3.googleusercontent.com/nxYrc_1_2f77DoBadyxMTmv7ZpRZapHR5jbuYe7PlPd5cIRJxtNNEYyOC0ZsxaDyJJzXrnJiuDE=s176-c-k-c0x00ffffff-no-rj",
+    "UC-lHJZR3Gqxm24_Vd_AJ5Yw": "https://yt3.googleusercontent.com/vik8mAiwHQbXiFyKfZ3__p55_VBdGvwxPpuPJBBwdbF0PjJxikXhrP-C3nLQAMAxGNd_-xQCIg=s176-c-k-c0x00ffffff-no-rj",
+    "PewDiePie": "https://yt3.googleusercontent.com/vik8mAiwHQbXiFyKfZ3__p55_VBdGvwxPpuPJBBwdbF0PjJxikXhrP-C3nLQAMAxGNd_-xQCIg=s176-c-k-c0x00ffffff-no-rj",
+    "UCBJycsmduvYEL83R_U4JriQ": "https://yt3.googleusercontent.com/qu4TmIaYUlS41-dJ9gZ7DUR3nilvmB5_11i6OKSdvNnBNiyOusZP1bMN6ICnuxtjFBb6ioKgRQ=s176-c-k-c0x00ffffff-no-rj",
+    "MKBHD": "https://yt3.googleusercontent.com/qu4TmIaYUlS41-dJ9gZ7DUR3nilvmB5_11i6OKSdvNnBNiyOusZP1bMN6ICnuxtjFBb6ioKgRQ=s176-c-k-c0x00ffffff-no-rj",
+    "UCSJ4gkVC6NrvII8umztf0Ow": "https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj",
+    "Lofi Girl": "https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj",
+    "UCHnyfMqiRRG1u-2MsSQLbXA": "https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj",
+    "Veritasium": "https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj",
+    "UCq-Fj5jknLsUf-MWSy4_brA": "https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj",
+    "T-Series": "https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj",
+    "UCuAXFkgsw1L7xaCfnd5JJOw": "https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj",
+    "Rick Astley": "https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj"
+}
 stream_cache: Dict[str, Dict[str, Any]] = {}
 
 FALLBACK_STREAM_INSTANCES = [
-    "https://api.piped.private.coffee",
     "https://pipedapi.ducks.party",
-    "https://cf.piped.video"
+    "https://piped.video"
 ]
 
 def get_base_ydl_opts() -> dict:
@@ -60,15 +74,13 @@ def get_base_ydl_opts() -> dict:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
-        "js_runtimes": {"node": {}},
-        "remote_components": ["ejs:github"],
-        "socket_timeout": 15,
+        "socket_timeout": 8,
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv", "android", "web"],
+                "player_client": ["android"],
             }
         },
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "user_agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
     }
     if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
         opts["cookiefile"] = str(COOKIES_FILE)
@@ -77,35 +89,8 @@ def get_base_ydl_opts() -> dict:
 
 banner_cache: Dict[str, str] = {}
 
-def get_initials_svg_avatar(name: str) -> str:
-    clean = (name or "Creator").strip()
-    words = clean.split()
-    if len(words) >= 2:
-        initials = (words[0][0] + words[1][0]).upper()
-    elif len(words) == 1 and len(words[0]) > 0:
-        initials = words[0][:2].upper()
-    else:
-        initials = "YT"
-    
-    gradients = [
-        ("#FF416C", "#FF4B2B"),
-        ("#4776E6", "#8E54E9"),
-        ("#00B4DB", "#0083B0"),
-        ("#F7971E", "#FFD200"),
-        ("#11998E", "#38EF7D"),
-        ("#8A2387", "#E94057"),
-        ("#5614B0", "#DBD65C"),
-        ("#fc4a1a", "#f7b733")
-    ]
-    h = 0
-    for char in clean:
-        h = (h * 31 + ord(char)) & 0xFFFFFFFF
-    c1, c2 = gradients[h % len(gradients)]
-    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="{c1}"/><stop offset="100%" stop-color="{c2}"/></linearGradient></defs><circle cx="64" cy="64" r="64" fill="url(#g)"/><text x="50%" y="54%" font-family="system-ui, -apple-system, Roboto, sans-serif" font-weight="700" font-size="44" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">{initials}</text></svg>'
-    return f"data:image/svg+xml;utf8,{urllib.parse.quote(svg)}"
-
 def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
-    """Scrapes or resolves the real YouTube channel profile image, with deterministic initials fallback."""
+    """Scrapes or resolves the real official YouTube circular avatar image for a creator."""
     clean_name = (channel_name or "Creator").strip()
     cache_key = channel_id or clean_name
     
@@ -113,21 +98,46 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
         return avatar_cache[cache_key]
 
     if channel_id and channel_id.startswith("UC"):
-        # Fast query via Piped channel API
+        # 1. Scrape real YouTube channel avatar directly from official YouTube channel page
         try:
-            url = f"https://api.piped.private.coffee/channel/{channel_id}"
+            url = f"https://www.youtube.com/channel/{channel_id}"
+            req = urllib.request.Request(
+                url, 
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=4) as res:
+                html = res.read().decode("utf-8", errors="ignore")
+                matches = [m for m in re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html) if "=s" in m]
+                if matches:
+                    real_avatar = re.sub(r"=s\d+.*", "=s176-c-k-c0x00ffffff-no-rj", matches[0])
+                    avatar_cache[cache_key] = real_avatar
+                    return real_avatar
+        except Exception:
+            pass
+
+        # 2. Fast query via Piped channel API
+        try:
+            url = f"https://pipedapi.ducks.party/channel/{channel_id}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=3) as res:
                 data = json.loads(res.read().decode("utf-8", errors="ignore"))
                 av = data.get("avatarUrl")
                 if av:
+                    if "host=" in av:
+                        m = re.search(r"https?://[^/]+/([^?]+)\?.*host=([^&]+)", av)
+                        if m:
+                            av = f"https://{m.group(2)}/{m.group(1)}"
                     avatar_cache[cache_key] = av
                     return av
         except Exception:
             pass
 
-    # Instant deterministic beautiful SVG initials avatar
-    fallback_url = get_initials_svg_avatar(clean_name)
+    # Default official YouTube creator avatar
+    fallback_url = "https://yt3.googleusercontent.com/ytc/AIdro_k67p7p=s176-c-k-c0x00ffffff-no-rj"
     avatar_cache[cache_key] = fallback_url
     return fallback_url
 
@@ -188,6 +198,18 @@ def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = 
     banner_url = resolve_channel_banner(id, name)
     return RedirectResponse(url=banner_url, status_code=302)
 
+def is_stream_alive(stream_url: str) -> bool:
+    """Tests if a direct stream URL actually serves video bytes (prevents 502/401/403 dead proxies)."""
+    try:
+        req = urllib.request.Request(
+            stream_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Range": "bytes=0-10"}
+        )
+        with urllib.request.urlopen(req, timeout=3) as res:
+            return res.status in (200, 206)
+    except Exception:
+        return False
+
 def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
     """
     Bulletproof stream and metadata fallback for datacenter environments (Render, AWS, GCP).
@@ -200,7 +222,7 @@ def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             )
-            with urllib.request.urlopen(req, timeout=5) as res:
+            with urllib.request.urlopen(req, timeout=4) as res:
                 data = json.loads(res.read().decode("utf-8", errors="ignore"))
                 vstreams = data.get("videoStreams", [])
                 astreams = data.get("audioStreams", [])
@@ -212,11 +234,19 @@ def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
                 
                 chosen_stream = None
                 if mp4_streams:
-                    # Pick 720p or highest available
                     mp4_streams.sort(key=lambda s: int("".join(filter(str.isdigit, s.get("quality", "0"))) or 0), reverse=True)
-                    chosen_stream = mp4_streams[0].get("url")
-                elif vstreams:
-                    chosen_stream = vstreams[0].get("url")
+                    for s in mp4_streams:
+                        cand_url = s.get("url")
+                        if cand_url and is_stream_alive(cand_url):
+                            chosen_stream = cand_url
+                            break
+                            
+                if not chosen_stream and vstreams:
+                    for s in vstreams:
+                        cand_url = s.get("url")
+                        if cand_url and "m3u8" not in cand_url and is_stream_alive(cand_url):
+                            chosen_stream = cand_url
+                            break
                 
                 audio_url = astreams[0].get("url") if astreams else chosen_stream
                 
@@ -301,14 +331,14 @@ def stream_video_proxy(video_id: str, request: Request):
 
     range_header = request.headers.get("range")
     req_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
     }
     if range_header:
         req_headers["Range"] = range_header
 
     try:
         req = urllib.request.Request(direct_url, headers=req_headers)
-        upstream = urllib.request.urlopen(req, timeout=20)
+        upstream = urllib.request.urlopen(req, timeout=15)
         
         status_code = upstream.status
         content_type = upstream.headers.get("Content-Type", "video/mp4")
@@ -331,7 +361,7 @@ def stream_video_proxy(video_id: str, request: Request):
         def iter_stream():
             try:
                 while True:
-                    chunk = upstream.read(64 * 1024)
+                    chunk = upstream.read(128 * 1024)
                     if not chunk:
                         break
                     yield chunk
@@ -346,7 +376,27 @@ def stream_video_proxy(video_id: str, request: Request):
         )
     except Exception as e:
         logger.error(f"Stream proxy error for {video_id}: {e}")
-        return RedirectResponse(url=direct_url, status_code=307)
+        # Try fallback stream proxy
+        fb = resolve_stream_fallback(video_id)
+        if fb.get("url") and fb["url"] != direct_url:
+            try:
+                fb_req = urllib.request.Request(fb["url"], headers=req_headers)
+                fb_upstream = urllib.request.urlopen(fb_req, timeout=15)
+                fb_status = fb_upstream.status
+                fb_type = fb_upstream.headers.get("Content-Type", "video/mp4")
+                def iter_fb():
+                    try:
+                        while True:
+                            c = fb_upstream.read(128 * 1024)
+                            if not c:
+                                break
+                            yield c
+                    finally:
+                        fb_upstream.close()
+                return StreamingResponse(iter_fb(), status_code=fb_status, media_type=fb_type)
+            except Exception:
+                pass
+        raise HTTPException(status_code=502, detail="Stream unavailable")
 
 @app.get("/api/trending")
 def get_trending(
