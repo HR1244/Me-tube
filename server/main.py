@@ -49,6 +49,12 @@ COOKIES_FILE = BASE_DIR / "cookies.txt"
 avatar_cache: Dict[str, str] = {}
 stream_cache: Dict[str, Dict[str, Any]] = {}
 
+FALLBACK_STREAM_INSTANCES = [
+    "https://api.piped.private.coffee",
+    "https://pipedapi.ducks.party",
+    "https://cf.piped.video"
+]
+
 def get_base_ydl_opts() -> dict:
     opts = {
         "quiet": True,
@@ -56,11 +62,10 @@ def get_base_ydl_opts() -> dict:
         "ffmpeg_location": FFMPEG_EXE,
         "js_runtimes": {"node": {}},
         "remote_components": ["ejs:github"],
-        "socket_timeout": 30,
+        "socket_timeout": 15,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "mweb"],
-                "player_skip": ["webpage", "configs"],
+                "player_client": ["tv", "android", "web"],
             }
         },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -72,42 +77,58 @@ def get_base_ydl_opts() -> dict:
 
 banner_cache: Dict[str, str] = {}
 
-def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
-    """Scrapes and caches the real official YouTube circular avatar image for a creator."""
-    clean_name = (channel_name or "Creator").strip()
-    fallback_url = f"https://api.dicebear.com/7.x/avataaars/svg?seed={urllib.parse.quote(clean_name)}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf"
+def get_initials_svg_avatar(name: str) -> str:
+    clean = (name or "Creator").strip()
+    words = clean.split()
+    if len(words) >= 2:
+        initials = (words[0][0] + words[1][0]).upper()
+    elif len(words) == 1 and len(words[0]) > 0:
+        initials = words[0][:2].upper()
+    else:
+        initials = "YT"
     
-    if channel_id and channel_id in avatar_cache:
-        return avatar_cache[channel_id]
+    gradients = [
+        ("#FF416C", "#FF4B2B"),
+        ("#4776E6", "#8E54E9"),
+        ("#00B4DB", "#0083B0"),
+        ("#F7971E", "#FFD200"),
+        ("#11998E", "#38EF7D"),
+        ("#8A2387", "#E94057"),
+        ("#5614B0", "#DBD65C"),
+        ("#fc4a1a", "#f7b733")
+    ]
+    h = 0
+    for char in clean:
+        h = (h * 31 + ord(char)) & 0xFFFFFFFF
+    c1, c2 = gradients[h % len(gradients)]
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="{c1}"/><stop offset="100%" stop-color="{c2}"/></linearGradient></defs><circle cx="64" cy="64" r="64" fill="url(#g)"/><text x="50%" y="54%" font-family="system-ui, -apple-system, Roboto, sans-serif" font-weight="700" font-size="44" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">{initials}</text></svg>'
+    return f"data:image/svg+xml;utf8,{urllib.parse.quote(svg)}"
 
-    if not channel_id or not channel_id.startswith("UC"):
-        return fallback_url
+def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
+    """Scrapes or resolves the real YouTube channel profile image, with deterministic initials fallback."""
+    clean_name = (channel_name or "Creator").strip()
+    cache_key = channel_id or clean_name
+    
+    if cache_key in avatar_cache:
+        return avatar_cache[cache_key]
 
-    try:
-        url = f"https://www.youtube.com/channel/{channel_id}"
-        req = urllib.request.Request(
-            url, 
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=4) as res:
-            html = res.read().decode("utf-8", errors="ignore")
-            matches = re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html)
-            for m in matches:
-                if "=s" in m:
-                    real_avatar = re.sub(r"=s\d+.*", "=s176-c-k-c0x00ffffff-no-rj", m)
-                    avatar_cache[channel_id] = real_avatar
-                    return real_avatar
-            if matches:
-                avatar_cache[channel_id] = matches[0]
-                return matches[0]
-    except Exception as e:
-        logger.warning(f"Failed to scrape avatar for {channel_id}: {e}")
+    if channel_id and channel_id.startswith("UC"):
+        # Fast query via Piped channel API
+        try:
+            url = f"https://api.piped.private.coffee/channel/{channel_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as res:
+                data = json.loads(res.read().decode("utf-8", errors="ignore"))
+                av = data.get("avatarUrl")
+                if av:
+                    avatar_cache[cache_key] = av
+                    return av
+        except Exception:
+            pass
 
-    avatar_cache[channel_id] = fallback_url
+    # Instant deterministic beautiful SVG initials avatar
+    fallback_url = get_initials_svg_avatar(clean_name)
+    avatar_cache[cache_key] = fallback_url
     return fallback_url
 
 def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str]) -> str:
@@ -122,24 +143,16 @@ def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str
         return fallback_banner
         
     try:
-        url = f"https://www.youtube.com/channel/{channel_id}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=4) as res:
-            html = res.read().decode("utf-8", errors="ignore")
-            matches = [m for m in re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html) if any(k in m for k in ["w1060", "w1707", "w2120", "fcrop"])]
-            if matches:
-                banner_url = re.sub(r"=w\d+.*", "=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj", matches[0])
-                banner_cache[channel_id] = banner_url
-                return banner_url
-    except Exception as e:
-        logger.warning(f"Failed to scrape banner for {channel_id}: {e}")
+        url = f"https://api.piped.private.coffee/channel/{channel_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3) as res:
+            data = json.loads(res.read().decode("utf-8", errors="ignore"))
+            banner = data.get("bannerUrl")
+            if banner:
+                banner_cache[channel_id] = banner
+                return banner
+    except Exception:
+        pass
         
     banner_cache[channel_id] = fallback_banner
     return fallback_banner
@@ -175,8 +188,66 @@ def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = 
     banner_url = resolve_channel_banner(id, name)
     return RedirectResponse(url=banner_url, status_code=302)
 
+def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
+    """
+    Bulletproof stream and metadata fallback for datacenter environments (Render, AWS, GCP).
+    Extracts high-speed direct streams, title, uploader, avatar, duration, and formats.
+    """
+    for inst in FALLBACK_STREAM_INSTANCES:
+        try:
+            url = f"{inst}/streams/{video_id}"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as res:
+                data = json.loads(res.read().decode("utf-8", errors="ignore"))
+                vstreams = data.get("videoStreams", [])
+                astreams = data.get("audioStreams", [])
+                
+                # Filter out HLS/m3u8 if possible for direct progressive MP4
+                mp4_streams = [s for s in vstreams if not s.get("videoOnly") and s.get("url") and "m3u8" not in s.get("url")]
+                if not mp4_streams:
+                    mp4_streams = [s for s in vstreams if s.get("url") and "m3u8" not in s.get("url")]
+                
+                chosen_stream = None
+                if mp4_streams:
+                    # Pick 720p or highest available
+                    mp4_streams.sort(key=lambda s: int("".join(filter(str.isdigit, s.get("quality", "0"))) or 0), reverse=True)
+                    chosen_stream = mp4_streams[0].get("url")
+                elif vstreams:
+                    chosen_stream = vstreams[0].get("url")
+                
+                audio_url = astreams[0].get("url") if astreams else chosen_stream
+                
+                if chosen_stream:
+                    stream_cache[video_id] = {
+                        "url": chosen_stream,
+                        "expires": time.time() + 14400,
+                        "title": data.get("title", "")
+                    }
+                    if data.get("uploaderAvatar"):
+                        avatar_cache[data.get("uploader", "")] = data.get("uploaderAvatar")
+                    
+                    return {
+                        "url": chosen_stream,
+                        "audio_url": audio_url,
+                        "title": data.get("title", "Video"),
+                        "uploader": data.get("uploader", "Creator"),
+                        "uploaderAvatar": data.get("uploaderAvatar", ""),
+                        "duration": data.get("duration", 0),
+                        "views": data.get("views", 0),
+                        "description": data.get("description", ""),
+                        "videoStreams": vstreams,
+                        "audioStreams": astreams
+                    }
+        except Exception as e:
+            logger.warning(f"Fallback instance {inst} error for {video_id}: {e}")
+            continue
+    return {}
+
 def extract_direct_stream_url(video_id: str) -> Optional[str]:
-    """Extracts and caches the direct googlevideo MP4 stream URL using android/ios player clients."""
+    """Extracts and caches the direct googlevideo MP4 stream URL using native yt-dlp with datacenter fallback."""
     now = time.time()
     if video_id in stream_cache:
         cached = stream_cache[video_id]
@@ -194,10 +265,8 @@ def extract_direct_stream_url(video_id: str) -> Optional[str]:
                 if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
             ]
             progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
-            chosen_url = None
-            if progressive:
-                chosen_url = progressive[0]["url"]
-            else:
+            chosen_url = progressive[0]["url"] if progressive else None
+            if not chosen_url:
                 for f in formats:
                     if f.get("url") and f.get("vcodec") != "none":
                         chosen_url = f["url"]
@@ -206,12 +275,18 @@ def extract_direct_stream_url(video_id: str) -> Optional[str]:
             if chosen_url:
                 stream_cache[video_id] = {
                     "url": chosen_url,
-                    "expires": now + 7200,
+                    "expires": now + 14400,
                     "title": info.get("title", "")
                 }
                 return chosen_url
     except Exception as e:
-        logger.error(f"Error extracting stream for {video_id}: {e}")
+        logger.warning(f"yt-dlp stream extraction failed for {video_id} ({e}), activating datacenter fallback...")
+
+    # Datacenter Fallback
+    fb = resolve_stream_fallback(video_id)
+    if fb.get("url"):
+        return fb["url"]
+
     return None
 
 @app.get("/api/stream/{video_id}")
@@ -459,7 +534,50 @@ def get_video_stream_info(video_id: str):
             }
     except Exception as e:
         err_msg = str(e)
-        logger.error(f"Error extracting video stream for {video_id}: {err_msg}")
+        logger.warning(f"Native yt-dlp extraction failed for {video_id} ({err_msg}). Activating datacenter fallback...")
+        
+        fb = resolve_stream_fallback(video_id)
+        if fb.get("url"):
+            resolutions = []
+            for vs in fb.get("videoStreams", []):
+                if vs.get("url") and "m3u8" not in vs.get("url"):
+                    h = int("".join(filter(str.isdigit, vs.get("quality", "0"))) or 0)
+                    resolutions.append({
+                        "height": h or 720,
+                        "ext": vs.get("format", "mp4").lower(),
+                        "url": vs.get("url"),
+                        "filesize": None
+                    })
+            if not resolutions:
+                resolutions = [{"height": 720, "ext": "mp4", "url": fb["url"], "filesize": None}]
+
+            c_name = fb.get("uploader") or "Creator"
+            c_avatar = fb.get("uploaderAvatar") or f"/api/channel/avatar?name={urllib.parse.quote(c_name)}"
+            dur = fb.get("duration") or 0
+            dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else ""
+
+            return {
+                "id": video_id,
+                "title": fb.get("title", "Video"),
+                "channel": c_name,
+                "channel_id": "",
+                "channel_url": f"https://www.youtube.com/watch?v={video_id}",
+                "channel_avatar": c_avatar,
+                "channel_follower_count": None,
+                "description": fb.get("description", ""),
+                "duration": dur,
+                "duration_string": dur_str,
+                "view_count": fb.get("views", 0),
+                "like_count": 0,
+                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+                "stream_url": f"/api/stream/{video_id}",
+                "direct_stream_url": fb["url"],
+                "audio_url": fb.get("audio_url", fb["url"]),
+                "is_short": bool(dur and dur <= 60),
+                "is_age_restricted": False,
+                "available_resolutions": resolutions
+            }
+
         if any(term in err_msg.lower() for term in ["age", "confirm your age", "sign in to confirm", "inappropriate"]):
             logger.warning(f"Video {video_id} is age-restricted")
             return {
@@ -690,8 +808,28 @@ def get_download_formats(video_id: str):
                 "video_presets": video_presets,
             }
     except Exception as e:
-        logger.error(f"Error getting formats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"Error getting formats via yt-dlp: {e}. Trying fallback...")
+        fb = resolve_stream_fallback(video_id)
+        dur = fb.get("duration") or 0
+        audio_presets = [
+            {"type": "mp3", "quality": "320k", "label": "MP3 High (320 kbps)", "est_size_mb": round((dur * 320 / 8) / 1024, 1) if dur else None},
+            {"type": "mp3", "quality": "192k", "label": "MP3 Medium (192 kbps)", "est_size_mb": round((dur * 192 / 8) / 1024, 1) if dur else None},
+            {"type": "mp3", "quality": "128k", "label": "MP3 Standard (128 kbps)", "est_size_mb": round((dur * 128 / 8) / 1024, 1) if dur else None},
+        ]
+        video_presets = [
+            {"type": "mp4", "quality": "1080p", "label": "1080p Full HD (MP4)", "est_size_mb": round((dur * 3500 / 8) / 1024, 1) if dur else None},
+            {"type": "mp4", "quality": "720p", "label": "720p HD (MP4)", "est_size_mb": round((dur * 1800 / 8) / 1024, 1) if dur else None},
+            {"type": "mp4", "quality": "480p", "label": "480p Standard (MP4)", "est_size_mb": round((dur * 900 / 8) / 1024, 1) if dur else None},
+            {"type": "mp4", "quality": "360p", "label": "360p Data Saver (MP4)", "est_size_mb": round((dur * 500 / 8) / 1024, 1) if dur else None},
+        ]
+        return {
+            "id": video_id,
+            "title": fb.get("title", "Video"),
+            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+            "duration": dur,
+            "audio_presets": audio_presets,
+            "video_presets": video_presets,
+        }
 
 def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str, safe_title: str):
     logger.info(f"Starting download job {job_id} for {video_id} ({format_type} {quality})")
@@ -746,8 +884,64 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
         opts["merge_output_format"] = "mp4"
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception as ydl_err:
+            logger.warning(f"Native yt-dlp download failed ({ydl_err}). Using direct stream downloader...")
+            direct_stream = extract_direct_stream_url(video_id)
+            if not direct_stream:
+                raise ydl_err
+            
+            temp_stream_file = DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}_raw.mp4"
+            req = urllib.request.Request(
+                direct_stream,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            start_t = time.time()
+            downloaded = 0
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                total_len = int(resp.headers.get("content-length", 0))
+                with open(temp_stream_file, "wb") as f_out:
+                    while True:
+                        buf = resp.read(128 * 1024)
+                        if not buf:
+                            break
+                        f_out.write(buf)
+                        downloaded += len(buf)
+                        elapsed = max(0.1, time.time() - start_t)
+                        spd = downloaded / elapsed
+                        pct = (downloaded / total_len * 100) if total_len else 50.0
+                        with jobs_lock:
+                            if job_id in download_jobs:
+                                download_jobs[job_id]["percent"] = round(min(98.0, pct), 1)
+                                download_jobs[job_id]["speed"] = f"{spd / (1024 * 1024):.2f} MB/s"
+                                download_jobs[job_id]["downloaded_bytes"] = downloaded
+                                download_jobs[job_id]["total_bytes"] = total_len
+            
+            # Post-process format if needed
+            expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
+            dest_file = DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}.{expected_ext}"
+            
+            if format_type.lower() == "mp3":
+                with jobs_lock:
+                    if job_id in download_jobs:
+                        download_jobs[job_id]["status"] = "converting"
+                        download_jobs[job_id]["percent"] = 99.0
+                bitrate = quality.replace("k", "") if "k" in quality else "192"
+                import subprocess
+                subprocess.run([
+                    FFMPEG_EXE, "-y", "-i", str(temp_stream_file),
+                    "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{bitrate}k",
+                    str(dest_file)
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if temp_stream_file.exists():
+                    temp_stream_file.unlink()
+            else:
+                if temp_stream_file.exists():
+                    if dest_file.exists():
+                        dest_file.unlink()
+                    temp_stream_file.rename(dest_file)
             
         # Find the generated file
         expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"

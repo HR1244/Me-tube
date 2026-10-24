@@ -1,5 +1,5 @@
 // MeTube Mobile Application & Desktop Simulator Controller
-import { api, getServerUrl, setServerUrl, DEFAULT_SERVER_URL } from './api.js';
+import { api, getServerUrl, setServerUrl, DEFAULT_SERVER_URL, startServerKeepAlive } from './api.js';
 
 // App State
 const state = {
@@ -46,10 +46,39 @@ function formatDuration(seconds) {
   return `${mins}:${remSecs.toString().padStart(2, '0')}`;
 }
 
-// Channel Avatar & Banner Generators
+// Channel Avatar & Banner Generators (100% Deterministic, Offline-Safe, Consistent SVG)
+const AVATAR_GRADIENTS = [
+  ['#FF416C', '#FF4B2B'], // Coral Red
+  ['#4776E6', '#8E54E9'], // Royal Indigo
+  ['#00B4DB', '#0083B0'], // Ocean Cyan
+  ['#F7971E', '#FFD200'], // Golden Sun
+  ['#11998E', '#38EF7D'], // Emerald Mint
+  ['#8A2387', '#E94057'], // Neon Rose
+  ['#5614B0', '#DBD65C'], // Cosmic Violet
+  ['#fc4a1a', '#f7b733']  // Tangerine Glow
+];
+
 function getAvatarFallback(channelName) {
   const clean = (channelName || 'Creator').trim();
-  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(clean)}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`;
+  const words = clean.split(/\s+/).filter(Boolean);
+  let initials = 'YT';
+  if (words.length >= 2) {
+    initials = (words[0][0] + words[1][0]).toUpperCase();
+  } else if (words.length === 1 && words[0].length > 0) {
+    initials = words[0].slice(0, 2).toUpperCase();
+  }
+
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = (hash << 5) - hash + clean.charCodeAt(i);
+    hash |= 0;
+  }
+  const colorIndex = Math.abs(hash) % AVATAR_GRADIENTS.length;
+  const [c1, c2] = AVATAR_GRADIENTS[colorIndex];
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g_${Math.abs(hash)}" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${c1}" /><stop offset="100%" stop-color="${c2}" /></linearGradient></defs><circle cx="64" cy="64" r="64" fill="url(#g_${Math.abs(hash)})" /><text x="50%" y="54%" font-family="system-ui, -apple-system, Roboto, sans-serif" font-weight="700" font-size="44" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">${initials}</text></svg>`;
+
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 function getChannelAvatarUrl(channelName, channelId) {
@@ -58,7 +87,7 @@ function getChannelAvatarUrl(channelName, channelId) {
   if (channelId && channelId.startsWith('UC')) {
     return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
   }
-  return `${server}/api/channel/avatar?name=${encodeURIComponent(clean)}`;
+  return getAvatarFallback(clean);
 }
 
 function getChannelBannerUrl(channelName, channelId) {
@@ -911,10 +940,25 @@ async function openVideoPlayer(video) {
   // Load Suggested Videos smoothly in background (NO duplicate spinner!)
   loadSuggestedVideos(video);
 
-  // Set direct stream source from server proxy
-  const streamSrc = `${getServerUrl()}/api/stream/${video.id}`;
+  // Set direct stream source from server proxy or cached direct stream
+  const streamSrc = video.direct_stream_url || `${getServerUrl()}/api/stream/${video.id}`;
   videoElem.src = streamSrc;
   videoElem.playbackRate = Number(document.getElementById('player-speed-select')?.value || 1.0);
+
+  let triedFallback = false;
+  const triggerDirectFallback = async () => {
+    if (triedFallback) return;
+    triedFallback = true;
+    try {
+      const details = await api.getVideo(video.id);
+      if (details && details.direct_stream_url && details.direct_stream_url !== videoElem.src) {
+        videoElem.src = details.direct_stream_url;
+        videoElem.play().catch(() => {});
+        return;
+      }
+    } catch (_) {}
+    if (spinner) spinner.style.display = 'none';
+  };
 
   videoElem.onloadeddata = () => {
     if (spinner) spinner.style.display = 'none';
@@ -926,10 +970,12 @@ async function openVideoPlayer(video) {
     if (spinner) spinner.style.display = 'none';
   };
   videoElem.onerror = () => {
-    if (spinner) spinner.style.display = 'none';
+    triggerDirectFallback();
   };
 
-  videoElem.play().catch(() => {});
+  videoElem.play().catch(() => {
+    triggerDirectFallback();
+  });
 
   // Fetch full details in background for follower count and description
   try {
@@ -939,6 +985,11 @@ async function openVideoPlayer(video) {
     }
     if (details.description) {
       descElem.textContent = details.description;
+    }
+    // If stream is still waiting/stalled, switch to direct stream
+    if (details.direct_stream_url && videoElem.readyState === 0) {
+      videoElem.src = details.direct_stream_url;
+      videoElem.play().catch(() => {});
     }
   } catch (err) {
     // Native stream continues smoothly
@@ -1474,6 +1525,9 @@ window.addEventListener('DOMContentLoaded', () => {
       loadFeed('all');
     }
   });
+
+  // Keep server connection warm and active
+  startServerKeepAlive();
 
   // Load initial feed
   loadFeed('all');

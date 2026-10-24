@@ -36,7 +36,7 @@ export function setServerUrl(url) {
   return cleaned;
 }
 
-export async function request(endpoint, options = {}) {
+export async function request(endpoint, options = {}, retries = 2) {
   const base = getServerUrl();
   const url = `${base}${endpoint}`;
   const config = {
@@ -48,21 +48,48 @@ export async function request(endpoint, options = {}) {
     }
   };
 
-  const res = await fetch(url, config);
-  if (!res.ok) {
-    let errMessage = `Server error ${res.status}`;
-    try {
-      const errJson = await res.json();
-      if (errJson && errJson.detail) errMessage = errJson.detail;
-    } catch (_) {
+  try {
+    const res = await fetch(url, config);
+    if (!res.ok) {
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && retries > 0) {
+        await new Promise((r) => setTimeout(r, 2000));
+        return request(endpoint, options, retries - 1);
+      }
+      let errMessage = `Server error ${res.status}`;
       try {
-        const text = await res.text();
-        if (text) errMessage = text;
-      } catch (_) {}
+        const errJson = await res.json();
+        if (errJson && errJson.detail) errMessage = errJson.detail;
+      } catch (_) {
+        try {
+          const text = await res.text();
+          if (text) errMessage = text;
+        } catch (_) {}
+      }
+      throw new Error(errMessage);
     }
-    throw new Error(errMessage);
+    return res.json();
+  } catch (err) {
+    if (retries > 0 && (err.name === 'TypeError' || err.message.includes('fetch'))) {
+      await new Promise((r) => setTimeout(r, 2000));
+      return request(endpoint, options, retries - 1);
+    }
+    throw err;
   }
-  return res.json();
+}
+
+// Background Keep-Alive to maintain hot server connection without sleeping
+let keepAliveTimer = null;
+export function startServerKeepAlive() {
+  if (typeof window === 'undefined') return;
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  
+  // Instant wake-up ping
+  request('/api/health').catch(() => {});
+
+  // Frequent 3-minute heartbeat ping to keep Render warm and responsive
+  keepAliveTimer = setInterval(() => {
+    request('/api/health').catch(() => {});
+  }, 3 * 60 * 1000);
 }
 
 export const api = {
