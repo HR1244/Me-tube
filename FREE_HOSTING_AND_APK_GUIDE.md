@@ -1,82 +1,51 @@
-# Free Hosting & Standalone Android APK Guide
+# MeTube Studio & Standalone Android APK Guide (No Expo)
 
-This guide explains how to host your FreeTube Python backend **100% free with fast response times** (no sleeping/freezing), handle **Age-Restricted content**, and compile a **standalone Android APK** (no Expo Go required).
+Your live backend server is deployed and tested:
+🔗 **`https://me-tube-o48b.onrender.com`** (Status: **200 OK**, FFmpeg Loaded, 20 trending videos loaded)
 
----
-
-## 🌐 1. Best Free Platforms to Host the Backend
-
-Since our backend runs **FastAPI + yt-dlp + FFmpeg**, standard serverless hosts like Vercel or Netlify won't work because they lack FFmpeg and terminate requests after 10–15 seconds. 
-
-Here are the top platforms that support Docker containers with FFmpeg:
-
-| Platform | Cost | Specs | Response Time | Sleeps/Inactivity? | Recommendation |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **🏆 Hugging Face Spaces** | **100% FREE** | **2 vCPU, 16 GB RAM** | ⚡ **Very Fast (<150ms)** | ❌ **Never Sleeps (24/7)** | **Top Pick (#1)** |
-| **Render.com** | Free tier | 512 MB RAM | Fast (~200ms) | ⚠️ Sleeps after 15m (50s cold start) | Good backup |
-| **Koyeb** | Free tier | 512 MB RAM, 2 GB disk | ⚡ Fast worldwide | ❌ Stays awake | Great alternative |
-| **Oracle Cloud** | Free Forever | 4 ARM CPUs, 24 GB RAM | ⚡ Blazing fast | ❌ Stays awake | Best for power users |
+The new MeTube standalone mobile application has been built from scratch **without Expo** to resolve:
+1. **Top Taskbar / Header Overlap**: Full safe-area inset adaptation (`--safe-top`) ensuring the search bar, hamburger button, and action controls are 100% clickable and never blocked by phone notches or status bars.
+2. **Zero Crashing**: Replaced unstable native hooks with clean, native HTML5 streaming and standard direct file downloading that works smoothly across any mobile device.
+3. **Interactive Desktop Phone Simulator**: Test your mobile app right in your browser on desktop with device models (**Samsung Galaxy S24 Ultra**, **Google Pixel 8 Pro**, **iPhone 15 Pro**, and **Full Screen Mode**).
 
 ---
 
-### 🚀 Deploying to Hugging Face Spaces (Recommended — 2 Minutes)
-Hugging Face Spaces offers **free 16 GB RAM containers that run 24/7 with zero sleeping**:
+## 🖥️ 1. How to Test with the Desktop Phone Simulator
 
-1. Go to [huggingface.co](https://huggingface.co/) and sign up for a free account.
-2. Click your profile icon at the top right and select **"New Space"**.
-3. Fill in:
-   - **Space name**: `freetube-backend` (or any name you like)
-   - **Space SDK**: Choose **Docker** -> **Blank**.
-   - **Space hardware**: Free (2 vCPU, 16 GB RAM).
-   - **Visibility**: Public.
-4. Clone or upload your `server/` files (`main.py`, `requirements.txt`, `Dockerfile`).
-5. In Hugging Face Settings, set the environment variable:
-   - `PORT` = `7860`
-6. Click **Build**. Within 1–2 minutes, Hugging Face gives you a permanent HTTPS API URL:
-   `https://<your-username>-freetube-backend.hf.space`
-7. Put that URL into your FreeTube app Settings, and your mobile app will work anywhere in the world!
+Open in your browser:
+👉 **`http://localhost:3000`**
+
+What you can test in the simulator:
+- **Device Selector**: Switch between Samsung S24, Pixel 8, iPhone 15 Pro, or Fullscreen.
+- **Top Bar Clickability**: The search bar, hamburger, mic, and create buttons have safe-area padding and are 100% clickable.
+- **Ad-Free Streaming**: Tap any video to play ad-free with speed controls (`0.25x` to `4.0x`), background audio mode, and auto-looping.
+- **Download Modal (SnapTube style)**: Download MP3 (320k, 192k, 128k) or MP4 (1080p, 720p, 480p, 360p).
+- **Downloads Manager**: Track progress and click **"Save to Device"** or **"Play"**.
+- **Shorts Shelf**: Swipe through vertical 9:16 Shorts with 3-dot options and quick download.
+- **Channel Explorer**: View creator mountain cover banner, subscriber stats, and Latest/Popular/Oldest tabs.
 
 ---
 
-## 🔒 2. Unlocking Age-Restricted Content (18+)
+## 📱 2. How to Build the Standalone APK (Without Expo)
 
-### Why does YouTube show the "Sign in to confirm your age" message?
-YouTube restricts adult-rated content and blocks direct stream scraping unless an authenticated user session is provided.
+We set up **Capacitor**, which converts web apps into real, standalone Android Studio projects without Expo, EAS accounts, or third-party cloud build queues.
 
-### How FreeTube Handles It:
-1. **In-App Embed Fallback**: The app automatically catches age-restricted videos and falls back to YouTube's player embed so it doesn't crash.
-2. **Permanent Server Unlock (Cookies)**:
-   - Install a browser extension like **"Get cookies.txt LOCALLY"** in Chrome/Firefox.
-   - Go to `youtube.com` (logged in to any account).
-   - Export your cookies as a `cookies.txt` file.
-   - Place this file in `server/cookies.txt`.
-   - FreeTube's `yt-dlp` will automatically detect `cookies.txt` and unlock **all age-restricted streaming and MP3/MP4 downloads** seamlessly!
+### Method A: 1-Click Script
+In your project folder, double-click:
+📁 **`BUILD_APK_NO_EXPO.bat`**
 
----
+It will:
+1. Compile your production web assets with Vite.
+2. Sync the assets into the native Android project in `app/android`.
+3. Give you the option to open in **Android Studio** (Click **Build > Build APK(s)**) or build via Gradle.
 
-## 📱 3. Compiling Standalone Android APK (No Expo Go)
-
-You can build a standalone installable `.apk` file (like SnapTube or TubeMate) using **EAS (Expo Application Services)**:
-
-### Step 1: Install EAS CLI
-```powershell
-npm install -g eas-cli
+### Method B: Via Android Studio (Recommended for Production APK)
+```bash
+cd "c:\Users\Anant\OneDrive\Desktop\Projects\free youtube\app"
+npm run build
+npx cap open android
 ```
-
-### Step 2: Login to Expo (Free)
-```powershell
-eas login
-```
-*(If you don't have an Expo account, create one free at [expo.dev](https://expo.dev))*
-
-### Step 3: Trigger APK Build
-Run inside the `mobile` directory:
-```powershell
-cd "c:\Users\Anant\OneDrive\Desktop\Projects\free youtube\mobile"
-eas build -p android --profile preview
-```
-
-### What happens next?
-- EAS compiles a standalone `.apk` in the cloud.
-- Once finished (approx. 5–8 minutes), it provides a direct download link or QR code to download the `.apk` straight to your phone.
-- Tap the `.apk` on your Android device to install FreeTube as a native Android app!
+In Android Studio:
+1. Wait for Gradle sync to complete.
+2. Click **Build** > **Build Bundle(s) / APK(s)** > **Build APK(s)**.
+3. Android Studio will generate the installable `.apk` file ready to share with anyone!

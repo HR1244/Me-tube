@@ -4,6 +4,22 @@ export const DEFAULT_SERVER_URL = 'https://me-tube-o48b.onrender.com';
 
 export function getServerUrl() {
   const saved = localStorage.getItem(STORAGE_KEY);
+  
+  // If running inside native Capacitor on mobile phone, use Cloud Server
+  if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
+    if (saved && saved.trim() && !saved.includes('localhost')) {
+      return saved.trim().replace(/\/+$/, '');
+    }
+    return DEFAULT_SERVER_URL;
+  }
+
+  // If running locally in developer browser on PC, use local FastAPI on port 8000
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    if (!saved || saved.includes('onrender.com')) {
+      return 'http://localhost:8000';
+    }
+  }
+
   if (saved && saved.trim()) {
     return saved.trim().replace(/\/+$/, '');
   }

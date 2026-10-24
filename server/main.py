@@ -70,10 +70,12 @@ def get_base_ydl_opts() -> dict:
         logger.info(f"Using YouTube cookies from: {COOKIES_FILE}")
     return opts
 
+banner_cache: Dict[str, str] = {}
+
 def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
     """Scrapes and caches the real official YouTube circular avatar image for a creator."""
     clean_name = (channel_name or "Creator").strip()
-    fallback_url = f"https://ui-avatars.com/api/?name={urllib.parse.quote(clean_name)}&background=181818&color=ffffff&size=176&bold=true"
+    fallback_url = f"https://api.dicebear.com/7.x/avataaars/svg?seed={urllib.parse.quote(clean_name)}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf"
     
     if channel_id and channel_id in avatar_cache:
         return avatar_cache[channel_id]
@@ -85,7 +87,11 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
         url = f"https://www.youtube.com/channel/{channel_id}"
         req = urllib.request.Request(
             url, 
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
+            }
         )
         with urllib.request.urlopen(req, timeout=4) as res:
             html = res.read().decode("utf-8", errors="ignore")
@@ -103,6 +109,40 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
 
     avatar_cache[channel_id] = fallback_url
     return fallback_url
+
+def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str]) -> str:
+    """Scrapes and caches the real YouTube channel panoramic banner."""
+    clean_name = (channel_name or "Creator").strip()
+    fallback_banner = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80"
+    
+    if channel_id and channel_id in banner_cache:
+        return banner_cache[channel_id]
+        
+    if not channel_id or not channel_id.startswith("UC"):
+        return fallback_banner
+        
+    try:
+        url = f"https://www.youtube.com/channel/{channel_id}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=4) as res:
+            html = res.read().decode("utf-8", errors="ignore")
+            matches = [m for m in re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html) if any(k in m for k in ["w1060", "w1707", "w2120", "fcrop"])]
+            if matches:
+                banner_url = re.sub(r"=w\d+.*", "=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj", matches[0])
+                banner_cache[channel_id] = banner_url
+                return banner_url
+    except Exception as e:
+        logger.warning(f"Failed to scrape banner for {channel_id}: {e}")
+        
+    banner_cache[channel_id] = fallback_banner
+    return fallback_banner
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -128,6 +168,12 @@ def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = 
     """Returns a direct 302 redirect to the creator's real official YouTube profile image."""
     avatar_url = resolve_channel_avatar(id, name)
     return RedirectResponse(url=avatar_url, status_code=302)
+
+@app.get("/api/channel/banner")
+def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = None):
+    """Returns a direct 302 redirect to the creator's real YouTube channel banner."""
+    banner_url = resolve_channel_banner(id, name)
+    return RedirectResponse(url=banner_url, status_code=302)
 
 def extract_direct_stream_url(video_id: str) -> Optional[str]:
     """Extracts and caches the direct googlevideo MP4 stream URL using android/ios player clients."""
@@ -501,16 +547,18 @@ def get_channel_content(
                     "type": "playlist" if tab_lower in ["playlists", "playlist"] else ("short" if tab_lower in ["shorts", "short"] else "video")
                 })
 
-            avatar = ""
-            for t in (res.get("thumbnails") or []):
-                avatar = t.get("url") or avatar
+            c_id = res.get("channel_id") or res.get("id") or clean_id
+            c_title = res.get("channel") or res.get("uploader") or (res.get("title") or "").split(" - ")[0]
+            avatar = f"/api/channel/avatar?id={c_id}&name={urllib.parse.quote(c_title)}"
+            banner = f"/api/channel/banner?id={c_id}&name={urllib.parse.quote(c_title)}"
 
             return {
-                "channel_id": res.get("channel_id") or res.get("id") or clean_id,
-                "title": res.get("channel") or res.get("uploader") or (res.get("title") or "").split(" - ")[0],
+                "channel_id": c_id,
+                "title": c_title,
                 "description": res.get("description") or "",
                 "subscribers": res.get("channel_follower_count"),
                 "avatar": avatar,
+                "banner": banner,
                 "tab": tab_lower,
                 "items": clean_items
             }

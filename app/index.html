@@ -134,6 +134,11 @@
               <button class="cat-filters-btn">Filters ⌥</button>
             </nav>
 
+            <!-- Subscribed Channels Story Row (YouTube Mobile Style) -->
+            <div class="subscriptions-bar-wrapper" id="subscriptions-bar">
+              <div class="subscriptions-scroll" id="subscriptions-scroll-list"></div>
+            </div>
+
             <!-- Active Search Query Banner -->
             <div id="search-banner" style="display:none; padding:8px 12px; background:#1C1C1C; border-bottom:1px solid #282828; justify-content:space-between; align-items:center;">
               <span id="search-banner-query" style="font-size:12px; font-weight:700;"></span>
@@ -163,6 +168,19 @@
                     <div class="spinner"></div>
                   </div>
                 </div>
+              </section>
+
+              <!-- Watch History View -->
+              <section id="view-history" style="display:none; padding:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                  <h2 style="font-size:16px; font-weight:800; display:flex; align-items:center; gap:8px;">
+                    <span>🕒</span> Watch History
+                  </h2>
+                  <button id="btn-clear-history" style="background:#272727; color:#FFF; border:none; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">
+                    Clear History
+                  </button>
+                </div>
+                <div id="history-feed-list" class="feed-container"></div>
               </section>
 
               <!-- MeTube Custom Settings View (SnapTube Style, NOT YouTube) -->
@@ -511,7 +529,7 @@
               <div class="app-content-viewport" style="padding-bottom:20px;">
                 <!-- Panoramic Banner -->
                 <div class="channel-banner-box">
-                  <img src="https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=80" alt="Banner" />
+                  <img id="channel-banner-img" src="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80" alt="Banner" />
                 </div>
 
                 <div class="channel-meta-box">

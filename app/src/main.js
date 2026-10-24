@@ -17,6 +17,7 @@ const state = {
   isLooping: false,
   targetActionVideo: null,
   feedPage: 1,
+  isLoadingFeed: false,
   isLoadingMore: false,
   hasMore: true
 };
@@ -45,14 +46,175 @@ function formatDuration(seconds) {
   return `${mins}:${remSecs.toString().padStart(2, '0')}`;
 }
 
-// Channel Avatar URL Generator (Direct Official YouTube Avatar via Server Proxy)
+// Channel Avatar & Banner Generators
+function getAvatarFallback(channelName) {
+  const clean = (channelName || 'Creator').trim();
+  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(clean)}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`;
+}
+
 function getChannelAvatarUrl(channelName, channelId) {
-  const clean = (channelName || 'C').trim();
+  const clean = (channelName || 'Creator').trim();
   const server = getServerUrl();
   if (channelId && channelId.startsWith('UC')) {
     return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
   }
   return `${server}/api/channel/avatar?name=${encodeURIComponent(clean)}`;
+}
+
+function getChannelBannerUrl(channelName, channelId) {
+  const clean = (channelName || 'Creator').trim();
+  const server = getServerUrl();
+  if (channelId && channelId.startsWith('UC')) {
+    return `${server}/api/channel/banner?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
+  }
+  return 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80';
+}
+
+// Subscriptions Management System (With curated starter channels)
+const SUBSCRIPTIONS_KEY = 'metube_subscriptions';
+
+const DEFAULT_CURATED_CREATORS = [
+  { id: 'UCX6OQ3DkcsbYNE6H8uQQuVA', name: 'MrBeast' },
+  { id: 'UC-lHJZR3Gqxm24_Vd_AJ5Yw', name: 'PewDiePie' },
+  { id: 'UCBJycsmduvYEL83R_U4JriQ', name: 'MKBHD' },
+  { id: 'UCSJ4gkVC6NrvII8umztf0Ow', name: 'Lofi Girl' },
+  { id: 'UCHnyfMqiRRG1u-2MsSQLbXA', name: 'Veritasium' },
+  { id: 'UCq-Fj5jknLsUf-MWSy4_brA', name: 'T-Series' },
+  { id: 'UCsooa4yRKGN_zEE8iknghZA', name: 'TED-Ed' }
+];
+
+function getSubscriptions() {
+  try {
+    const raw = localStorage.getItem(SUBSCRIPTIONS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (e) {}
+  return DEFAULT_CURATED_CREATORS;
+}
+
+function isChannelSubscribed(channelId, channelName) {
+  const subs = getSubscriptions();
+  return subs.some((s) => (channelId && s.id === channelId) || (channelName && s.name.toLowerCase() === channelName.toLowerCase()));
+}
+
+function toggleChannelSubscription(creator) {
+  if (!creator || (!creator.name && !creator.channel)) return false;
+  const cName = creator.name || creator.channel;
+  const cId = creator.id || creator.channel_id || '';
+  let subs = getSubscriptions();
+  const index = subs.findIndex((s) => (cId && s.id === cId) || s.name.toLowerCase() === cName.toLowerCase());
+  let nowSubscribed = false;
+
+  if (index >= 0) {
+    subs.splice(index, 1);
+    nowSubscribed = false;
+  } else {
+    subs.unshift({ id: cId, name: cName });
+    nowSubscribed = true;
+  }
+
+  try {
+    localStorage.setItem(SUBSCRIPTIONS_KEY, JSON.stringify(subs));
+  } catch (e) {}
+
+  renderSubscriptionsBar();
+  return nowSubscribed;
+}
+
+function renderSubscriptionsBar() {
+  const listElem = document.getElementById('subscriptions-scroll-list');
+  if (!listElem) return;
+
+  const subs = getSubscriptions();
+  if (subs.length === 0) {
+    listElem.innerHTML = '';
+    return;
+  }
+
+  listElem.innerHTML = subs.map((sub, i) => {
+    const avatar = getChannelAvatarUrl(sub.name, sub.id);
+    const fallback = getAvatarFallback(sub.name);
+    return `
+      <div class="sub-story-item ${i < 3 ? 'has-unread' : ''}" data-channel-id="${sub.id || ''}" data-channel-name="${sub.name}">
+        <div class="sub-story-avatar-ring">
+          <img 
+            class="sub-story-avatar-img" 
+            src="${avatar}" 
+            alt="${sub.name}" 
+            loading="lazy"
+            onerror="this.onerror=null; this.src='${fallback}';" 
+          />
+          ${i < 3 ? '<span class="sub-story-dot"></span>' : ''}
+        </div>
+        <span class="sub-story-name">${sub.name}</span>
+      </div>
+    `;
+  }).join('');
+
+  listElem.querySelectorAll('.sub-story-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const cId = item.dataset.channelId;
+      const cName = item.dataset.channelName;
+      openChannelExplorer({ channel: cName, channel_id: cId });
+    });
+  });
+}
+
+// Watch History & Dynamic Feed Personalization System
+const WATCH_HISTORY_KEY = 'metube_watch_history';
+
+function getWatchHistory() {
+  try {
+    const raw = localStorage.getItem(WATCH_HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveToWatchHistory(video) {
+  if (!video || !video.id) return;
+  try {
+    const list = getWatchHistory();
+    const filtered = list.filter((v) => v.id !== video.id);
+    filtered.unshift({
+      id: video.id,
+      title: video.title || 'Untitled',
+      channel: video.channel || 'Creator',
+      channel_id: video.channel_id || '',
+      thumbnail: video.thumbnail || '',
+      duration: video.duration || '',
+      duration_string: video.duration_string || '',
+      view_count: video.view_count || '',
+      channel_avatar: video.channel_avatar || '',
+      watchedAt: Date.now()
+    });
+    localStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(filtered.slice(0, 50)));
+  } catch (e) {}
+}
+
+function getRecentInterestKeywords() {
+  const history = getWatchHistory();
+  if (history.length === 0) return null;
+  const keywords = [];
+  const recent = history.slice(0, 6);
+  for (const item of recent) {
+    if (item.channel && item.channel !== 'Creator' && item.channel !== 'Unknown Channel') {
+      keywords.push(item.channel);
+    }
+    if (item.title) {
+      const words = item.title
+        .replace(/[^\w\s]/gi, '')
+        .split(/\s+/)
+        .filter((w) => w.length > 3 && !['official', 'video', 'full', 'song', 'music', 'best', '2025', '2026', 'trending'].includes(w.toLowerCase()));
+      if (words.length > 0) {
+        keywords.push(words.slice(0, 2).join(' '));
+      }
+    }
+  }
+  return keywords.length > 0 ? keywords[Math.floor(Math.random() * keywords.length)] : null;
 }
 
 // =========================================================
@@ -194,6 +356,11 @@ function initNavigation() {
         loadFeed('all');
       } else if (action === 'downloads') {
         switchTab('downloads');
+      } else if (action === 'history') {
+        switchTab('history');
+      } else if (action === 'subscriptions') {
+        switchTab('home');
+        document.getElementById('subscriptions-bar')?.scrollIntoView({ behavior: 'smooth' });
       } else if (action === 'settings') {
         switchTab('settings');
       } else if (action && action.startsWith('cat-')) {
@@ -302,19 +469,51 @@ function switchTab(tabId) {
   // View sections visibility
   const viewHome = document.getElementById('view-home');
   const viewDownloads = document.getElementById('view-downloads');
+  const viewHistory = document.getElementById('view-history');
   const viewSettings = document.getElementById('view-settings');
   const catBar = document.getElementById('category-bar');
+  const subBar = document.getElementById('subscriptions-bar');
 
   if (viewHome) viewHome.style.display = tabId === 'home' ? 'block' : 'none';
   if (viewDownloads) viewDownloads.style.display = tabId === 'downloads' ? 'block' : 'none';
+  if (viewHistory) viewHistory.style.display = tabId === 'history' ? 'block' : 'none';
   if (viewSettings) viewSettings.style.display = tabId === 'settings' ? 'block' : 'none';
-  if (catBar) catBar.style.display = tabId === 'home' && !state.searchQuery ? 'flex' : 'none';
+  
+  const showBars = tabId === 'home' && !state.searchQuery;
+  if (catBar) catBar.style.display = showBars ? 'flex' : 'none';
+  if (subBar) subBar.style.display = showBars ? 'block' : 'none';
 
   if (tabId === 'downloads') {
     loadDownloadsList();
+  } else if (tabId === 'history') {
+    loadHistoryView();
   } else if (tabId === 'settings') {
     initSettingsView();
   }
+}
+
+function loadHistoryView() {
+  const container = document.getElementById('history-feed-list');
+  if (!container) return;
+  const history = getWatchHistory();
+
+  if (history.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center; padding:50px 20px; color:var(--text-gray);">
+        <div style="font-size:36px; margin-bottom:12px;">🕒</div>
+        <div style="font-size:15px; font-weight:700; color:#FFF;">No watch history yet</div>
+        <div style="font-size:12px; margin-top:6px; max-width:280px; margin-left:auto; margin-right:auto; line-height:18px;">
+          Videos you play in MeTube will appear here and dynamically personalize your Home feed!
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = '';
+  history.forEach((video) => {
+    container.appendChild(createVideoCardElement(video));
+  });
 }
 
 function selectCategory(category) {
@@ -334,8 +533,14 @@ function selectCategory(category) {
 // 4. FEED RENDERING (CLEAN SPINNER ONLY, NO TEXT!)
 // =========================================================
 async function loadFeed(category = 'all') {
+  if (state.isLoadingFeed) return;
+  state.isLoadingFeed = true;
+
   const container = document.getElementById('videos-feed-list');
-  if (!container) return;
+  if (!container) {
+    state.isLoadingFeed = false;
+    return;
+  }
   state.feedPage = 1;
   state.hasMore = true;
   state.isLoadingMore = false;
@@ -348,15 +553,52 @@ async function loadFeed(category = 'all') {
   `;
 
   try {
+    // Watch-History-Driven Dynamic Personalization:
+    // If on "all" category, personalize using recent watch interests!
+    const interestKw = (category === 'all' && !state.searchQuery) ? getRecentInterestKeywords() : null;
+
+    let trendingPromise;
+    if (interestKw) {
+      trendingPromise = Promise.all([
+        api.search(interestKw, 1).catch(() => ({ videos: [] })),
+        api.getTrending(category, 1).catch(() => ({ videos: [] }))
+      ]).then(([searchRes, trendRes]) => {
+        const searchVids = (searchRes && searchRes.videos) || [];
+        const trendVids = (trendRes && trendRes.videos) || [];
+        const seen = new Set();
+        const merged = [];
+        let s = 0, t = 0;
+        while ((s < searchVids.length || t < trendVids.length) && merged.length < 30) {
+          if (s < searchVids.length) {
+            if (!seen.has(searchVids[s].id)) {
+              seen.add(searchVids[s].id);
+              merged.push(searchVids[s]);
+            }
+            s++;
+          }
+          if (t < trendVids.length) {
+            if (!seen.has(trendVids[t].id)) {
+              seen.add(trendVids[t].id);
+              merged.push(trendVids[t]);
+            }
+            t++;
+          }
+        }
+        return { videos: merged.length > 0 ? merged : trendVids };
+      }).catch(() => api.getTrending(category, 1));
+    } else {
+      trendingPromise = api.getTrending(category, 1);
+    }
+
     const [trendingRes, shortsRes] = await Promise.all([
-      api.getTrending(category, 1),
+      trendingPromise,
       category === 'all' || category === 'shorts'
         ? api.getTrending('shorts', 1).catch(() => ({ videos: [] }))
         : Promise.resolve({ videos: [] })
     ]);
 
-    state.videos = trendingRes.videos || [];
-    state.shorts = shortsRes.videos || [];
+    state.videos = (trendingRes && trendingRes.videos) || [];
+    state.shorts = (shortsRes && shortsRes.videos) || [];
 
     renderFeed();
   } catch (err) {
@@ -366,6 +608,8 @@ async function loadFeed(category = 'all') {
       </div>
     `;
     document.getElementById('btn-retry-feed')?.addEventListener('click', () => loadFeed(category));
+  } finally {
+    state.isLoadingFeed = false;
   }
 }
 
@@ -397,11 +641,15 @@ async function loadFeedSearchResults(query) {
 }
 
 async function loadMoreFeedVideos() {
-  if (state.isLoadingMore || !state.hasMore) return;
+  if (state.isLoadingMore || !state.hasMore || state.isLoadingFeed) return;
+  if (document.getElementById('feed-bottom-spinner')) return; // Prevent double loading!
   state.isLoadingMore = true;
 
   const container = document.getElementById('videos-feed-list');
-  if (!container) return;
+  if (!container) {
+    state.isLoadingMore = false;
+    return;
+  }
 
   const bottomLoader = document.createElement('div');
   bottomLoader.className = 'feed-loader-bottom';
@@ -485,6 +733,7 @@ function createVideoCardElement(video) {
   const avatarUrl = video.channel_avatar
     ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
     : getChannelAvatarUrl(channelName, video.channel_id);
+  const fallbackAvatar = getAvatarFallback(channelName);
   const card = document.createElement('article');
   card.className = 'video-card';
 
@@ -500,7 +749,7 @@ function createVideoCardElement(video) {
           src="${avatarUrl}" 
           alt="${channelName}"
           loading="lazy"
-          onerror="this.onerror=null; this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(channelName)}&background=181818&color=fff&size=176&bold=true';" 
+          onerror="this.onerror=null; this.src='${fallbackAvatar}';" 
         />
       </div>
       <div class="video-text-col">
@@ -607,6 +856,10 @@ function createShortsShelfElement(shortsList) {
 // =========================================================
 async function openVideoPlayer(video) {
   state.activeVideo = video;
+  
+  // Persist to Watch History immediately to drive dynamic personalized feed!
+  saveToWatchHistory(video);
+
   const modal = document.getElementById('player-modal');
   const videoElem = document.getElementById('html5-video-element');
   const iframeContainer = document.getElementById('embed-iframe-container');
@@ -617,6 +870,7 @@ async function openVideoPlayer(video) {
   const channelSubsElem = document.getElementById('player-channel-subs');
   const descElem = document.getElementById('player-video-desc');
   const spinner = document.getElementById('player-video-spinner');
+  const subBtn = document.getElementById('btn-sub-toggle');
 
   modal.classList.add('open');
   titleElem.textContent = video.title || 'Playing Video';
@@ -625,15 +879,23 @@ async function openVideoPlayer(video) {
   const cName = video.channel || 'Creator';
   channelNameElem.textContent = cName;
   channelSubsElem.textContent = 'Creator';
+
+  // Update Subscribe button state
+  const isSubbed = isChannelSubscribed(video.channel_id, cName);
+  state.isSubscribed = isSubbed;
+  if (subBtn) {
+    subBtn.textContent = isSubbed ? 'Subscribed' : 'Subscribe';
+    subBtn.style.background = isSubbed ? '#272727' : '#FFFFFF';
+    subBtn.style.color = isSubbed ? '#FFFFFF' : '#0F0F0F';
+  }
   
-  // Set real channel avatar image
-  // Real Channel Avatar Image
+  // Real Channel Avatar Image with crisp graphic fallback
   const avatarUrl = video.channel_avatar
     ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
     : getChannelAvatarUrl(cName, video.channel_id);
   channelAvatarImg.src = avatarUrl;
   channelAvatarImg.onerror = () => {
-    channelAvatarImg.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(cName)}&background=181818&color=fff&size=176&bold=true`;
+    channelAvatarImg.src = getAvatarFallback(cName);
   };
 
   descElem.textContent = video.description || '';
@@ -646,7 +908,7 @@ async function openVideoPlayer(video) {
     iframeContainer.innerHTML = '';
   }
 
-  // Load Suggested Videos immediately
+  // Load Suggested Videos smoothly in background (NO duplicate spinner!)
   loadSuggestedVideos(video);
 
   // Set direct stream source from server proxy
@@ -687,11 +949,8 @@ async function loadSuggestedVideos(currentVideo) {
   const container = document.getElementById('player-suggested-list');
   if (!container) return;
 
-  container.innerHTML = `
-    <div class="spinner-box">
-      <div class="spinner"></div>
-    </div>
-  `;
+  // Clean container without jarring second spinner (Prevents double loading!)
+  container.innerHTML = '';
 
   try {
     let searchTerms = currentVideo.channel || '';
@@ -781,6 +1040,10 @@ function initPlayerControls() {
     videoElem.pause();
     videoElem.src = '';
     modal.classList.remove('open');
+    // If user was on Home 'all' feed, refresh dynamic recommendations immediately based on the newly watched video!
+    if (state.activeTab === 'home' && state.activeCategory === 'all' && !state.searchQuery) {
+      loadFeed('all');
+    }
   });
 
   speedSelect?.addEventListener('change', (e) => {
@@ -815,10 +1078,15 @@ function initPlayerControls() {
   const subBtn = document.getElementById('btn-sub-toggle');
   subBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    state.isSubscribed = !state.isSubscribed;
-    subBtn.textContent = state.isSubscribed ? 'Subscribed' : 'Subscribe';
-    subBtn.style.background = state.isSubscribed ? '#272727' : '#FFFFFF';
-    subBtn.style.color = state.isSubscribed ? '#FFFFFF' : '#0F0F0F';
+    if (!state.activeVideo) return;
+    const isNowSubbed = toggleChannelSubscription({
+      id: state.activeVideo.channel_id,
+      name: state.activeVideo.channel || 'Creator'
+    });
+    state.isSubscribed = isNowSubbed;
+    subBtn.textContent = isNowSubbed ? 'Subscribed' : 'Subscribe';
+    subBtn.style.background = isNowSubbed ? '#272727' : '#FFFFFF';
+    subBtn.style.color = isNowSubbed ? '#FFFFFF' : '#0F0F0F';
   });
 }
 
@@ -1047,22 +1315,39 @@ async function openChannelExplorer(video) {
   const topName = document.getElementById('channel-top-name');
   const titleName = document.getElementById('channel-name-title');
   const avatarBigImg = document.getElementById('channel-avatar-big-img');
+  const bannerImg = document.getElementById('channel-banner-img');
   const statsLine = document.getElementById('channel-stats-line');
   const container = document.getElementById('channel-videos-container');
+  const subBtn = document.getElementById('btn-channel-sub');
 
   const channelName = video.channel || 'Creator';
+  const channelId = video.channel_id || '';
   topName.textContent = channelName;
   titleName.textContent = channelName;
-  statsLine.textContent = `@${channelName.replace(/\s+/g, '')} • 148k subscribers • 497 videos`;
+  statsLine.textContent = `@${channelName.replace(/\s+/g, '')} • Official Channel`;
+
+  // Set real channel banner image
+  if (bannerImg) {
+    bannerImg.src = getChannelBannerUrl(channelName, channelId);
+  }
   
-  // Set real channel avatar image
+  // Set real channel avatar image with graphic fallback
   const avatarUrl = video.channel_avatar
     ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
-    : getChannelAvatarUrl(channelName, video.channel_id);
+    : getChannelAvatarUrl(channelName, channelId);
   avatarBigImg.src = avatarUrl;
   avatarBigImg.onerror = () => {
-    avatarBigImg.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(channelName)}&background=181818&color=fff&size=176&bold=true`;
+    avatarBigImg.src = getAvatarFallback(channelName);
   };
+
+  // Set Subscribe button state
+  const isSub = isChannelSubscribed(channelId, channelName);
+  state.isSubscribed = isSub;
+  if (subBtn) {
+    subBtn.textContent = isSub ? 'Subscribed' : 'Subscribe';
+    subBtn.style.background = isSub ? '#272727' : '#FFFFFF';
+    subBtn.style.color = isSub ? '#FFFFFF' : '#0F0F0F';
+  }
 
   container.innerHTML = `
     <div class="spinner-box">
@@ -1095,10 +1380,15 @@ function initChannelModal() {
 
   const subBtn = document.getElementById('btn-channel-sub');
   subBtn?.addEventListener('click', () => {
-    state.isSubscribed = !state.isSubscribed;
-    subBtn.textContent = state.isSubscribed ? 'Subscribed' : 'Subscribe';
-    subBtn.style.background = state.isSubscribed ? '#272727' : '#FFFFFF';
-    subBtn.style.color = state.isSubscribed ? '#FFFFFF' : '#0F0F0F';
+    if (!state.activeChannel) return;
+    const isNowSubbed = toggleChannelSubscription({
+      id: state.activeChannel.channel_id,
+      name: state.activeChannel.channel || 'Creator'
+    });
+    state.isSubscribed = isNowSubbed;
+    subBtn.textContent = isNowSubbed ? 'Subscribed' : 'Subscribe';
+    subBtn.style.background = isNowSubbed ? '#272727' : '#FFFFFF';
+    subBtn.style.color = isNowSubbed ? '#FFFFFF' : '#0F0F0F';
   });
 }
 
@@ -1173,7 +1463,17 @@ window.addEventListener('DOMContentLoaded', () => {
   initDownloadModal();
   initChannelModal();
   initActionsSheet();
-  checkServerHealth();
+  // Render subscribed creators story row
+  renderSubscriptionsBar();
+
+  // Clear history button
+  document.getElementById('btn-clear-history')?.addEventListener('click', () => {
+    localStorage.removeItem(WATCH_HISTORY_KEY);
+    loadHistoryView();
+    if (state.activeTab === 'home' && state.activeCategory === 'all') {
+      loadFeed('all');
+    }
+  });
 
   // Load initial feed
   loadFeed('all');
