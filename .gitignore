@@ -9,10 +9,7 @@ server/cookies.txt
 .env
 
 # Node & Expo & Capacitor
-mobile/node_modules/
-mobile/.expo/
-mobile/dist/
-mobile/web-build/
+mobile/
 app/node_modules/
 app/dist/
 app/android/.gradle/
