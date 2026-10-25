@@ -1,6 +1,39 @@
 // MeTube Mobile Application & Desktop Simulator Controller
 import { api, getServerUrl, setServerUrl, DEFAULT_SERVER_URL, startServerKeepAlive } from './api.js';
 
+// Live In-App System Diagnostics & Log Interceptor
+export const capturedLogs = [];
+const MAX_LOGS = 250;
+function logToSystem(level, ...args) {
+  const ts = new Date().toISOString().substring(11, 19);
+  const text = args.map(a => {
+    try {
+      if (a instanceof Error) return `${a.name}: ${a.message}\n${a.stack || ''}`;
+      if (typeof a === 'object') return JSON.stringify(a);
+      return String(a);
+    } catch (_) {
+      return String(a);
+    }
+  }).join(' ');
+  capturedLogs.push(`[${ts}] [${level}] ${text}`);
+  if (capturedLogs.length > MAX_LOGS) capturedLogs.shift();
+  const box = document.getElementById('diag-log-container');
+  if (box) {
+    box.textContent = capturedLogs.join('\n');
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+const origLog = console.log.bind(console);
+const origWarn = console.warn.bind(console);
+const origErr = console.error.bind(console);
+console.log = (...args) => { origLog(...args); logToSystem('INFO', ...args); };
+console.warn = (...args) => { origWarn(...args); logToSystem('WARN', ...args); };
+console.error = (...args) => { origErr(...args); logToSystem('ERR', ...args); };
+window.addEventListener('error', (e) => { logToSystem('WINDOW_ERR', e.message, `${e.filename}:${e.lineno}`); });
+window.addEventListener('unhandledrejection', (e) => { logToSystem('PROMISE_REJECT', e.reason); });
+console.log('[System] MeTube pure mobile engine initialized.');
+
 // App State
 const state = {
   activeTab: 'home',
@@ -53,12 +86,12 @@ const OFFICIAL_CREATOR_AVATARS = {
   'MKBHD': 'https://yt3.googleusercontent.com/qu4TmIaYUlS41-dJ9gZ7DUR3nilvmB5_11i6OKSdvNnBNiyOusZP1bMN6ICnuxtjFBb6ioKgRQ=s176-c-k-c0x00ffffff-no-rj',
   'Lofi Girl': 'https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj',
   'Veritasium': 'https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj',
-  'T-Series': 'https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj',
-  'TED-Ed': 'https://yt3.googleusercontent.com/ytc/AIdro_n8c-A=s176-c-k-c0x00ffffff-no-rj',
+  'T-Series': 'https://yt3.googleusercontent.com/VunTf0NzCeboiPjbesBdnQuxaF3Lja7UGRbBGQAWRJgMSTj9TTLO3pS1X9qPOJGCNnmPrXeY=s176-c-k-c0x00ffffff-no-rj',
+  'TED-Ed': 'https://yt3.googleusercontent.com/PKUi-Lc3VFjUfsIhjK3n-FJDNBf-XQLdg4G4bv4fPFF96D3MVnkbub9ePpLoWdmdFgl5I1Zd=s176-c-k-c0x00ffffff-no-rj',
   'Rick Astley': 'https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj'
 };
 
-const DEFAULT_YOUTUBE_AVATAR = 'https://yt3.googleusercontent.com/ytc/AIdro_k67p7p=s176-c-k-c0x00ffffff-no-rj';
+const DEFAULT_YOUTUBE_AVATAR = 'https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj';
 
 function getAvatarFallback(channelName) {
   const clean = (channelName || 'Creator').trim();
@@ -930,42 +963,79 @@ async function openVideoPlayer(video) {
   // Load Suggested Videos smoothly in background (NO duplicate spinner!)
   loadSuggestedVideos(video);
 
-  // Set direct stream source from server proxy or cached direct stream
-  const streamSrc = video.direct_stream_url || `${getServerUrl()}/api/stream/${video.id}`;
+  // Clean stream initialization for Android WebView & HTML5
+  try {
+    videoElem.pause();
+    videoElem.removeAttribute('src');
+    videoElem.load();
+  } catch (_) {}
+
+  const streamSrc = `${getServerUrl()}/api/stream/${video.id}`;
+  console.log(`[Player] Initializing stream: ${streamSrc}`);
   videoElem.src = streamSrc;
   videoElem.playbackRate = Number(document.getElementById('player-speed-select')?.value || 1.0);
+  try {
+    videoElem.load();
+  } catch (_) {}
 
   let triedFallback = false;
-  const triggerDirectFallback = async () => {
+  let loadTimeout = null;
+
+  const triggerDirectFallback = async (reason = '') => {
     if (triedFallback) return;
     triedFallback = true;
+    if (loadTimeout) clearTimeout(loadTimeout);
+    console.warn(`[Player] Triggering stream fallback for ${video.id} (${reason})`);
     try {
       const details = await api.getVideo(video.id);
-      if (details && details.direct_stream_url && details.direct_stream_url !== videoElem.src) {
+      if (details && details.direct_stream_url) {
+        console.log(`[Player] Switching to fallback direct stream: ${details.direct_stream_url.substring(0, 60)}...`);
         videoElem.src = details.direct_stream_url;
-        videoElem.play().catch(() => {});
+        videoElem.load();
+        const p = videoElem.play();
+        if (p !== undefined) p.catch(() => {});
         return;
       }
-    } catch (_) {}
+    } catch (err) {
+      console.error('[Player] Fallback fetch failed:', err);
+    }
     if (spinner) spinner.style.display = 'none';
   };
 
-  videoElem.onloadeddata = () => {
+  // If after 9 seconds readyState is still 0 (HAVE_NOTHING), try fallback
+  loadTimeout = setTimeout(() => {
+    if (videoElem.readyState === 0 && !triedFallback) {
+      triggerDirectFallback('timeout_readyState_0');
+    }
+  }, 9000);
+
+  const onCanPlay = () => {
+    if (loadTimeout) clearTimeout(loadTimeout);
     if (spinner) spinner.style.display = 'none';
+    const p = videoElem.play();
+    if (p !== undefined) {
+      p.catch((err) => {
+        console.log('[Player] Autoplay waiting for user tap/unmuted gesture:', err.message);
+      });
+    }
   };
-  videoElem.oncanplay = () => {
-    if (spinner) spinner.style.display = 'none';
+
+  videoElem.onloadedmetadata = () => {
+    console.log(`[Player] Metadata loaded: ${videoElem.videoWidth}x${videoElem.videoHeight}, duration: ${videoElem.duration}s`);
   };
+  videoElem.oncanplay = onCanPlay;
+  videoElem.onloadeddata = onCanPlay;
   videoElem.onplaying = () => {
+    if (loadTimeout) clearTimeout(loadTimeout);
     if (spinner) spinner.style.display = 'none';
+    console.log('[Player] Video is now playing smoothly.');
   };
   videoElem.onerror = () => {
-    triggerDirectFallback();
+    const err = videoElem.error;
+    const code = err ? err.code : 'unknown';
+    console.error(`[Player] Media error code ${code}: ${err ? err.message : ''}`);
+    triggerDirectFallback(`media_error_${code}`);
   };
-
-  videoElem.play().catch(() => {
-    triggerDirectFallback();
-  });
 
   // Fetch full details in background for follower count and description
   try {
@@ -975,11 +1045,6 @@ async function openVideoPlayer(video) {
     }
     if (details.description) {
       descElem.textContent = details.description;
-    }
-    // If stream is still waiting/stalled, switch to direct stream
-    if (details.direct_stream_url && videoElem.readyState === 0) {
-      videoElem.src = details.direct_stream_url;
-      videoElem.play().catch(() => {});
     }
   } catch (err) {
     // Native stream continues smoothly
@@ -1304,7 +1369,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
 
         ${isCompleted ? `
           <div style="display:flex; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid var(--border-subtle);">
-            <a href="${fileUrl}" download="${item.filename}" target="_blank" style="flex:1; background:#272727; color:#FFF; text-decoration:none; padding:7px; border-radius:6px; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:5px;">
+            <a href="${fileUrl}" download="${item.filename}" data-url="${fileUrl}" data-filename="${item.filename}" class="btn-save-device" target="_blank" style="flex:1; background:#272727; color:#FFF; text-decoration:none; padding:7px; border-radius:6px; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:5px;">
               <span>💾 Save to Device</span>
             </a>
             <button class="btn-play-offline" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:7px 14px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
@@ -1315,6 +1380,18 @@ function renderDownloadsDOM(container, counter, downloadsList) {
       </div>
     `;
   }).join('');
+
+  // Attach Save to Device event
+  container.querySelectorAll('.btn-save-device').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const url = btn.dataset.url;
+      console.log(`[Download] Saving to device: ${url}`);
+      if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) {
+        e.preventDefault();
+        window.open(url, '_system');
+      }
+    });
+  });
 
   // Attach Delete event
   container.querySelectorAll('.btn-delete-download').forEach((btn) => {
@@ -1495,6 +1572,121 @@ function initSettingsView() {
 }
 
 // =========================================================
+// 10. REAL-TIME SYSTEM DIAGNOSTICS & LOG VIEWER
+// =========================================================
+function initDiagnostics() {
+  const modal = document.getElementById('diagnostics-modal');
+  const openBtn = document.getElementById('btn-open-diagnostics');
+  const debugBtn = document.getElementById('btn-player-debug');
+  const closeBtn = document.getElementById('btn-close-diagnostics');
+  const pingBtn = document.getElementById('btn-diag-test-server');
+  const testStreamBtn = document.getElementById('btn-diag-test-stream');
+  const forcePlayBtn = document.getElementById('btn-diag-force-play');
+  const copyBtn = document.getElementById('btn-diag-copy-logs');
+  const clearBtn = document.getElementById('btn-diag-clear-logs');
+  const logBox = document.getElementById('diag-log-container');
+
+  const updateDiagnosticsUI = () => {
+    const sUrl = document.getElementById('diag-server-url');
+    const vInfo = document.getElementById('diag-video-info');
+    const vSrc = document.getElementById('diag-video-src');
+    const vState = document.getElementById('diag-video-state');
+    const vErr = document.getElementById('diag-video-error');
+    const videoElem = document.getElementById('html5-video-element');
+
+    if (sUrl) sUrl.textContent = `Server: ${getServerUrl()}`;
+    if (vInfo) vInfo.textContent = state.activeVideo ? `${state.activeVideo.title} (${state.activeVideo.id})` : 'No video selected';
+    if (vSrc && videoElem) vSrc.textContent = `Src: ${videoElem.src || '(none)'}`;
+    
+    if (vState && videoElem) {
+      const states = ['0 (HAVE_NOTHING)', '1 (HAVE_METADATA)', '2 (HAVE_CURRENT_DATA)', '3 (HAVE_FUTURE_DATA)', '4 (HAVE_ENOUGH_DATA)'];
+      vState.textContent = `ReadyState: ${states[videoElem.readyState] || videoElem.readyState} | Paused: ${videoElem.paused} | Time: ${Math.round(videoElem.currentTime)}s / ${Math.round(videoElem.duration || 0)}s`;
+    }
+    
+    if (vErr && videoElem) {
+      const err = videoElem.error;
+      vErr.textContent = err ? `Error: Code ${err.code} (${err.message || 'Media decode/network error'})` : 'Error: None (Healthy)';
+    }
+
+    if (logBox) {
+      logBox.textContent = capturedLogs.join('\n');
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+  };
+
+  const showDiagModal = () => {
+    modal?.classList.add('open');
+    updateDiagnosticsUI();
+  };
+
+  openBtn?.addEventListener('click', showDiagModal);
+  debugBtn?.addEventListener('click', showDiagModal);
+  closeBtn?.addEventListener('click', () => modal?.classList.remove('open'));
+
+  pingBtn?.addEventListener('click', async () => {
+    const sPing = document.getElementById('diag-server-ping');
+    if (sPing) sPing.textContent = 'Ping: Testing round-trip latency...';
+    const t0 = performance.now();
+    try {
+      const res = await api.checkHealth();
+      const ms = Math.round(performance.now() - t0);
+      if (sPing) sPing.textContent = `Ping: ✅ ${ms}ms (Status: ${res.status}, yt-dlp: ${res.yt_dlp_version || 'active'})`;
+    } catch (e) {
+      if (sPing) sPing.textContent = `Ping: ❌ Error: ${e.message}`;
+    }
+  });
+
+  testStreamBtn?.addEventListener('click', async () => {
+    const out = document.getElementById('diag-stream-test-result');
+    const videoElem = document.getElementById('html5-video-element');
+    const streamUrl = videoElem?.src;
+    if (!streamUrl) {
+      if (out) out.textContent = 'No stream URL loaded.';
+      return;
+    }
+    if (out) out.textContent = 'Testing Range bytes 0-1000...';
+    try {
+      const res = await fetch(streamUrl, {
+        headers: { 'Range': 'bytes=0-1000' }
+      });
+      const ct = res.headers.get('content-type');
+      const cr = res.headers.get('content-range');
+      const cl = res.headers.get('content-length');
+      if (out) out.textContent = `Result: HTTP ${res.status} | Type: ${ct} | Range: ${cr} | Length: ${cl}`;
+    } catch (err) {
+      if (out) out.textContent = `Fetch Failed: ${err.message}`;
+    }
+  });
+
+  forcePlayBtn?.addEventListener('click', () => {
+    const videoElem = document.getElementById('html5-video-element');
+    if (videoElem) {
+      videoElem.play().then(() => {
+        console.log('[Player] Force Play triggered successfully.');
+      }).catch((e) => {
+        console.error('[Player] Force Play rejected:', e);
+      });
+      updateDiagnosticsUI();
+    }
+  });
+
+  copyBtn?.addEventListener('click', () => {
+    const text = capturedLogs.join('\n');
+    navigator.clipboard?.writeText(text).then(() => {
+      copyBtn.textContent = '✅ Copied!';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy Logs'; }, 2000);
+    }).catch(() => {
+      alert('Could not auto-copy. Select text manually from log box.');
+    });
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    capturedLogs.length = 0;
+    if (logBox) logBox.textContent = '';
+  });
+}
+
+// =========================================================
 // INITIALIZATION ON PAGE LOAD
 // =========================================================
 window.addEventListener('DOMContentLoaded', () => {
@@ -1504,6 +1696,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initDownloadModal();
   initChannelModal();
   initActionsSheet();
+  initDiagnostics();
   // Render subscribed creators story row
   renderSubscriptionsBar();
 

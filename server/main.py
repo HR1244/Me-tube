@@ -57,8 +57,10 @@ avatar_cache: Dict[str, str] = {
     "Lofi Girl": "https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj",
     "UCHnyfMqiRRG1u-2MsSQLbXA": "https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj",
     "Veritasium": "https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj",
-    "UCq-Fj5jknLsUf-MWSy4_brA": "https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj",
-    "T-Series": "https://yt3.googleusercontent.com/DzaZaTX6gdg0nAiIH5xunDrPToc9hhphuaUy0dYgah8SsmlCrCakHd2pn0Cpm0aim02TUmvf=s176-c-k-c0x00ffffff-no-rj",
+    "UCq-Fj5jknLsUf-MWSy4_brA": "https://yt3.googleusercontent.com/VunTf0NzCeboiPjbesBdnQuxaF3Lja7UGRbBGQAWRJgMSTj9TTLO3pS1X9qPOJGCNnmPrXeY=s176-c-k-c0x00ffffff-no-rj",
+    "T-Series": "https://yt3.googleusercontent.com/VunTf0NzCeboiPjbesBdnQuxaF3Lja7UGRbBGQAWRJgMSTj9TTLO3pS1X9qPOJGCNnmPrXeY=s176-c-k-c0x00ffffff-no-rj",
+    "UCsooa4yRKGN_zEE8iknghZA": "https://yt3.googleusercontent.com/PKUi-Lc3VFjUfsIhjK3n-FJDNBf-XQLdg4G4bv4fPFF96D3MVnkbub9ePpLoWdmdFgl5I1Zd=s176-c-k-c0x00ffffff-no-rj",
+    "TED-Ed": "https://yt3.googleusercontent.com/PKUi-Lc3VFjUfsIhjK3n-FJDNBf-XQLdg4G4bv4fPFF96D3MVnkbub9ePpLoWdmdFgl5I1Zd=s176-c-k-c0x00ffffff-no-rj",
     "UCuAXFkgsw1L7xaCfnd5JJOw": "https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj",
     "Rick Astley": "https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj"
 }
@@ -74,7 +76,7 @@ def get_base_ydl_opts() -> dict:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
-        "socket_timeout": 8,
+        "socket_timeout": 4,
         "extractor_args": {
             "youtube": {
                 "player_client": ["android"],
@@ -136,8 +138,8 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
         except Exception:
             pass
 
-    # Default official YouTube creator avatar
-    fallback_url = "https://yt3.googleusercontent.com/ytc/AIdro_k67p7p=s176-c-k-c0x00ffffff-no-rj"
+    # Default official YouTube creator avatar (permanent 200 OK Google CDN)
+    fallback_url = "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
     avatar_cache[cache_key] = fallback_url
     return fallback_url
 
@@ -384,6 +386,22 @@ def stream_video_proxy(video_id: str, request: Request):
                 fb_upstream = urllib.request.urlopen(fb_req, timeout=15)
                 fb_status = fb_upstream.status
                 fb_type = fb_upstream.headers.get("Content-Type", "video/mp4")
+                fb_length = fb_upstream.headers.get("Content-Length")
+                fb_range = fb_upstream.headers.get("Content-Range")
+                fb_accept = fb_upstream.headers.get("Accept-Ranges", "bytes")
+                
+                fb_resp_headers = {
+                    "Accept-Ranges": fb_accept,
+                    "Content-Type": fb_type,
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Range",
+                    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+                }
+                if fb_length:
+                    fb_resp_headers["Content-Length"] = fb_length
+                if fb_range:
+                    fb_resp_headers["Content-Range"] = fb_range
+
                 def iter_fb():
                     try:
                         while True:
@@ -393,7 +411,7 @@ def stream_video_proxy(video_id: str, request: Request):
                             yield c
                     finally:
                         fb_upstream.close()
-                return StreamingResponse(iter_fb(), status_code=fb_status, media_type=fb_type)
+                return StreamingResponse(iter_fb(), status_code=fb_status, media_type=fb_type, headers=fb_resp_headers)
             except Exception:
                 pass
         raise HTTPException(status_code=502, detail="Stream unavailable")
