@@ -953,9 +953,16 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
     url = f"https://www.youtube.com/watch?v={video_id}"
     out_template = str(DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}.%(ext)s")
     
-    opts = get_base_ydl_opts()
-    opts["outtmpl"] = out_template
-    opts["progress_hooks"] = [progress_hook]
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "ffmpeg_location": FFMPEG_EXE,
+        "socket_timeout": 25,
+        "outtmpl": out_template,
+        "progress_hooks": [progress_hook],
+    }
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        opts["cookiefile"] = str(COOKIES_FILE)
     
     if format_type.lower() == "mp3":
         # Extract audio and convert to mp3
@@ -967,9 +974,9 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
             "preferredquality": bitrate,
         }]
     else:
-        # MP4 video
+        # MP4 video with audio merge
         res_height = quality.replace("p", "") if "p" in quality else "720"
-        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/best[height<={res_height}]/best"
+        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/bestvideo+bestaudio/best"
         opts["merge_output_format"] = "mp4"
 
     try:

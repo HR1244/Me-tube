@@ -346,12 +346,13 @@
                 </button>
               </div>
 
-              <div class="player-video-wrapper" id="player-media-box">
+              <div class="player-video-wrapper" id="player-media-box" style="position:relative; width:100%; aspect-ratio:16/9; background:#000; overflow:hidden;">
                 <!-- Clean Video Spinner (NO text!) -->
                 <div class="video-loading-overlay" id="player-video-spinner" style="display:none;">
                   <div class="spinner"></div>
                 </div>
-                <video id="html5-video-element" controls autoplay playsinline></video>
+                <div id="embed-iframe-container" style="display:none; width:100%; height:100%; position:absolute; top:0; left:0; z-index:10; background:#000;"></div>
+                <video id="html5-video-element" controls playsinline style="display:none; width:100%; height:100%;"></video>
               </div>
 
               <!-- Speed & Background Controls (Max speed 2.0x!) -->
