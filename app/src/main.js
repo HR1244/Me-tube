@@ -986,20 +986,53 @@ async function openVideoPlayer(video) {
     triedFallback = true;
     if (loadTimeout) clearTimeout(loadTimeout);
     console.warn(`[Player] Triggering stream fallback for ${video.id} (${reason})`);
+
+    let embedFallbackUrl = `https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&rel=0&modestbranding=1`;
     try {
       const details = await api.getVideo(video.id);
-      if (details && details.direct_stream_url) {
-        console.log(`[Player] Switching to fallback direct stream: ${details.direct_stream_url.substring(0, 60)}...`);
-        videoElem.src = details.direct_stream_url;
-        videoElem.load();
-        const p = videoElem.play();
-        if (p !== undefined) p.catch(() => {});
-        return;
+      if (details) {
+        if (details.title && details.title !== 'Untitled') {
+          titleElem.textContent = details.title;
+        }
+        if (details.channel_follower_count) {
+          channelSubsElem.textContent = `${formatViews(details.channel_follower_count)} subscribers`;
+        }
+        if (details.description) {
+          descElem.textContent = details.description;
+        }
+        if (details.direct_stream_url) {
+          console.log(`[Player] Switching to fallback direct stream: ${details.direct_stream_url.substring(0, 60)}...`);
+          videoElem.src = details.direct_stream_url;
+          videoElem.load();
+          const p = videoElem.play();
+          if (p !== undefined) p.catch(() => {});
+          return;
+        }
+        if (details.embed_url) {
+          embedFallbackUrl = details.embed_url;
+        }
       }
     } catch (err) {
       console.error('[Player] Fallback fetch failed:', err);
     }
+
+    // Direct MP4 stream unavailable on datacenter IP; seamlessly activate clean mobile player!
+    console.log(`[Player] Direct MP4 stream unavailable. Activating mobile player fallback for ${video.id}...`);
     if (spinner) spinner.style.display = 'none';
+    videoElem.style.display = 'none';
+    try { videoElem.pause(); } catch (_) {}
+    if (iframeContainer) {
+      iframeContainer.style.display = 'block';
+      iframeContainer.innerHTML = `
+        <iframe 
+          src="${embedFallbackUrl}" 
+          style="width:100%; height:100%; border:none; background:#000;" 
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+          allowfullscreen>
+        </iframe>
+      `;
+      console.log('[Player] Mobile clean player activated successfully!');
+    }
   };
 
   // If after 9 seconds readyState is still 0 (HAVE_NOTHING), try fallback
@@ -1145,6 +1178,12 @@ function initPlayerControls() {
   document.getElementById('btn-close-player')?.addEventListener('click', () => {
     videoElem.pause();
     videoElem.src = '';
+    const iframeContainer = document.getElementById('embed-iframe-container');
+    if (iframeContainer) {
+      iframeContainer.style.display = 'none';
+      iframeContainer.innerHTML = '';
+    }
+    videoElem.style.display = 'block';
     modal.classList.remove('open');
     // If user was on Home 'all' feed, refresh dynamic recommendations immediately based on the newly watched video!
     if (state.activeTab === 'home' && state.activeCategory === 'all' && !state.searchQuery) {

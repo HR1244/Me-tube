@@ -646,16 +646,16 @@ def get_video_stream_info(video_id: str):
                 "available_resolutions": resolutions
             }
 
-        if any(term in err_msg.lower() for term in ["age", "confirm your age", "sign in to confirm", "inappropriate"]):
+        if any(term in err_msg.lower() for term in ["confirm your age", "inappropriate for some users", "requires age verification"]):
             logger.warning(f"Video {video_id} is age-restricted")
             return {
                 "id": video_id,
                 "title": "Age-Restricted Video (18+)",
                 "channel": "YouTube Age Gate",
                 "channel_id": "",
-                "channel_url": "",
+                "channel_url": f"https://www.youtube.com/watch?v={video_id}",
                 "channel_follower_count": None,
-                "description": "This video is restricted to age 18+ by YouTube. YouTube blocks direct third-party stream scraping without an authenticated session.",
+                "description": "This video is restricted to age 18+ by YouTube.",
                 "duration": 0,
                 "duration_string": "",
                 "view_count": 0,
@@ -663,12 +663,33 @@ def get_video_stream_info(video_id: str):
                 "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
                 "stream_url": "",
                 "audio_url": "",
-                "embed_url": f"https://www.youtube.com/embed/{video_id}?autoplay=1",
+                "embed_url": f"https://www.youtube-nocookie.com/embed/{video_id}?autoplay=1&playsinline=1&rel=0&modestbranding=1",
                 "is_age_restricted": True,
-                "age_restricted_message": "This video is age-restricted by YouTube. You can watch it directly using the button below or place a cookies.txt file into the server/ directory to unlock ad-free streaming & downloads.",
+                "age_restricted_message": "This video requires age verification.",
                 "available_resolutions": []
             }
-        raise HTTPException(status_code=500, detail=err_msg)
+
+        logger.warning(f"Video {video_id} protected by bot challenge. Providing mobile embed fallback.")
+        return {
+            "id": video_id,
+            "title": "Playing Video (Mobile Fallback)",
+            "channel": "Creator",
+            "channel_id": "",
+            "channel_url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_follower_count": None,
+            "description": "Direct native mobile player stream enabled.",
+            "duration": 0,
+            "duration_string": "",
+            "view_count": 0,
+            "like_count": 0,
+            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "stream_url": f"/api/stream/{video_id}",
+            "direct_stream_url": "",
+            "embed_url": f"https://www.youtube-nocookie.com/embed/{video_id}?autoplay=1&playsinline=1&rel=0&modestbranding=1",
+            "is_age_restricted": False,
+            "is_bot_blocked": True,
+            "available_resolutions": []
+        }
 
 @app.get("/api/channel")
 def get_channel_content(
