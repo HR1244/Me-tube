@@ -1119,6 +1119,7 @@ def get_download_status(job_id: str):
             raise HTTPException(status_code=404, detail="Job not found")
         return job
 
+@app.get("/api/download/list")
 @app.get("/api/downloads")
 def list_downloads():
     with jobs_lock:

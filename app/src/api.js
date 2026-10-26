@@ -128,8 +128,12 @@ export const api = {
   getDownloadStatus(jobId) {
     return request(`/api/download/status/${encodeURIComponent(jobId)}`);
   },
-  listDownloads() {
-    return request('/api/download/list');
+  async listDownloads() {
+    try {
+      return await request('/api/downloads');
+    } catch (_) {
+      return request('/api/download/list');
+    }
   },
   deleteDownload(jobId) {
     return request(`/api/download/${encodeURIComponent(jobId)}`, {

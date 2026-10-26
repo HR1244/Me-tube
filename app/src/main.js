@@ -952,29 +952,56 @@ async function openVideoPlayer(video) {
 
   descElem.textContent = video.description || '';
 
-  // Instant, rock-solid playback on Android & all mobile devices:
-  if (spinner) spinner.style.display = 'none';
-  if (videoElem) {
-    try {
-      videoElem.pause();
-      videoElem.src = '';
-      videoElem.style.display = 'none';
-    } catch (_) {}
-  }
-
-  const embedUrl = `https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1`;
+  // Native SnapTube-style Player: Pure HTML5 Video without ANY YouTube logo, watermark, or YouTube settings!
   if (iframeContainer) {
-    iframeContainer.style.display = 'block';
-    iframeContainer.innerHTML = `
-      <iframe 
-        id="metube-embed-frame"
-        src="${embedUrl}" 
-        style="width:100%; height:100%; border:none; background:#000;" 
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-        allowfullscreen>
-      </iframe>
-    `;
-    console.log(`[Player] Video ${video.id} playing instantly via mobile engine!`);
+    iframeContainer.style.display = 'none';
+    iframeContainer.innerHTML = '';
+  }
+  if (spinner) spinner.style.display = 'flex';
+
+  const serverBase = getServerUrl();
+  const streamUrl = `${serverBase}/api/stream/${video.id}`;
+
+  if (videoElem) {
+    videoElem.style.display = 'block';
+    videoElem.src = streamUrl;
+
+    const onPlaying = () => {
+      console.log(`[Player] Native video stream playing for ${video.id}`);
+      if (spinner) spinner.style.display = 'none';
+    };
+
+    videoElem.onloadeddata = onPlaying;
+    videoElem.onplaying = onPlaying;
+    videoElem.onwaiting = () => {
+      if (spinner) spinner.style.display = 'flex';
+    };
+
+    // If direct stream fails (e.g. format unavailable), fall back to clean embed
+    videoElem.onerror = (e) => {
+      console.warn(`[Player] Direct MP4 stream unavailable. Activating mobile fallback for ${video.id}...`, e);
+      if (videoElem) {
+        videoElem.style.display = 'none';
+      }
+      if (spinner) spinner.style.display = 'none';
+      if (iframeContainer) {
+        iframeContainer.style.display = 'block';
+        iframeContainer.innerHTML = `
+          <iframe 
+            id="metube-embed-frame"
+            src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1" 
+            style="width:100%; height:100%; border:none; background:#000;" 
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+            allowfullscreen>
+          </iframe>
+        `;
+      }
+    };
+
+    videoElem.play().catch((err) => {
+      console.log(`[Player] Autoplay waiting for user gesture or buffering: ${err}`);
+      if (spinner) spinner.style.display = 'none';
+    });
   }
 
   // Fetch full details in background for follower count and description
@@ -1216,6 +1243,27 @@ function initDownloadModal() {
 // =========================================================
 // 7. DOWNLOADS MANAGER & REAL-TIME PROGRESS (INSTANT CACHE-FIRST)
 // =========================================================
+// Track completed download jobs that have been dispatched to native storage
+const autoSavedJobIds = new Set();
+let downloadPollTimer = null;
+
+function triggerSaveToDevice(url, filename) {
+  console.log(`[Download] Triggering device download for ${filename}: ${url}`);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'download';
+    a.target = '_self';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (document.body.contains(a)) document.body.removeChild(a);
+    }, 500);
+  } catch (_) {
+    window.location.href = url;
+  }
+}
+
 async function loadDownloadsList() {
   const container = document.getElementById('downloads-list');
   const counter = document.getElementById('nav-download-counter');
@@ -1249,6 +1297,24 @@ async function loadDownloadsList() {
     state.downloads = res.downloads || [];
     localStorage.setItem('metube_downloads_cache', JSON.stringify(state.downloads));
     renderDownloadsDOM(container, counter, state.downloads);
+
+    // Auto-save completed downloads to Android device storage
+    state.downloads.forEach((item) => {
+      if (item.status === 'completed' && item.filename && !autoSavedJobIds.has(item.job_id)) {
+        autoSavedJobIds.add(item.job_id);
+        const fileUrl = api.getFileDownloadUrl(item.filename);
+        triggerSaveToDevice(fileUrl, item.filename);
+      }
+    });
+
+    // Active polling if any job is currently queued or downloading
+    const hasActive = state.downloads.some(
+      (d) => d.status === 'downloading' || d.status === 'queued' || d.status === 'converting'
+    );
+    if (downloadPollTimer) clearTimeout(downloadPollTimer);
+    if (hasActive) {
+      downloadPollTimer = setTimeout(loadDownloadsList, 1500);
+    }
   } catch (err) {
     if (!hadCache) {
       container.innerHTML = `
@@ -1286,6 +1352,8 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     const isProgressing = item.status === 'downloading' || item.status === 'queued' || item.status === 'converting';
     const isError = item.status === 'error';
     const fileUrl = isCompleted ? api.getFileDownloadUrl(item.filename) : '#';
+    const pct = Math.round(item.percent ?? item.progress_percent ?? 0);
+    const errText = item.error ?? item.error_message ?? 'Download failed';
 
     return `
       <div style="background:#181818; border:1px solid var(--border); border-radius:10px; padding:12px;" data-job-id="${item.job_id}">
@@ -1299,29 +1367,29 @@ function renderDownloadsDOM(container, counter, downloadsList) {
         
         ${isProgressing ? `
           <div style="margin-top:8px;">
-            <div style="height:5px; background:#282828; border-radius:3px; overflow:hidden;">
-              <div style="height:100%; width:${Math.max(5, item.progress_percent || 0)}%; background:#FFF; border-radius:3px;"></div>
+            <div style="height:6px; background:#282828; border-radius:3px; overflow:hidden;">
+              <div style="height:100%; width:${Math.max(5, Math.min(100, pct))}%; background:#FF0000; border-radius:3px; transition:width 0.3s ease;"></div>
             </div>
             <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-gray); margin-top:4px;">
-              <span>${item.status === 'converting' ? 'Processing file...' : `${item.speed || ''} • ${item.eta ? `ETA ${item.eta}` : 'Downloading...'}`}</span>
-              <span style="font-weight:700; color:#FFF;">${Math.round(item.progress_percent || 0)}%</span>
+              <span>${item.status === 'converting' ? 'Processing & merging format...' : `${item.speed || ''} • ${item.eta ? `ETA ${item.eta}` : 'Downloading...'}`}</span>
+              <span style="font-weight:700; color:#FFF;">${pct}%</span>
             </div>
           </div>
         ` : ''}
 
         ${isError ? `
           <div style="margin-top:8px; font-size:11px; color:#FF5252; background:rgba(255,82,82,0.1); padding:6px 10px; border-radius:6px;">
-            ${item.error_message || 'Download failed'}
+            ${errText}
           </div>
         ` : ''}
 
         ${isCompleted ? `
           <div style="display:flex; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid var(--border-subtle);">
-            <a href="${fileUrl}" download="${item.filename}" data-url="${fileUrl}" data-filename="${item.filename}" class="btn-save-device" target="_blank" style="flex:1; background:#272727; color:#FFF; text-decoration:none; padding:7px; border-radius:6px; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:5px;">
-              <span>💾 Save to Device</span>
-            </a>
-            <button class="btn-play-offline" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:7px 14px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
-              Play
+            <button class="btn-save-device" data-url="${fileUrl}" data-filename="${item.filename}" style="flex:1; background:#FF0000; color:#FFF; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
+              <span>💾 Save to Phone</span>
+            </button>
+            <button class="btn-play-offline" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
+              ▶ Play
             </button>
           </div>
         ` : ''}
@@ -1332,12 +1400,8 @@ function renderDownloadsDOM(container, counter, downloadsList) {
   // Attach Save to Device event
   container.querySelectorAll('.btn-save-device').forEach((btn) => {
     btn.addEventListener('click', (e) => {
-      const url = btn.dataset.url;
-      console.log(`[Download] Saving to device: ${url}`);
-      if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) {
-        e.preventDefault();
-        window.open(url, '_system');
-      }
+      e.preventDefault();
+      triggerSaveToDevice(btn.dataset.url, btn.dataset.filename);
     });
   });
 
