@@ -5,7 +5,7 @@ echo        MeTube Standalone Android APK Builder
 echo               (Capacitor - Pure Native)
 echo ========================================================
 echo.
-echo Connected Cloud Server: https://me-tube-o48b.onrender.com
+echo Connected Cloud Server: https://accompanying-provincial-musician-efficiency.trycloudflare.com
 echo.
 echo 1. Building Web App Production Bundle...
 cd /d "%~dp0app"
