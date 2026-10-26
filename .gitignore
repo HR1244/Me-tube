@@ -18,5 +18,8 @@ app/android/app/build/
 *.log
 
 # System
+server/cloudflared.exe
+server/public_url.txt
+scratch/
 .DS_Store
 Thumbs.db
