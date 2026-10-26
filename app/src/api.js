@@ -1,13 +1,13 @@
 // MeTube High-Performance API Client
 const STORAGE_KEY = 'metube_server_url';
-export const DEFAULT_SERVER_URL = 'https://me-tube-o48b.onrender.com';
+export const DEFAULT_SERVER_URL = 'https://accompanying-provincial-musician-efficiency.trycloudflare.com';
 
 export function getServerUrl() {
   const saved = localStorage.getItem(STORAGE_KEY);
   
   // If running inside native Capacitor on mobile phone, use Cloud Server
   if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
-    if (saved && saved.trim() && !saved.includes('localhost')) {
+    if (saved && saved.trim() && !saved.includes('localhost') && !saved.includes('onrender.com')) {
       return saved.trim().replace(/\/+$/, '');
     }
     return DEFAULT_SERVER_URL;
@@ -20,7 +20,7 @@ export function getServerUrl() {
     }
   }
 
-  if (saved && saved.trim()) {
+  if (saved && saved.trim() && !saved.includes('onrender.com')) {
     return saved.trim().replace(/\/+$/, '');
   }
   return DEFAULT_SERVER_URL;
