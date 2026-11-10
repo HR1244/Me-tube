@@ -143,5 +143,23 @@ export const api = {
   getFileDownloadUrl(filename) {
     const base = getServerUrl();
     return `${base}/api/download/file/${encodeURIComponent(filename)}`;
+  },
+  getShorts(page = 1) {
+    return request(`/api/shorts?page=${page}`);
+  },
+  getAuthStatus() {
+    return request('/api/auth/status');
+  },
+  saveCookies(cookies) {
+    return request('/api/auth/cookies', {
+      method: 'POST',
+      body: JSON.stringify({ cookies })
+    });
+  },
+  logout() {
+    return request('/api/auth/logout', { method: 'POST' });
+  },
+  getUserFeed() {
+    return request('/api/user/feed');
   }
 };

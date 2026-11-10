@@ -1770,3 +1770,30 @@ body.is-mobile-device .phone-home-indicator {
   width: 100%;
 }
 
+/* Shorts Reel Overlay Controls */
+.shorts-action-btn {
+  background: rgba(30, 30, 30, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #FFF;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s;
+}
+
+.shorts-action-btn:hover {
+  transform: scale(1.08);
+  background: rgba(50, 50, 50, 0.85);
+}
+
+.shorts-action-btn:active {
+  transform: scale(0.95);
+}
+

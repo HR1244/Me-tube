@@ -41,6 +41,9 @@ const state = {
   searchQuery: '',
   videos: [],
   shorts: [],
+  shortsList: [],
+  currentShortIndex: 0,
+  isShortMuted: false,
   downloads: [],
   activeVideo: null,
   activeChannel: null,
@@ -91,14 +94,31 @@ const OFFICIAL_CREATOR_AVATARS = {
   'Rick Astley': 'https://yt3.googleusercontent.com/_ShEGOdg-t5YGJse14Ooq6FYBZqX_QSlhaTNjG06miYusm5lWm1UroLyVxnYtahADfRTVLtuVQ=s176-c-k-c0x00ffffff-no-rj'
 };
 
-const DEFAULT_YOUTUBE_AVATAR = 'https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj';
+export function getSvgAvatarDataUrl(name) {
+  const clean = (name || 'Creator').trim();
+  const initial = (clean[0] || 'C').toUpperCase();
+  const colors = [
+    ['#E50914', '#8B0000'],
+    ['#7928CA', '#4C1D95'],
+    ['#0070F3', '#1E3A8A'],
+    ['#FF5722', '#BF360C'],
+    ['#10B981', '#064E3B'],
+    ['#EC4899', '#9D174D'],
+    ['#F59E0B', '#B45309']
+  ];
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) hash = clean.charCodeAt(i) + ((hash << 5) - hash);
+  const [c1, c2] = colors[Math.abs(hash) % colors.length];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></linearGradient></defs><circle cx="50" cy="50" r="50" fill="url(#g)"/><text x="50" y="64" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="46" font-weight="700" fill="#FFF" text-anchor="middle">${initial}</text></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
 
 function getAvatarFallback(channelName) {
   const clean = (channelName || 'Creator').trim();
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  return DEFAULT_YOUTUBE_AVATAR;
+  return getSvgAvatarDataUrl(clean);
 }
 
 function getChannelAvatarUrl(channelName, channelId) {
@@ -107,10 +127,7 @@ function getChannelAvatarUrl(channelName, channelId) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
   const server = getServerUrl();
-  if (channelId && channelId.startsWith('UC')) {
-    return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
-  }
-  return DEFAULT_YOUTUBE_AVATAR;
+  return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}`;
 }
 
 function getChannelBannerUrl(channelName, channelId) {
@@ -511,6 +528,11 @@ function initNavigation() {
 }
 
 function switchTab(tabId) {
+  if (tabId === 'shorts') {
+    openShortsFeedReel();
+    return;
+  }
+
   state.activeTab = tabId;
 
   // Update Bottom Nav active state
@@ -521,6 +543,7 @@ function switchTab(tabId) {
   // View sections visibility
   const viewHome = document.getElementById('view-home');
   const viewDownloads = document.getElementById('view-downloads');
+  const viewSubscriptions = document.getElementById('view-subscriptions');
   const viewHistory = document.getElementById('view-history');
   const viewSettings = document.getElementById('view-settings');
   const catBar = document.getElementById('category-bar');
@@ -528,6 +551,7 @@ function switchTab(tabId) {
 
   if (viewHome) viewHome.style.display = tabId === 'home' ? 'block' : 'none';
   if (viewDownloads) viewDownloads.style.display = tabId === 'downloads' ? 'block' : 'none';
+  if (viewSubscriptions) viewSubscriptions.style.display = tabId === 'subscriptions' ? 'block' : 'none';
   if (viewHistory) viewHistory.style.display = tabId === 'history' ? 'block' : 'none';
   if (viewSettings) viewSettings.style.display = tabId === 'settings' ? 'block' : 'none';
   
@@ -537,6 +561,8 @@ function switchTab(tabId) {
 
   if (tabId === 'downloads') {
     loadDownloadsList();
+  } else if (tabId === 'subscriptions') {
+    loadSubscriptionsView();
   } else if (tabId === 'history') {
     loadHistoryView();
   } else if (tabId === 'settings') {
@@ -895,7 +921,8 @@ function createShortsShelfElement(shortsList) {
         e.stopPropagation();
         openDownloadModal(shortObj);
       } else {
-        openVideoPlayer({ ...shortObj, is_short: true });
+        state.shortsList = shortsList;
+        openShortsModal(shortObj);
       }
     });
   });
@@ -977,24 +1004,15 @@ async function openVideoPlayer(video) {
       if (spinner) spinner.style.display = 'flex';
     };
 
-    // If direct stream fails (e.g. format unavailable), fall back to clean embed
+    // Native player direct fallback - ZERO YouTube iframe branding or watermarks!
     videoElem.onerror = (e) => {
-      console.warn(`[Player] Direct MP4 stream unavailable. Activating mobile fallback for ${video.id}...`, e);
-      if (videoElem) {
-        videoElem.style.display = 'none';
-      }
-      if (spinner) spinner.style.display = 'none';
-      if (iframeContainer) {
-        iframeContainer.style.display = 'block';
-        iframeContainer.innerHTML = `
-          <iframe 
-            id="metube-embed-frame"
-            src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1" 
-            style="width:100%; height:100%; border:none; background:#000;" 
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-            allowfullscreen>
-          </iframe>
-        `;
+      console.warn(`[Player] Primary stream buffering. Retrying direct stream for ${video.id}...`, e);
+      const directFallback = `${serverBase}/api/stream/${video.id}?direct=true`;
+      if (videoElem.src !== directFallback) {
+        videoElem.src = directFallback;
+        videoElem.play().catch(() => {});
+      } else {
+        if (spinner) spinner.style.display = 'none';
       }
     };
 
@@ -1300,9 +1318,13 @@ async function loadDownloadsList() {
 
     // Auto-save completed downloads to Android device storage
     state.downloads.forEach((item) => {
-      if (item.status === 'completed' && item.filename && !autoSavedJobIds.has(item.job_id)) {
+      const isReady = item.status === 'completed' || item.status === 'client_ready';
+      if (isReady && item.filename && !autoSavedJobIds.has(item.job_id)) {
         autoSavedJobIds.add(item.job_id);
-        const fileUrl = api.getFileDownloadUrl(item.filename);
+        const rawUrl = item.status === 'completed' 
+          ? api.getFileDownloadUrl(item.filename)
+          : (item.client_direct_url || item.download_url || '');
+        const fileUrl = rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`;
         triggerSaveToDevice(fileUrl, item.filename);
       }
     });
@@ -1348,11 +1370,14 @@ function renderDownloadsDOM(container, counter, downloadsList) {
   }
 
   container.innerHTML = downloadsList.map((item) => {
-    const isCompleted = item.status === 'completed';
+    const isCompleted = item.status === 'completed' || item.status === 'client_ready';
     const isProgressing = item.status === 'downloading' || item.status === 'queued' || item.status === 'converting';
     const isError = item.status === 'error';
-    const fileUrl = isCompleted ? api.getFileDownloadUrl(item.filename) : '#';
-    const pct = Math.round(item.percent ?? item.progress_percent ?? 0);
+    const rawUrl = item.status === 'completed'
+      ? api.getFileDownloadUrl(item.filename)
+      : (item.client_direct_url || item.download_url || '#');
+    const fileUrl = isCompleted ? (rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`) : '#';
+    const pct = Math.round(item.percent ?? item.progress_percent ?? (isCompleted ? 100 : 0));
     const errText = item.error ?? item.error_message ?? 'Download failed';
 
     return `
@@ -1704,6 +1729,326 @@ function initDiagnostics() {
 }
 
 // =========================================================
+// 11. SHORTS FULLSCREEN VERTICAL REEL CONTROLLER
+// =========================================================
+async function openShortsFeedReel() {
+  if (state.shortsList.length === 0) {
+    try {
+      const res = await api.getShorts(1);
+      if (res && res.shorts && res.shorts.length > 0) {
+        state.shortsList = res.shorts;
+      }
+    } catch (e) {
+      console.warn('Could not load shorts feed:', e);
+    }
+  }
+
+  if (state.shortsList.length === 0 && state.shorts.length > 0) {
+    state.shortsList = state.shorts;
+  }
+
+  if (state.shortsList.length > 0) {
+    openShortsModal(state.shortsList[0]);
+  } else {
+    alert('Loading Shorts... please ensure server is online.');
+  }
+}
+
+function openShortsModal(short) {
+  if (!short) return;
+  const modal = document.getElementById('shorts-modal');
+  const videoElem = document.getElementById('shorts-video-element');
+  const spinner = document.getElementById('shorts-spinner');
+  const avatarImg = document.getElementById('shorts-channel-avatar');
+  const channelNameElem = document.getElementById('shorts-channel-name');
+  const titleElem = document.getElementById('shorts-title');
+  const likeCountElem = document.getElementById('shorts-like-count');
+
+  if (!modal || !videoElem) return;
+
+  // Pause main player if active
+  const mainVideo = document.getElementById('html5-video-element');
+  if (mainVideo) mainVideo.pause();
+
+  let idx = state.shortsList.findIndex((s) => s.id === short.id);
+  if (idx < 0) {
+    state.shortsList.unshift(short);
+    idx = 0;
+  }
+  state.currentShortIndex = idx;
+
+  const currentShort = state.shortsList[idx];
+  modal.style.display = 'block';
+
+  const cName = currentShort.channel || 'Creator';
+  if (channelNameElem) channelNameElem.textContent = `@${cName.replace(/\s+/g, '')}`;
+  if (titleElem) titleElem.textContent = currentShort.title || '';
+  if (likeCountElem) likeCountElem.textContent = formatViews(currentShort.view_count || '15k');
+
+  if (avatarImg) {
+    avatarImg.src = getChannelAvatarUrl(cName, currentShort.channel_id);
+    avatarImg.onerror = () => { avatarImg.src = getAvatarFallback(cName); };
+  }
+
+  if (spinner) spinner.style.display = 'block';
+
+  const streamUrl = `${getServerUrl()}/api/stream/${currentShort.id}`;
+  videoElem.src = streamUrl;
+  videoElem.muted = state.isShortMuted;
+
+  videoElem.onloadeddata = () => {
+    if (spinner) spinner.style.display = 'none';
+  };
+  videoElem.onwaiting = () => {
+    if (spinner) spinner.style.display = 'block';
+  };
+  videoElem.onplaying = () => {
+    if (spinner) spinner.style.display = 'none';
+  };
+
+  videoElem.onerror = () => {
+    const directFallback = `${getServerUrl()}/api/stream/${currentShort.id}?direct=true`;
+    if (videoElem.src !== directFallback) {
+      videoElem.src = directFallback;
+      videoElem.play().catch(() => {});
+    } else {
+      if (spinner) spinner.style.display = 'none';
+    }
+  };
+
+  videoElem.play().catch((e) => {
+    console.log('[Shorts] Autoplay pending interaction:', e);
+    if (spinner) spinner.style.display = 'none';
+  });
+}
+
+function initShortsPlayer() {
+  const modal = document.getElementById('shorts-modal');
+  const videoElem = document.getElementById('shorts-video-element');
+  const closeBtn = document.getElementById('btn-close-shorts');
+  const soundBtn = document.getElementById('btn-shorts-sound');
+  const prevBtn = document.getElementById('btn-shorts-prev');
+  const nextBtn = document.getElementById('btn-shorts-next');
+  const likeBtn = document.getElementById('btn-shorts-like');
+  const downloadBtn = document.getElementById('btn-shorts-download');
+
+  closeBtn?.addEventListener('click', () => {
+    if (videoElem) {
+      videoElem.pause();
+      videoElem.src = '';
+    }
+    if (modal) modal.style.display = 'none';
+  });
+
+  soundBtn?.addEventListener('click', () => {
+    state.isShortMuted = !state.isShortMuted;
+    if (videoElem) videoElem.muted = state.isShortMuted;
+    if (soundBtn) soundBtn.textContent = state.isShortMuted ? '🔇' : '🔊';
+  });
+
+  const goToNextShort = () => {
+    if (state.shortsList.length === 0) return;
+    const nextIdx = (state.currentShortIndex + 1) % state.shortsList.length;
+    openShortsModal(state.shortsList[nextIdx]);
+  };
+
+  const goToPrevShort = () => {
+    if (state.shortsList.length === 0) return;
+    const prevIdx = (state.currentShortIndex - 1 + state.shortsList.length) % state.shortsList.length;
+    openShortsModal(state.shortsList[prevIdx]);
+  };
+
+  nextBtn?.addEventListener('click', goToNextShort);
+  prevBtn?.addEventListener('click', goToPrevShort);
+
+  likeBtn?.addEventListener('click', () => {
+    const isLiked = likeBtn.classList.toggle('active');
+    likeBtn.style.color = isLiked ? '#FF0000' : '#FFF';
+  });
+
+  downloadBtn?.addEventListener('click', () => {
+    const cur = state.shortsList[state.currentShortIndex];
+    if (cur) openDownloadModal(cur);
+  });
+
+  // Mobile swipe gestures
+  let touchStartY = 0;
+  modal?.addEventListener('touchstart', (e) => {
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+
+  modal?.addEventListener('touchend', (e) => {
+    const deltaY = e.changedTouches[0].clientY - touchStartY;
+    if (deltaY < -50) goToNextShort();
+    else if (deltaY > 50) goToPrevShort();
+  }, { passive: true });
+}
+
+// =========================================================
+// 12. YOUTUBE ACCOUNT / COOKIE AUTH & SUBSCRIPTIONS
+// =========================================================
+function openAuthModal() {
+  const modal = document.getElementById('auth-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  updateAuthStatusUI();
+}
+
+async function updateAuthStatusUI() {
+  const badge = document.getElementById('auth-status-badge');
+  const desc = document.getElementById('auth-status-desc');
+  const logoutBtn = document.getElementById('btn-logout-cookies');
+  const headerAvatar = document.getElementById('btn-header-avatar');
+
+  try {
+    const res = await api.getAuthStatus();
+    if (res.authenticated) {
+      if (badge) {
+        badge.textContent = 'Connected';
+        badge.style.background = '#00C853';
+        badge.style.color = '#FFF';
+      }
+      if (desc) desc.textContent = 'Account active via session cookies';
+      if (logoutBtn) logoutBtn.style.display = 'block';
+      if (headerAvatar) {
+        headerAvatar.style.background = '#00C853';
+        headerAvatar.style.borderColor = '#00E676';
+      }
+    } else {
+      if (badge) {
+        badge.textContent = 'Disconnected';
+        badge.style.background = '#333';
+        badge.style.color = '#aaa';
+      }
+      if (desc) desc.textContent = 'Paste YouTube cookies to sync account';
+      if (logoutBtn) logoutBtn.style.display = 'none';
+      if (headerAvatar) {
+        headerAvatar.style.background = 'var(--metube-red, #FF0000)';
+        headerAvatar.style.borderColor = 'transparent';
+      }
+    }
+  } catch (err) {
+    if (badge) badge.textContent = 'Unknown';
+  }
+}
+
+function initAuthModal() {
+  const modal = document.getElementById('auth-modal');
+  const closeBtn = document.getElementById('btn-close-auth-modal');
+  const saveBtn = document.getElementById('btn-save-cookies');
+  const logoutBtn = document.getElementById('btn-logout-cookies');
+  const input = document.getElementById('auth-cookies-input');
+  const syncBtn = document.getElementById('btn-sync-account');
+  const avatarBtn = document.getElementById('btn-header-avatar');
+
+  closeBtn?.addEventListener('click', () => {
+    if (modal) modal.style.display = 'none';
+  });
+
+  syncBtn?.addEventListener('click', openAuthModal);
+  avatarBtn?.addEventListener('click', openAuthModal);
+
+  saveBtn?.addEventListener('click', async () => {
+    const cookiesText = input ? input.value.trim() : '';
+    if (!cookiesText) {
+      alert('Please paste your YouTube cookies or cookies.txt content first.');
+      return;
+    }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Connecting...';
+
+    try {
+      await api.saveCookies(cookiesText);
+      alert('✅ YouTube account connected successfully!');
+      if (modal) modal.style.display = 'none';
+      if (input) input.value = '';
+      updateAuthStatusUI();
+      if (state.activeTab === 'subscriptions') {
+        loadSubscriptionsView();
+      }
+    } catch (err) {
+      alert(`Could not save cookies: ${err.message}`);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '🔗 Connect Account';
+    }
+  });
+
+  logoutBtn?.addEventListener('click', async () => {
+    if (!confirm('Disconnect your YouTube account cookies?')) return;
+    try {
+      await api.logout();
+      updateAuthStatusUI();
+      if (modal) modal.style.display = 'none';
+      if (state.activeTab === 'subscriptions') {
+        loadSubscriptionsView();
+      }
+    } catch (err) {
+      alert(`Logout error: ${err.message}`);
+    }
+  });
+
+  updateAuthStatusUI();
+}
+
+async function loadSubscriptionsView() {
+  const container = document.getElementById('subscriptions-feed-list');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="spinner-box">
+      <div class="spinner"></div>
+    </div>
+  `;
+
+  try {
+    const authStatus = await api.getAuthStatus().catch(() => ({ authenticated: false }));
+    if (!authStatus.authenticated) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
+          <div style="font-size:36px; margin-bottom:12px;">👤</div>
+          <div style="font-size:16px; font-weight:800; color:#FFF;">Connect Your YouTube Account</div>
+          <div style="font-size:12px; margin-top:6px; max-width:300px; margin-left:auto; margin-right:auto; line-height:18px;">
+            Sign in with your YouTube session cookies to see your real personalized Subscriptions feed, liked videos, and bypass bot throttling.
+          </div>
+          <button id="btn-login-subscriptions" style="margin-top:16px; background:var(--metube-red, #FF0000); color:#FFF; border:none; padding:10px 20px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer;">
+            Connect YouTube Account 🔗
+          </button>
+        </div>
+      `;
+      document.getElementById('btn-login-subscriptions')?.addEventListener('click', openAuthModal);
+      return;
+    }
+
+    const feed = await api.getUserFeed();
+    const videos = feed && feed.videos ? feed.videos : [];
+    if (videos.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
+          <div style="font-size:32px; margin-bottom:10px;">📺</div>
+          <div style="font-size:15px; font-weight:700; color:#FFF;">No subscription videos found</div>
+          <div style="font-size:12px; margin-top:4px;">Check back later or refresh your session cookies.</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = '';
+    videos.forEach((video) => {
+      container.appendChild(createVideoCardElement(video));
+    });
+  } catch (err) {
+    container.innerHTML = `
+      <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:12px;">
+        Could not load subscriptions feed. <button id="btn-retry-subs" style="margin-left:6px; background:#333; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Retry</button>
+      </div>
+    `;
+    document.getElementById('btn-retry-subs')?.addEventListener('click', loadSubscriptionsView);
+  }
+}
+
+// =========================================================
 // INITIALIZATION ON PAGE LOAD
 // =========================================================
 window.addEventListener('DOMContentLoaded', () => {
@@ -1713,6 +2058,8 @@ window.addEventListener('DOMContentLoaded', () => {
   initDownloadModal();
   initChannelModal();
   initActionsSheet();
+  initShortsPlayer();
+  initAuthModal();
   initDiagnostics();
   // Render subscribed creators story row
   renderSubscriptionsBar();

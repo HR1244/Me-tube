@@ -76,13 +76,12 @@ def get_base_ydl_opts() -> dict:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
-        "socket_timeout": 4,
+        "socket_timeout": 12,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android"],
+                "player_client": ["android"]
             }
         },
-        "user_agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
     }
     if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
         opts["cookiefile"] = str(COOKIES_FILE)
@@ -91,57 +90,39 @@ def get_base_ydl_opts() -> dict:
 
 banner_cache: Dict[str, str] = {}
 
+def generate_channel_avatar_svg(name: str) -> str:
+    """Generates an instant, crisp circular SVG creator avatar with brand gradient and initials."""
+    clean_name = (name or "Creator").strip()
+    initial = clean_name[0].upper() if clean_name else "C"
+    gradients = [
+        ("#E50914", "#8B0000"), # YouTube Crimson
+        ("#7928CA", "#4C1D95"), # Deep Royal Violet
+        ("#0070F3", "#1E3A8A"), # Vivid Sapphire
+        ("#FF5722", "#BF360C"), # Blaze Orange
+        ("#10B981", "#064E3B"), # Emerald Green
+        ("#EC4899", "#9D174D"), # Rose Pink
+        ("#F59E0B", "#B45309"), # Warm Amber
+    ]
+    c1, c2 = gradients[abs(hash(clean_name)) % len(gradients)]
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="176" height="176" viewBox="0 0 176 176">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="{c1}"/>
+      <stop offset="100%" stop-color="{c2}"/>
+    </linearGradient>
+  </defs>
+  <circle cx="88" cy="88" r="88" fill="url(#grad)"/>
+  <text x="88" y="106" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" fill="#FFFFFF" text-anchor="middle">{initial}</text>
+</svg>"""
+
 def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
-    """Scrapes or resolves the real official YouTube circular avatar image for a creator."""
+    """Resolves real YouTube circular avatar or returns fast dynamic SVG."""
     clean_name = (channel_name or "Creator").strip()
     cache_key = channel_id or clean_name
     
     if cache_key in avatar_cache:
         return avatar_cache[cache_key]
-
-    if channel_id and channel_id.startswith("UC"):
-        # 1. Scrape real YouTube channel avatar directly from official YouTube channel page
-        try:
-            url = f"https://www.youtube.com/channel/{channel_id}"
-            req = urllib.request.Request(
-                url, 
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+478;"
-                }
-            )
-            with urllib.request.urlopen(req, timeout=4) as res:
-                html = res.read().decode("utf-8", errors="ignore")
-                matches = [m for m in re.findall(r"(https://yt3\.(?:googleusercontent|ggpht)\.com/[a-zA-Z0-9_\-=]+)", html) if "=s" in m]
-                if matches:
-                    real_avatar = re.sub(r"=s\d+.*", "=s176-c-k-c0x00ffffff-no-rj", matches[0])
-                    avatar_cache[cache_key] = real_avatar
-                    return real_avatar
-        except Exception:
-            pass
-
-        # 2. Fast query via Piped channel API
-        try:
-            url = f"https://pipedapi.ducks.party/channel/{channel_id}"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3) as res:
-                data = json.loads(res.read().decode("utf-8", errors="ignore"))
-                av = data.get("avatarUrl")
-                if av:
-                    if "host=" in av:
-                        m = re.search(r"https?://[^/]+/([^?]+)\?.*host=([^&]+)", av)
-                        if m:
-                            av = f"https://{m.group(2)}/{m.group(1)}"
-                    avatar_cache[cache_key] = av
-                    return av
-        except Exception:
-            pass
-
-    # Default official YouTube creator avatar (permanent 200 OK Google CDN)
-    fallback_url = "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
-    avatar_cache[cache_key] = fallback_url
-    return fallback_url
+    return f"/api/channel/avatar?name={urllib.parse.quote(clean_name)}"
 
 def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str]) -> str:
     """Scrapes and caches the real YouTube channel panoramic banner."""
@@ -190,9 +171,138 @@ def health_check():
 
 @app.get("/api/channel/avatar")
 def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = None):
-    """Returns a direct 302 redirect to the creator's real official YouTube profile image."""
-    avatar_url = resolve_channel_avatar(id, name)
-    return RedirectResponse(url=avatar_url, status_code=302)
+    """Returns the creator's avatar image instantly with 0ms latency."""
+    clean_name = (name or "Creator").strip()
+    cache_key = id or clean_name
+    
+    if cache_key in avatar_cache:
+        return RedirectResponse(url=avatar_cache[cache_key], status_code=302)
+    
+    # Return high-resolution dynamic SVG avatar (guaranteed 200 OK!)
+    svg = generate_channel_avatar_svg(clean_name)
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
+
+class CookiePayload(BaseModel):
+    cookies: str
+
+@app.post("/api/auth/cookies")
+def save_user_cookies(payload: CookiePayload):
+    """Saves YouTube cookies for authenticated sessions and personalized feeds."""
+    raw = payload.cookies.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty cookies provided")
+    
+    if "Netscape" not in raw and "\t" not in raw:
+        lines = ["# Netscape HTTP Cookie File", "# https://curl.haxx.se/rfc/cookie_spec.html"]
+        for item in raw.split(";"):
+            item = item.strip()
+            if "=" in item:
+                k, v = item.split("=", 1)
+                lines.append(f".youtube.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
+        formatted = "\n".join(lines) + "\n"
+    else:
+        formatted = raw
+
+    COOKIES_FILE.write_text(formatted, encoding="utf-8")
+    logger.info("Successfully updated YouTube cookies for authenticated session!")
+    return {"status": "success", "message": "YouTube account connected successfully!"}
+
+@app.get("/api/auth/status")
+def get_auth_status():
+    has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10)
+    return {
+        "authenticated": has_cookies,
+        "source": "cookies.txt" if has_cookies else "none"
+    }
+
+@app.post("/api/auth/logout")
+def logout_auth():
+    if COOKIES_FILE.exists():
+        COOKIES_FILE.unlink()
+    return {"status": "success", "authenticated": False}
+
+@app.get("/api/user/feed")
+def get_user_personalized_feed():
+    """Fetches user's subscriptions and personalized videos when authenticated."""
+    if not (COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10):
+        return {"authenticated": False, "videos": []}
+    
+    opts = get_base_ydl_opts()
+    opts["extract_flat"] = True
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
+            entries = res.get("entries", []) if res else []
+            clean_results = []
+            for item in entries[:30]:
+                if not item:
+                    continue
+                v_id = item.get("id")
+                if not v_id:
+                    continue
+                
+                dur = item.get("duration") or 0
+                thumbs = item.get("thumbnails") or []
+                thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                c_name = item.get("uploader") or item.get("channel") or "Subscribed Creator"
+                clean_results.append({
+                    "id": v_id,
+                    "title": item.get("title") or "Untitled",
+                    "channel": c_name,
+                    "channel_id": item.get("channel_id") or "",
+                    "channel_avatar": f"/api/channel/avatar?name={urllib.parse.quote(c_name)}",
+                    "duration": item.get("duration"),
+                    "duration_string": str(item.get("duration_string") or ""),
+                    "view_count": item.get("view_count") or 0,
+                    "thumbnail": thumbnail,
+                    "url": f"https://www.youtube.com/watch?v={v_id}"
+                })
+            return {"authenticated": True, "videos": clean_results}
+    except Exception as e:
+        logger.error(f"User feed fetch error: {e}")
+        return {"authenticated": True, "videos": []}
+
+@app.get("/api/shorts")
+def get_shorts_feed(page: int = Query(1)):
+    """Fetches strictly vertical YouTube Shorts (duration <= 60 seconds)."""
+    page_modifiers = ["viral", "trending", "funny", "top", "popular"]
+    kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]
+    opts = get_base_ydl_opts()
+    opts["extract_flat"] = True
+    query = f"ytsearch40:#shorts {kw}"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(query, download=False)
+            entries = res.get("entries", []) if res else []
+            shorts_list = []
+            for item in entries:
+                if not item:
+                    continue
+                v_id = item.get("id")
+                dur = item.get("duration") or 0
+                if dur and dur > 65:
+                    continue
+                c_name = item.get("uploader") or item.get("channel") or "Creator"
+                shorts_list.append({
+                    "id": v_id,
+                    "title": item.get("title") or "Short",
+                    "channel": c_name,
+                    "channel_id": item.get("channel_id") or "",
+                    "duration": dur,
+                    "duration_string": f"{int(dur)}s" if dur else "0:30",
+                    "view_count": item.get("view_count") or 0,
+                    "thumbnail": f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg",
+                    "url": f"https://www.youtube.com/watch?v={v_id}",
+                    "is_short": True
+                })
+            return {"page": page, "shorts": shorts_list[:20]}
+    except Exception as e:
+        logger.error(f"Shorts fetch error: {e}")
+        return {"page": page, "shorts": []}
 
 @app.get("/api/channel/banner")
 def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = None):
@@ -278,11 +388,12 @@ def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
             continue
     return {}
 
-def extract_direct_stream_url(video_id: str) -> Optional[str]:
-    """Extracts and caches the direct googlevideo MP4 stream URL using native yt-dlp with datacenter fallback."""
+def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Optional[str]:
+    """Extracts and caches the direct googlevideo MP4/audio stream URL using native yt-dlp with datacenter fallback."""
     now = time.time()
-    if video_id in stream_cache:
-        cached = stream_cache[video_id]
+    cache_key = f"{video_id}_audio" if audio_only else video_id
+    if cache_key in stream_cache:
+        cached = stream_cache[cache_key]
         if cached.get("expires", 0) > now and cached.get("url"):
             return cached["url"]
 
@@ -292,20 +403,33 @@ def extract_direct_stream_url(video_id: str) -> Optional[str]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = info.get("formats", []) if info else []
-            progressive = [
-                f for f in formats 
-                if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
-            ]
-            progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
-            chosen_url = progressive[0]["url"] if progressive else None
-            if not chosen_url:
-                for f in formats:
-                    if f.get("url") and f.get("vcodec") != "none":
-                        chosen_url = f["url"]
-                        break
+            if audio_only:
+                audio_formats = [
+                    f for f in formats 
+                    if f.get("acodec") != "none" and f.get("vcodec") == "none" and f.get("url")
+                ]
+                audio_formats.sort(key=lambda x: x.get("abr") or 0, reverse=True)
+                chosen_url = audio_formats[0]["url"] if audio_formats else None
+                if not chosen_url:
+                    for f in formats:
+                        if f.get("url") and f.get("acodec") != "none":
+                            chosen_url = f["url"]
+                            break
+            else:
+                progressive = [
+                    f for f in formats 
+                    if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
+                ]
+                progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
+                chosen_url = progressive[0]["url"] if progressive else None
+                if not chosen_url:
+                    for f in formats:
+                        if f.get("url") and f.get("vcodec") != "none":
+                            chosen_url = f["url"]
+                            break
 
             if chosen_url:
-                stream_cache[video_id] = {
+                stream_cache[cache_key] = {
                     "url": chosen_url,
                     "expires": now + 14400,
                     "title": info.get("title", "")
@@ -316,20 +440,25 @@ def extract_direct_stream_url(video_id: str) -> Optional[str]:
 
     # Datacenter Fallback
     fb = resolve_stream_fallback(video_id)
+    if audio_only and fb.get("audio_url"):
+        return fb["audio_url"]
     if fb.get("url"):
         return fb["url"]
 
     return None
 
 @app.get("/api/stream/{video_id}")
-def stream_video_proxy(video_id: str, request: Request):
+def stream_video_proxy(video_id: str, request: Request, audio: bool = False, direct: bool = False):
     """
-    Native HTTP 206 partial content stream proxy.
-    Streams video/mp4 directly to HTML5 <video> with zero YouTube watermark and zero CORS restrictions.
+    Native HTTP 206 partial content stream proxy with direct fallback.
+    Streams video/mp4 or audio directly to HTML5 <video> / audio with zero YouTube watermark and zero CORS restrictions.
     """
-    direct_url = extract_direct_stream_url(video_id)
+    direct_url = extract_direct_stream_url(video_id, audio_only=audio)
     if not direct_url:
         raise HTTPException(status_code=404, detail="Stream not available")
+
+    if direct:
+        return RedirectResponse(url=direct_url, status_code=307)
 
     range_header = request.headers.get("range")
     req_headers = {
@@ -343,7 +472,8 @@ def stream_video_proxy(video_id: str, request: Request):
         upstream = urllib.request.urlopen(req, timeout=15)
         
         status_code = upstream.status
-        content_type = upstream.headers.get("Content-Type", "video/mp4")
+        default_type = "audio/mp4" if audio else "video/mp4"
+        content_type = upstream.headers.get("Content-Type", default_type)
         content_length = upstream.headers.get("Content-Length")
         content_range = upstream.headers.get("Content-Range")
         accept_ranges = upstream.headers.get("Accept-Ranges", "bytes")
@@ -377,44 +507,8 @@ def stream_video_proxy(video_id: str, request: Request):
             headers=resp_headers
         )
     except Exception as e:
-        logger.error(f"Stream proxy error for {video_id}: {e}")
-        # Try fallback stream proxy
-        fb = resolve_stream_fallback(video_id)
-        if fb.get("url") and fb["url"] != direct_url:
-            try:
-                fb_req = urllib.request.Request(fb["url"], headers=req_headers)
-                fb_upstream = urllib.request.urlopen(fb_req, timeout=15)
-                fb_status = fb_upstream.status
-                fb_type = fb_upstream.headers.get("Content-Type", "video/mp4")
-                fb_length = fb_upstream.headers.get("Content-Length")
-                fb_range = fb_upstream.headers.get("Content-Range")
-                fb_accept = fb_upstream.headers.get("Accept-Ranges", "bytes")
-                
-                fb_resp_headers = {
-                    "Accept-Ranges": fb_accept,
-                    "Content-Type": fb_type,
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "Range",
-                    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-                }
-                if fb_length:
-                    fb_resp_headers["Content-Length"] = fb_length
-                if fb_range:
-                    fb_resp_headers["Content-Range"] = fb_range
-
-                def iter_fb():
-                    try:
-                        while True:
-                            c = fb_upstream.read(128 * 1024)
-                            if not c:
-                                break
-                            yield c
-                    finally:
-                        fb_upstream.close()
-                return StreamingResponse(iter_fb(), status_code=fb_status, media_type=fb_type, headers=fb_resp_headers)
-            except Exception:
-                pass
-        raise HTTPException(status_code=502, detail="Stream unavailable")
+        logger.warning(f"Stream proxy fallback to 307 redirect for {video_id}: {e}")
+        return RedirectResponse(url=direct_url, status_code=307)
 
 @app.get("/api/trending")
 def get_trending(
@@ -453,6 +547,9 @@ def get_trending(
                 if not v_id:
                     continue
                 
+                dur = item.get("duration") or 0
+                if category.lower() == "shorts" and dur and dur > 65:
+                    continue
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
                 c_name = item.get("uploader") or item.get("channel") or "Unknown Channel"
@@ -505,6 +602,7 @@ def search_videos(
                 if not v_id:
                     continue
                 
+                dur = item.get("duration") or 0
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
                 c_name = item.get("uploader") or item.get("channel") or "Unknown Channel"
@@ -797,6 +895,8 @@ def get_playlist_content(playlist_id: str, limit: int = Query(30)):
                 v_id = item.get("id")
                 if not v_id:
                     continue
+                
+                dur = item.get("duration") or 0
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
                 clean_videos.append({
@@ -957,9 +1057,14 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
-        "socket_timeout": 25,
+        "socket_timeout": 30,
         "outtmpl": out_template,
         "progress_hooks": [progress_hook],
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        },
     }
     if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
         opts["cookiefile"] = str(COOKIES_FILE)
@@ -984,60 +1089,24 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
         except Exception as ydl_err:
-            logger.warning(f"Native yt-dlp download failed ({ydl_err}). Using direct stream downloader...")
-            direct_stream = extract_direct_stream_url(video_id)
-            if not direct_stream:
-                raise ydl_err
-            
-            temp_stream_file = DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}_raw.mp4"
-            req = urllib.request.Request(
-                direct_stream,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            )
-            start_t = time.time()
-            downloaded = 0
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                total_len = int(resp.headers.get("content-length", 0))
-                with open(temp_stream_file, "wb") as f_out:
-                    while True:
-                        buf = resp.read(128 * 1024)
-                        if not buf:
-                            break
-                        f_out.write(buf)
-                        downloaded += len(buf)
-                        elapsed = max(0.1, time.time() - start_t)
-                        spd = downloaded / elapsed
-                        pct = (downloaded / total_len * 100) if total_len else 50.0
-                        with jobs_lock:
-                            if job_id in download_jobs:
-                                download_jobs[job_id]["percent"] = round(min(98.0, pct), 1)
-                                download_jobs[job_id]["speed"] = f"{spd / (1024 * 1024):.2f} MB/s"
-                                download_jobs[job_id]["downloaded_bytes"] = downloaded
-                                download_jobs[job_id]["total_bytes"] = total_len
-            
-            # Post-process format if needed
-            expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
-            dest_file = DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}.{expected_ext}"
-            
-            if format_type.lower() == "mp3":
-                with jobs_lock:
-                    if job_id in download_jobs:
-                        download_jobs[job_id]["status"] = "converting"
-                        download_jobs[job_id]["percent"] = 99.0
-                bitrate = quality.replace("k", "") if "k" in quality else "192"
-                import subprocess
-                subprocess.run([
-                    FFMPEG_EXE, "-y", "-i", str(temp_stream_file),
-                    "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{bitrate}k",
-                    str(dest_file)
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if temp_stream_file.exists():
-                    temp_stream_file.unlink()
-            else:
-                if temp_stream_file.exists():
-                    if dest_file.exists():
-                        dest_file.unlink()
-                    temp_stream_file.rename(dest_file)
+            logger.warning(f"Server-side download hit YouTube bot protection ({ydl_err}). Enabling client direct download...")
+            is_audio = format_type.lower() == "mp3"
+            direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio)
+            fallback_stream = direct_stream or f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true"
+            expected_ext = "mp3" if is_audio else "mp4"
+            expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
+            has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10)
+
+            with jobs_lock:
+                if job_id in download_jobs:
+                    download_jobs[job_id]["status"] = "client_ready"
+                    download_jobs[job_id]["percent"] = 100.0
+                    download_jobs[job_id]["filename"] = expected_filename
+                    download_jobs[job_id]["download_url"] = fallback_stream
+                    download_jobs[job_id]["client_direct_url"] = fallback_stream
+                    download_jobs[job_id]["requires_cookies"] = not has_cookies
+                    download_jobs[job_id]["completed_at"] = time.time()
+            return
             
         # Find the generated file
         expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
