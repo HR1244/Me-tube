@@ -1,7 +1,7 @@
 # MeTube Studio & Standalone Android APK Guide (No Expo)
 
-Your live backend server is deployed and tested:
-🔗 **`https://me-tube-o48b.onrender.com`** (Status: **200 OK**, FFmpeg Loaded, 20 trending videos loaded)
+Your live backend server is deployed and tested on Oracle Cloud Always Free:
+🔗 **`http://130.210.49.14`** (Status: **200 OK**, FFmpeg Loaded, 24/7 Always Online)
 
 The new MeTube standalone mobile application has been built from scratch **without Expo** to resolve:
 1. **Top Taskbar / Header Overlap**: Full safe-area inset adaptation (`--safe-top`) ensuring the search bar, hamburger button, and action controls are 100% clickable and never blocked by phone notches or status bars.

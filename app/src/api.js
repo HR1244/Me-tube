@@ -1,6 +1,6 @@
 // MeTube High-Performance API Client
 const STORAGE_KEY = 'metube_server_url';
-export const DEFAULT_SERVER_URL = 'https://accompanying-provincial-musician-efficiency.trycloudflare.com';
+export const DEFAULT_SERVER_URL = 'http://130.210.49.14';
 
 export function getServerUrl() {
   const saved = localStorage.getItem(STORAGE_KEY);
