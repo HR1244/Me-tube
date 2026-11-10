@@ -55,7 +55,8 @@ const state = {
   feedPage: 1,
   isLoadingFeed: false,
   isLoadingMore: false,
-  hasMore: true
+  hasMore: true,
+  playbackEngine: 'youtube' // 'youtube' (fast/HD/embed) or 'native' (HTML5 direct stream)
 };
 
 // Formatting helpers
@@ -110,10 +111,14 @@ export function getSvgAvatarDataUrl(name) {
   for (let i = 0; i < clean.length; i++) hash = clean.charCodeAt(i) + ((hash << 5) - hash);
   const [c1, c2] = colors[Math.abs(hash) % colors.length];
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></linearGradient></defs><circle cx="50" cy="50" r="50" fill="url(#g)"/><text x="50" y="64" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="46" font-weight="700" fill="#FFF" text-anchor="middle">${initial}</text></svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  try {
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  } catch (_) {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }
 }
 
-function getAvatarFallback(channelName) {
+export function getAvatarFallback(channelName) {
   const clean = (channelName || 'Creator').trim();
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
@@ -121,13 +126,20 @@ function getAvatarFallback(channelName) {
   return getSvgAvatarDataUrl(clean);
 }
 
-function getChannelAvatarUrl(channelName, channelId) {
+export function resolveAvatarUrl(avatar, channelName, channelId) {
   const clean = (channelName || 'Creator').trim();
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  const server = getServerUrl();
-  return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}`;
+  if (avatar && avatar.startsWith('http')) return avatar;
+  if (avatar && avatar.startsWith('/')) {
+    return `${getServerUrl()}${avatar}`;
+  }
+  return getAvatarFallback(clean);
+}
+
+function getChannelAvatarUrl(channelName, channelId) {
+  return resolveAvatarUrl(null, channelName, channelId);
 }
 
 function getChannelBannerUrl(channelName, channelId) {
@@ -203,7 +215,7 @@ function renderSubscriptionsBar() {
   }
 
   listElem.innerHTML = subs.map((sub, i) => {
-    const avatar = getChannelAvatarUrl(sub.name, sub.id);
+    const avatar = resolveAvatarUrl(sub.avatar, sub.name, sub.id);
     const fallback = getAvatarFallback(sub.name);
     return `
       <div class="sub-story-item ${i < 3 ? 'has-unread' : ''}" data-channel-id="${sub.id || ''}" data-channel-name="${sub.name}">
@@ -808,9 +820,7 @@ function createVideoCardElement(video) {
   const durationText = video.duration_string || formatDuration(video.duration);
   const viewsText = formatViews(video.view_count);
   const channelName = video.channel || 'Creator';
-  const avatarUrl = video.channel_avatar
-    ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
-    : getChannelAvatarUrl(channelName, video.channel_id);
+  const avatarUrl = resolveAvatarUrl(video.channel_avatar, channelName, video.channel_id);
   const fallbackAvatar = getAvatarFallback(channelName);
   const card = document.createElement('article');
   card.className = 'video-card';
@@ -969,9 +979,7 @@ async function openVideoPlayer(video) {
   }
   
   // Real Channel Avatar Image with crisp graphic fallback
-  const avatarUrl = video.channel_avatar
-    ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
-    : getChannelAvatarUrl(cName, video.channel_id);
+  const avatarUrl = resolveAvatarUrl(video.channel_avatar, cName, video.channel_id);
   channelAvatarImg.src = avatarUrl;
   channelAvatarImg.onerror = () => {
     channelAvatarImg.src = getAvatarFallback(cName);
@@ -979,48 +987,11 @@ async function openVideoPlayer(video) {
 
   descElem.textContent = video.description || '';
 
-  // Native SnapTube-style Player: Pure HTML5 Video without ANY YouTube logo, watermark, or YouTube settings!
-  if (iframeContainer) {
-    iframeContainer.style.display = 'none';
-    iframeContainer.innerHTML = '';
-  }
-  if (spinner) spinner.style.display = 'flex';
+  // Setup Player Engine (YouTube High-Speed or Native Stream)
+  setupPlayerPlayback(video);
 
-  const serverBase = getServerUrl();
-  const streamUrl = `${serverBase}/api/stream/${video.id}`;
-
-  if (videoElem) {
-    videoElem.style.display = 'block';
-    videoElem.src = streamUrl;
-
-    const onPlaying = () => {
-      console.log(`[Player] Native video stream playing for ${video.id}`);
-      if (spinner) spinner.style.display = 'none';
-    };
-
-    videoElem.onloadeddata = onPlaying;
-    videoElem.onplaying = onPlaying;
-    videoElem.onwaiting = () => {
-      if (spinner) spinner.style.display = 'flex';
-    };
-
-    // Native player direct fallback - ZERO YouTube iframe branding or watermarks!
-    videoElem.onerror = (e) => {
-      console.warn(`[Player] Primary stream buffering. Retrying direct stream for ${video.id}...`, e);
-      const directFallback = `${serverBase}/api/stream/${video.id}?direct=true`;
-      if (videoElem.src !== directFallback) {
-        videoElem.src = directFallback;
-        videoElem.play().catch(() => {});
-      } else {
-        if (spinner) spinner.style.display = 'none';
-      }
-    };
-
-    videoElem.play().catch((err) => {
-      console.log(`[Player] Autoplay waiting for user gesture or buffering: ${err}`);
-      if (spinner) spinner.style.display = 'none';
-    });
-  }
+  // Load Suggested Videos immediately
+  loadSuggestedVideos(video);
 
   // Fetch full details in background for follower count and description
   try {
@@ -1038,12 +1009,107 @@ async function openVideoPlayer(video) {
   }
 }
 
+let nativeBufferWatchdog = null;
+
+function setupPlayerPlayback(video) {
+  if (!video || !video.id) return;
+  const iframeContainer = document.getElementById('embed-iframe-container');
+  const videoElem = document.getElementById('html5-video-element');
+  const spinner = document.getElementById('player-video-spinner');
+  const engineLabel = document.getElementById('engine-toggle-label');
+
+  if (nativeBufferWatchdog) {
+    clearTimeout(nativeBufferWatchdog);
+    nativeBufferWatchdog = null;
+  }
+
+  if (state.playbackEngine === 'youtube') {
+    if (engineLabel) engineLabel.textContent = '⚡ YouTube Engine';
+    if (videoElem) {
+      videoElem.pause();
+      videoElem.src = '';
+      videoElem.style.display = 'none';
+    }
+    if (spinner) spinner.style.display = 'none';
+
+    if (iframeContainer) {
+      iframeContainer.style.display = 'block';
+      iframeContainer.innerHTML = `
+        <iframe 
+          id="youtube-embed-player"
+          src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1&controls=1"
+          title="${(video.title || 'Video').replace(/"/g, '&quot;')}"
+          frameborder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen
+          style="width:100%; height:100%; border:none; display:block;"
+        ></iframe>
+      `;
+    }
+    console.log(`[Player] YouTube Engine activated for ${video.id}`);
+  } else {
+    // Native HTML5 Mode
+    if (engineLabel) engineLabel.textContent = '🎬 Native Stream';
+    if (iframeContainer) {
+      iframeContainer.style.display = 'none';
+      iframeContainer.innerHTML = '';
+    }
+    if (spinner) spinner.style.display = 'flex';
+
+    if (videoElem) {
+      videoElem.style.display = 'block';
+      const serverBase = getServerUrl();
+      const streamUrl = `${serverBase}/api/stream/${video.id}`;
+      videoElem.src = streamUrl;
+
+      const onPlaying = () => {
+        console.log(`[Player] Native video stream playing for ${video.id}`);
+        if (spinner) spinner.style.display = 'none';
+        if (nativeBufferWatchdog) {
+          clearTimeout(nativeBufferWatchdog);
+          nativeBufferWatchdog = null;
+        }
+      };
+
+      videoElem.onloadeddata = onPlaying;
+      videoElem.onplaying = onPlaying;
+      videoElem.onwaiting = () => {
+        if (spinner) spinner.style.display = 'flex';
+      };
+
+      const fallbackToYouTube = (reason) => {
+        console.warn(`[Player] Native stream fallback (${reason}). Switching to YouTube Engine...`);
+        state.playbackEngine = 'youtube';
+        setupPlayerPlayback(video);
+      };
+
+      videoElem.onerror = () => {
+        fallbackToYouTube('Stream error / 403');
+      };
+
+      // Watchdog: If native playback doesn't start within 5s, switch to YouTube engine
+      nativeBufferWatchdog = setTimeout(() => {
+        if (videoElem.paused || videoElem.readyState < 2) {
+          fallbackToYouTube('Buffering timeout (>5s)');
+        }
+      }, 5000);
+
+      videoElem.play().catch((err) => {
+        console.log(`[Player] Autoplay waiting or error: ${err}`);
+      });
+    }
+  }
+}
+
 async function loadSuggestedVideos(currentVideo) {
   const container = document.getElementById('player-suggested-list');
   if (!container) return;
 
-  // Clean container without jarring second spinner (Prevents double loading!)
-  container.innerHTML = '';
+  container.innerHTML = `
+    <div style="display:flex; justify-content:center; padding:25px;">
+      <div class="spinner" style="width:24px; height:24px;"></div>
+    </div>
+  `;
 
   try {
     let searchTerms = currentVideo.channel || '';
@@ -1057,19 +1123,20 @@ async function loadSuggestedVideos(currentVideo) {
       if (cleanKeywords) searchTerms = cleanKeywords;
     }
 
-    const res = await api.search(searchTerms || 'music', 1);
-    const list = res && res.videos ? res.videos.filter((v) => v.id !== currentVideo.id) : [];
+    let list = [];
+    try {
+      const res = await api.search(searchTerms || 'trending', 1);
+      list = res && res.videos ? res.videos.filter((v) => v.id !== currentVideo.id) : [];
+    } catch (_) {}
 
     if (list.length === 0) {
       const fallback = await api.getTrending('all', 1);
-      const fallbackList = fallback && fallback.videos ? fallback.videos.filter((v) => v.id !== currentVideo.id) : [];
-      renderSuggestedVideos(fallbackList.slice(0, 8));
-      return;
+      list = fallback && fallback.videos ? fallback.videos.filter((v) => v.id !== currentVideo.id) : [];
     }
 
     renderSuggestedVideos(list.slice(0, 10));
   } catch (err) {
-    container.innerHTML = '';
+    container.innerHTML = '<div style="padding:15px; text-align:center; color:var(--text-gray); font-size:12px;">No related videos found</div>';
   }
 }
 
@@ -1161,6 +1228,13 @@ function initPlayerControls() {
     videoElem.style.opacity = state.isAudioMode ? '0.05' : '1';
   });
 
+  document.getElementById('btn-engine-toggle')?.addEventListener('click', () => {
+    state.playbackEngine = state.playbackEngine === 'youtube' ? 'native' : 'youtube';
+    if (state.activeVideo) {
+      setupPlayerPlayback(state.activeVideo);
+    }
+  });
+
   downloadBtn?.addEventListener('click', () => {
     if (state.activeVideo) openDownloadModal(state.activeVideo);
   });
@@ -1231,6 +1305,20 @@ function initDownloadModal() {
     });
   });
 
+  // Fast Direct Browser Download (100% Reliable without server proxy/bot blocks)
+  document.getElementById('btn-fast-browser-download')?.addEventListener('click', () => {
+    if (!state.activeVideo) return;
+    const vId = state.activeVideo.id;
+    const directWebUrl = `https://y2mate.is/en/?url=https://www.youtube.com/watch?v=${vId}`;
+    console.log(`[Download] Opening fast direct browser download for ${vId}`);
+    if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
+      window.open(directWebUrl, '_system');
+    } else {
+      window.open(directWebUrl, '_blank');
+    }
+    modal.classList.remove('open');
+  });
+
   // Start download click
   confirmBtn?.addEventListener('click', async () => {
     if (!state.activeVideo) return;
@@ -1265,20 +1353,30 @@ function initDownloadModal() {
 const autoSavedJobIds = new Set();
 let downloadPollTimer = null;
 
-function triggerSaveToDevice(url, filename) {
+export function triggerSaveToDevice(url, filename) {
   console.log(`[Download] Triggering device download for ${filename}: ${url}`);
+  const absoluteUrl = url.startsWith('http') ? url : `${getServerUrl()}${url}`;
+
+  // If running in Capacitor Android environment, trigger native download intent
+  if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
+    console.log('[Download] Capacitor environment detected. Opening via system DownloadManager:', absoluteUrl);
+    window.open(absoluteUrl, '_system');
+    return;
+  }
+
+  // Standard Browser download
   try {
     const a = document.createElement('a');
-    a.href = url;
+    a.href = absoluteUrl;
     a.download = filename || 'download';
-    a.target = '_self';
+    a.target = '_blank';
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
       if (document.body.contains(a)) document.body.removeChild(a);
-    }, 500);
+    }, 1000);
   } catch (_) {
-    window.location.href = url;
+    window.open(absoluteUrl, '_blank');
   }
 }
 
@@ -1403,8 +1501,11 @@ function renderDownloadsDOM(container, counter, downloadsList) {
         ` : ''}
 
         ${isError ? `
-          <div style="margin-top:8px; font-size:11px; color:#FF5252; background:rgba(255,82,82,0.1); padding:6px 10px; border-radius:6px;">
-            ${errText}
+          <div style="margin-top:8px; font-size:11px; color:#FF5252; background:rgba(255,82,82,0.1); padding:8px 10px; border-radius:6px;">
+            <div style="margin-bottom:4px;">${errText}</div>
+            <button class="btn-fast-dl-card" data-video-id="${item.video_id}" style="margin-top:4px; background:#272727; color:#FFF; border:1px solid #444; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; width:100%; cursor:pointer;">
+              ⚡ Download via Fast Browser Direct
+            </button>
           </div>
         ` : ''}
 
@@ -1427,6 +1528,21 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       triggerSaveToDevice(btn.dataset.url, btn.dataset.filename);
+    });
+  });
+
+  // Attach Fast DL event on error cards
+  container.querySelectorAll('.btn-fast-dl-card').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const vId = btn.dataset.videoId;
+      if (!vId) return;
+      const directWebUrl = `https://y2mate.is/en/?url=https://www.youtube.com/watch?v=${vId}`;
+      if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
+        window.open(directWebUrl, '_system');
+      } else {
+        window.open(directWebUrl, '_blank');
+      }
     });
   });
 
@@ -1492,9 +1608,7 @@ async function openChannelExplorer(video) {
   }
   
   // Set real channel avatar image with graphic fallback
-  const avatarUrl = video.channel_avatar
-    ? (video.channel_avatar.startsWith('http') ? video.channel_avatar : `${getServerUrl()}${video.channel_avatar}`)
-    : getChannelAvatarUrl(channelName, channelId);
+  const avatarUrl = resolveAvatarUrl(video.channel_avatar, channelName, channelId);
   avatarBigImg.src = avatarUrl;
   avatarBigImg.onerror = () => {
     avatarBigImg.src = getAvatarFallback(channelName);
@@ -1786,7 +1900,7 @@ function openShortsModal(short) {
   if (likeCountElem) likeCountElem.textContent = formatViews(currentShort.view_count || '15k');
 
   if (avatarImg) {
-    avatarImg.src = getChannelAvatarUrl(cName, currentShort.channel_id);
+    avatarImg.src = resolveAvatarUrl(currentShort.channel_avatar, cName, currentShort.channel_id);
     avatarImg.onerror = () => { avatarImg.src = getAvatarFallback(cName); };
   }
 

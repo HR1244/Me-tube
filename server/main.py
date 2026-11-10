@@ -183,7 +183,10 @@ def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = 
     return Response(
         content=svg,
         media_type="image/svg+xml",
-        headers={"Cache-Control": "public, max-age=86400"}
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*"
+        }
     )
 
 class CookiePayload(BaseModel):
