@@ -4,11 +4,21 @@ import android.os.Bundle;
 import android.webkit.WebView;
 import android.webkit.WebSettings;
 import android.webkit.DownloadListener;
+import android.webkit.CookieManager;
+import android.webkit.WebViewClient;
 import android.content.Intent;
 import android.net.Uri;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.os.Environment;
 import android.webkit.URLUtil;
+import android.widget.LinearLayout;
+import android.widget.RelativeLayout;
+import android.widget.TextView;
+import android.widget.Button;
+import android.widget.Toast;
+import android.graphics.Typeface;
+import org.json.JSONObject;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -61,6 +71,112 @@ public class MainActivity extends BridgeActivity {
                 }
             }, "AndroidDownloader");
 
+            // Expose Direct In-App 1-Tap Google / YouTube Sign-In Bridge
+            webView.addJavascriptInterface(new Object() {
+                @android.webkit.JavascriptInterface
+                public void launchYouTubeLogin() {
+                    runOnUiThread(() -> {
+                        try {
+                            Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+
+                            LinearLayout root = new LinearLayout(MainActivity.this);
+                            root.setOrientation(LinearLayout.VERTICAL);
+                            root.setBackgroundColor(0xFF0F0F0F);
+
+                            // Header
+                            RelativeLayout header = new RelativeLayout(MainActivity.this);
+                            header.setBackgroundColor(0xFF202020);
+                            header.setPadding(32, 28, 32, 28);
+
+                            TextView title = new TextView(MainActivity.this);
+                            title.setText("Sign in to YouTube / Google");
+                            title.setTextColor(0xFFFFFFFF);
+                            title.setTextSize(16);
+                            title.setTypeface(null, Typeface.BOLD);
+                            RelativeLayout.LayoutParams titleParams = new RelativeLayout.LayoutParams(
+                                RelativeLayout.LayoutParams.WRAP_CONTENT,
+                                RelativeLayout.LayoutParams.WRAP_CONTENT
+                            );
+                            titleParams.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
+                            titleParams.addRule(RelativeLayout.CENTER_VERTICAL);
+                            title.setLayoutParams(titleParams);
+
+                            Button closeBtn = new Button(MainActivity.this);
+                            closeBtn.setText("✕ Cancel");
+                            closeBtn.setTextColor(0xFFFF4444);
+                            closeBtn.setBackgroundColor(0x00000000);
+                            closeBtn.setTextSize(15);
+                            RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
+                                RelativeLayout.LayoutParams.WRAP_CONTENT,
+                                RelativeLayout.LayoutParams.WRAP_CONTENT
+                            );
+                            btnParams.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
+                            btnParams.addRule(RelativeLayout.CENTER_VERTICAL);
+                            closeBtn.setLayoutParams(btnParams);
+                            closeBtn.setOnClickListener(v -> dialog.dismiss());
+
+                            header.addView(title);
+                            header.addView(closeBtn);
+                            root.addView(header);
+
+                            // Login WebView
+                            WebView authView = new WebView(MainActivity.this);
+                            authView.setLayoutParams(new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.MATCH_PARENT
+                            ));
+                            WebSettings ws = authView.getSettings();
+                            ws.setJavaScriptEnabled(true);
+                            ws.setDomStorageEnabled(true);
+                            ws.setDatabaseEnabled(true);
+                            // Mobile Chrome User-Agent so Google allows login
+                            ws.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36");
+
+                            authView.setWebViewClient(new WebViewClient() {
+                                private boolean captured = false;
+
+                                @Override
+                                public void onPageFinished(WebView view, String url) {
+                                    super.onPageFinished(view, url);
+                                    if (captured) return;
+
+                                    CookieManager cm = CookieManager.getInstance();
+                                    String cookieStr = cm.getCookie("https://youtube.com");
+                                    if (cookieStr == null || cookieStr.isEmpty()) {
+                                        cookieStr = cm.getCookie(url);
+                                    }
+
+                                    if (cookieStr != null && (cookieStr.contains("SAPISID") || cookieStr.contains("LOGIN_INFO") || cookieStr.contains("SID="))) {
+                                        captured = true;
+                                        final String finalCookies = cookieStr;
+                                        runOnUiThread(() -> {
+                                            if (getBridge() != null && getBridge().getWebView() != null) {
+                                                String js = "if (window.handleNativeYouTubeLogin) { window.handleNativeYouTubeLogin(" + JSONObject.quote(finalCookies) + "); }";
+                                                getBridge().getWebView().evaluateJavascript(js, null);
+                                            }
+                                            Toast.makeText(MainActivity.this, "YouTube Account Connected!", Toast.LENGTH_SHORT).show();
+                                            dialog.dismiss();
+                                        });
+                                    }
+                                }
+                            });
+
+                            authView.loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F");
+                            root.addView(authView);
+                            dialog.setContentView(root);
+                            dialog.show();
+                        } catch (Exception e) {
+                            Toast.makeText(MainActivity.this, "Could not open sign-in: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+
+                @android.webkit.JavascriptInterface
+                public boolean isNativeAuthAvailable() {
+                    return true;
+                }
+            }, "AndroidAuth");
+
             // Native Android Download Manager listener for file downloads
             webView.setDownloadListener(new DownloadListener() {
                 @Override
@@ -92,6 +208,47 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
             });
+        }
+
+        handleIncomingIntent(getIntent());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        handleIncomingIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
+    }
+
+    private void handleIncomingIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        String type = intent.getType();
+
+        String target = null;
+        if (Intent.ACTION_SEND.equals(action) && "text/plain".equals(type)) {
+            target = intent.getStringExtra(Intent.EXTRA_TEXT);
+        } else if (Intent.ACTION_VIEW.equals(action)) {
+            Uri data = intent.getData();
+            if (data != null) {
+                target = data.toString();
+            }
+        }
+
+        if (target != null && !target.isEmpty()) {
+            final String finalUrl = target;
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().postDelayed(() -> {
+                    String js = "if (window.handleSharedYouTubeUrl) { window.handleSharedYouTubeUrl(" + JSONObject.quote(finalUrl) + "); }";
+                    getBridge().getWebView().evaluateJavascript(js, null);
+                }, 1200);
+            }
         }
     }
 

@@ -102,6 +102,7 @@
                   <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
                 </button>
                 <input type="text" id="search-input" class="search-input" placeholder="Search or paste YouTube link..." autocomplete="off" />
+                <button type="button" id="btn-paste-search-link" class="search-paste-btn" title="Paste YouTube Link" style="background:none; border:none; color:var(--text-gray); padding:0 8px; cursor:pointer; font-size:15px; display:flex; align-items:center;">📋</button>
                 <button type="button" id="btn-clear-search" class="search-clear-btn" style="display:none;" title="Clear">✕</button>
                 <button type="submit" class="search-submit-btn" title="Search">
                   <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -655,6 +656,17 @@
                     Connect your YouTube account to unlock your <strong style="color:#FFF;">personalized Subscriptions feed</strong>, <strong style="color:#FFF;">liked videos</strong>, and <strong style="color:#FFF;">full-speed MP3 / MP4 downloads</strong> without bot checks.
                   </div>
 
+                  <button id="btn-native-google-login" style="width:100%; background:#4285F4; color:#FFF; border:none; padding:12px; border-radius:10px; font-weight:800; font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px; box-shadow: 0 4px 12px rgba(66, 133, 244, 0.35);">
+                    <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#FFF" d="M21.35 11.1h-9.17v2.98h5.27c-.23 1.25-.94 2.31-2 3.02v2.51h3.24c1.9-1.75 2.99-4.32 2.99-7.41 0-.71-.07-1.4-.23-2.1z"/><path fill="#FFF" d="M12.18 22c2.7 0 4.96-.9 6.62-2.43l-3.24-2.51c-.9.6-2.04.96-3.38.96-2.6 0-4.8-1.76-5.59-4.12H3.24v2.59C4.89 19.74 8.28 22 12.18 22z"/><path fill="#FFF" d="M6.59 13.9c-.2-.6-.31-1.24-.31-1.9s.11-1.3.31-1.9V7.51H3.24C2.58 8.82 2.2 10.36 2.2 12s.38 3.18 1.04 4.49l3.35-2.59z"/><path fill="#FFF" d="M12.18 6.02c1.47 0 2.79.51 3.82 1.5l2.87-2.87C17.13 3.08 14.87 2.04 12.18 2.04 8.28 2.04 4.89 4.3 3.24 7.51l3.35 2.59c.79-2.36 2.99-4.12 5.59-4.12z"/></svg>
+                    <span>Sign in with Google / YouTube (1-Tap)</span>
+                  </button>
+
+                  <div style="display:flex; align-items:center; gap:10px; margin:2px 0;">
+                    <div style="flex:1; height:1px; background:#333;"></div>
+                    <span style="font-size:11px; color:#777; font-weight:700;">OR IMPORT COOKIES</span>
+                    <div style="flex:1; height:1px; background:#333;"></div>
+                  </div>
+
                   <div style="display:flex; flex-direction:column; gap:6px;">
                     <label style="font-size:12px; font-weight:700; color:#FFF;">Paste YouTube Cookies or Session Data:</label>
                     <textarea id="auth-cookies-input" rows="5" placeholder="Paste Netscape cookies.txt or cookie string (e.g. SID=...; HSID=...)" style="width:100%; background:#111; color:#eee; border:1px solid #333; border-radius:8px; padding:10px; font-family:monospace; font-size:11px; resize:vertical;"></textarea>
@@ -693,6 +705,7 @@
                 <!-- Vertical Video Element (9:16 Aspect Ratio) -->
                 <video id="shorts-video-element" playsinline loop style="width:100%; height:100%; object-fit:cover; background:#000;"></video>
                 <div id="shorts-spinner" style="position:absolute; display:none; z-index:50;"><div class="spinner"></div></div>
+                <div id="shorts-gesture-catcher" style="position:absolute; inset:0; z-index:45; touch-action:none;"></div>
 
                 <!-- Right Floating Action Controls -->
                 <div style="position:absolute; right:12px; bottom:90px; display:flex; flex-direction:column; gap:18px; align-items:center; z-index:100;">

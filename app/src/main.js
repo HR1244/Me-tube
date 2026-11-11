@@ -56,7 +56,7 @@ const state = {
   isLoadingFeed: false,
   isLoadingMore: false,
   hasMore: true,
-  playbackEngine: 'youtube' // 'youtube' (fast/HD/embed) or 'native' (HTML5 direct stream)
+  playbackEngine: 'native' // 'native' (clean MeTube UI) or 'youtube' (embedded fallback)
 };
 
 // Formatting helpers
@@ -154,11 +154,12 @@ export function resolveAvatarUrl(avatar, channelName, channelId) {
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  if (avatar && avatar.startsWith('http') && !avatar.includes('localhost') && !avatar.includes('127.0.0.1')) {
+  if (avatar && avatar.startsWith('http') && !avatar.includes('localhost') && !avatar.includes('127.0.0.1') && !avatar.includes('default-user')) {
     return avatar;
   }
-  // 100% reliable HTTPS Google CDN avatar (never dead, never fake SVG letter initials)
-  return 'https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj';
+  // Fall back to server's 302 redirect which resolves the real YouTube avatar dynamically via Innertube
+  const server = getServerUrl();
+  return `${server}/api/channel/avatar?name=${encodeURIComponent(clean)}&id=${encodeURIComponent(channelId || '')}`;
 }
 
 function getChannelAvatarUrl(channelName, channelId) {
@@ -521,6 +522,35 @@ function initNavigation() {
     searchInput.value = '';
     clearBtn.style.display = 'none';
     searchInput.focus();
+  });
+
+  const pasteBtn = document.getElementById('btn-paste-search-link');
+  pasteBtn?.addEventListener('click', async () => {
+    try {
+      let text = '';
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        try { text = await navigator.clipboard.readText(); } catch (_) {}
+      }
+      if (!text) {
+        text = prompt('Paste YouTube video link here:');
+      }
+      if (text) {
+        const directVideoId = extractYouTubeVideoId(text.trim());
+        if (directVideoId) {
+          showToast('Opening pasted YouTube video...');
+          header?.classList.remove('search-mode-open');
+          openVideoById(directVideoId);
+        } else {
+          showToast('Not a valid YouTube video URL');
+        }
+      }
+    } catch (_) {
+      const manual = prompt('Paste YouTube video link here:');
+      if (manual) {
+        const vid = extractYouTubeVideoId(manual.trim());
+        if (vid) openVideoById(vid);
+      }
+    }
   });
 
   searchForm?.addEventListener('submit', (e) => {
@@ -1184,8 +1214,8 @@ function setupPlayerPlayback(video) {
     }
     console.log(`[Player] YouTube Engine activated for ${video.id}`);
   } else {
-    // Native HTML5 Mode
-    if (engineLabel) engineLabel.textContent = '🎬 Native Stream';
+    // Native HTML5 Player (Clean, ad-free app interface)
+    if (engineLabel) engineLabel.textContent = '🎬 Native Player';
     if (iframeContainer) {
       iframeContainer.style.display = 'none';
       iframeContainer.innerHTML = '';
@@ -1201,10 +1231,6 @@ function setupPlayerPlayback(video) {
       const onPlaying = () => {
         console.log(`[Player] Native video stream playing for ${video.id}`);
         if (spinner) spinner.style.display = 'none';
-        if (nativeBufferWatchdog) {
-          clearTimeout(nativeBufferWatchdog);
-          nativeBufferWatchdog = null;
-        }
       };
 
       videoElem.onloadeddata = onPlaying;
@@ -1213,25 +1239,21 @@ function setupPlayerPlayback(video) {
         if (spinner) spinner.style.display = 'flex';
       };
 
-      const fallbackToYouTube = (reason) => {
-        console.warn(`[Player] Native stream fallback (${reason}). Switching to YouTube Engine...`);
-        state.playbackEngine = 'youtube';
-        setupPlayerPlayback(video);
-      };
-
       videoElem.onerror = () => {
-        fallbackToYouTube('Stream error / 403');
-      };
-
-      // Watchdog: If native playback doesn't start within 5s, switch to YouTube engine
-      nativeBufferWatchdog = setTimeout(() => {
-        if (videoElem.paused || videoElem.readyState < 2) {
-          fallbackToYouTube('Buffering timeout (>5s)');
+        const directFallback = `${serverBase}/api/stream/${video.id}?direct=true`;
+        if (videoElem.src !== directFallback) {
+          console.warn(`[Player] Native stream trying direct redirect fallback...`);
+          videoElem.src = directFallback;
+          videoElem.play().catch(() => {});
+        } else {
+          if (spinner) spinner.style.display = 'none';
+          showToast('Could not load native stream. Tap Engine icon to switch.');
         }
-      }, 5000);
+      };
 
       videoElem.play().catch((err) => {
         console.log(`[Player] Autoplay waiting or error: ${err}`);
+        if (spinner) spinner.style.display = 'none';
       });
     }
   }
@@ -1999,17 +2021,17 @@ async function openShortsFeedReel() {
   }
   if (spinner) spinner.style.display = 'block';
 
-  if (state.shortsList.length === 0) {
-    if (state.shorts && state.shorts.length > 0) {
-      state.shortsList = state.shorts;
-    } else {
-      try {
-        const res = await api.getShorts(1);
-        if (res && res.shorts && res.shorts.length > 0) {
-          state.shortsList = res.shorts;
-        }
-      } catch (e) {
-        console.warn('Could not load shorts feed:', e);
+  if (state.shortsList.length < 5) {
+    try {
+      const res = await api.getShorts(1);
+      if (res && res.shorts && res.shorts.length > 0) {
+        state.shortsList = res.shorts;
+      } else if (state.shorts && state.shorts.length > 0) {
+        state.shortsList = state.shorts;
+      }
+    } catch (e) {
+      if (state.shorts && state.shorts.length > 0) {
+        state.shortsList = state.shorts;
       }
     }
   }
@@ -2126,10 +2148,24 @@ function initShortsPlayer() {
     if (soundBtn) soundBtn.textContent = state.isShortMuted ? '🔇' : '🔊';
   });
 
-  const goToNextShort = () => {
+  const goToNextShort = async () => {
     if (state.shortsList.length === 0) return;
     const nextIdx = (state.currentShortIndex + 1) % state.shortsList.length;
     openShortsModal(state.shortsList[nextIdx]);
+
+    // Continuous infinite shorts feed prefetching
+    if (state.currentShortIndex >= state.shortsList.length - 3) {
+      try {
+        state.shortsPage = (state.shortsPage || 1) + 1;
+        const moreRes = await api.getShorts(state.shortsPage);
+        if (moreRes && moreRes.shorts && moreRes.shorts.length > 0) {
+          const existing = new Set(state.shortsList.map((s) => s.id));
+          const fresh = moreRes.shorts.filter((s) => !existing.has(s.id));
+          state.shortsList.push(...fresh);
+          console.log(`[Shorts] Appended ${fresh.length} more shorts, total: ${state.shortsList.length}`);
+        }
+      } catch (_) {}
+    }
   };
 
   const goToPrevShort = () => {
@@ -2151,16 +2187,50 @@ function initShortsPlayer() {
     if (cur) openDownloadModal(cur);
   });
 
-  // Mobile swipe gestures
+  // 100% Reliable Mobile Swipe Gestures on Gesture Catcher Surface
+  const gestureSurface = document.getElementById('shorts-gesture-catcher') || modal;
   let touchStartY = 0;
-  modal?.addEventListener('touchstart', (e) => {
-    touchStartY = e.touches[0].clientY;
+  let touchStartX = 0;
+  let touchStartTime = 0;
+  let lastTapTime = 0;
+
+  gestureSurface?.addEventListener('touchstart', (e) => {
+    if (e.touches && e.touches[0]) {
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      touchStartTime = Date.now();
+    }
   }, { passive: true });
 
-  modal?.addEventListener('touchend', (e) => {
+  gestureSurface?.addEventListener('touchend', (e) => {
+    if (!e.changedTouches || !e.changedTouches[0]) return;
     const deltaY = e.changedTouches[0].clientY - touchStartY;
-    if (deltaY < -50) goToNextShort();
-    else if (deltaY > 50) goToPrevShort();
+    const deltaX = e.changedTouches[0].clientX - touchStartX;
+    const duration = Date.now() - touchStartTime;
+
+    // Detect Vertical Swipe
+    if (deltaY < -40 && Math.abs(deltaY) > Math.abs(deltaX)) {
+      goToNextShort();
+      return;
+    } else if (deltaY > 40 && Math.abs(deltaY) > Math.abs(deltaX)) {
+      goToPrevShort();
+      return;
+    }
+
+    // Detect Tap (Play/Pause) & Double Tap (Like)
+    if (Math.abs(deltaY) < 15 && Math.abs(deltaX) < 15 && duration < 300) {
+      const now = Date.now();
+      if (now - lastTapTime < 300) {
+        likeBtn?.click();
+        showToast('❤️ Liked Short');
+      } else {
+        if (videoElem) {
+          if (videoElem.paused) videoElem.play().catch(() => {});
+          else videoElem.pause();
+        }
+      }
+      lastTapTime = now;
+    }
   }, { passive: true });
 }
 
@@ -2200,7 +2270,7 @@ async function updateAuthStatusUI() {
         badge.style.background = '#333';
         badge.style.color = '#aaa';
       }
-      if (desc) desc.textContent = 'Paste YouTube cookies to sync account';
+      if (desc) desc.textContent = 'Sign in to sync your YouTube feed';
       if (logoutBtn) logoutBtn.style.display = 'none';
       if (headerAvatar) {
         headerAvatar.style.background = 'var(--metube-red, #FF0000)';
@@ -2212,6 +2282,38 @@ async function updateAuthStatusUI() {
   }
 }
 
+// Global Bridge Handler for Android 1-Tap Google / YouTube Login
+window.handleNativeYouTubeLogin = async function(cookieString) {
+  if (!cookieString) return;
+  showToast('Connecting YouTube account to MeTube...');
+  try {
+    const res = await api.saveCookies(cookieString);
+    if (res && res.success) {
+      showToast('YouTube Account Connected Successfully! 🎉');
+      updateAuthStatusUI();
+      const modal = document.getElementById('auth-modal');
+      if (modal) {
+        modal.classList.remove('open');
+        modal.style.display = 'none';
+      }
+      loadSubscriptionsView();
+      loadFeed('all', 1);
+    }
+  } catch (err) {
+    showToast('Could not sync account: ' + err.message);
+  }
+};
+
+// Global Bridge Handler for Android Share Intent
+window.handleSharedYouTubeUrl = function(url) {
+  if (!url) return;
+  const vid = extractYouTubeVideoId(url);
+  if (vid) {
+    showToast('Opening shared YouTube video...');
+    openVideoById(vid);
+  }
+};
+
 function initAuthModal() {
   const modal = document.getElementById('auth-modal');
   const closeBtn = document.getElementById('btn-close-auth-modal');
@@ -2220,6 +2322,16 @@ function initAuthModal() {
   const input = document.getElementById('auth-cookies-input');
   const syncBtn = document.getElementById('btn-sync-account');
   const avatarBtn = document.getElementById('btn-header-avatar');
+  const nativeLoginBtn = document.getElementById('btn-native-google-login');
+
+  nativeLoginBtn?.addEventListener('click', () => {
+    if (window.AndroidAuth && window.AndroidAuth.launchYouTubeLogin) {
+      window.AndroidAuth.launchYouTubeLogin();
+    } else {
+      showToast('Opening Google sign-in in browser...');
+      window.open('https://accounts.google.com/ServiceLogin?service=youtube', '_blank');
+    }
+  });
 
   closeBtn?.addEventListener('click', () => {
     if (modal) {
@@ -2245,9 +2357,9 @@ function initAuthModal() {
       await api.saveCookies(cookiesText);
       alert('✅ YouTube account connected successfully!');
       if (modal) {
-      modal.classList.remove('open');
-      modal.style.display = 'none';
-    }
+        modal.classList.remove('open');
+        modal.style.display = 'none';
+      }
       if (input) input.value = '';
       updateAuthStatusUI();
       if (state.activeTab === 'subscriptions') {
