@@ -325,6 +325,24 @@ def is_stream_alive(stream_url: str) -> bool:
     except Exception:
         return False
 
+def fetch_youtube_oembed(video_id: str) -> Dict[str, str]:
+    """Fetches instant real video title, channel, and author URL via YouTube oembed with 0ms bot risk."""
+    try:
+        url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=4) as res:
+            data = json.loads(res.read().decode("utf-8", errors="ignore"))
+            return {
+                "title": data.get("title", ""),
+                "author_name": data.get("author_name", ""),
+                "author_url": data.get("author_url", "")
+            }
+    except Exception:
+        return {}
+
 def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
     """
     Bulletproof stream and metadata fallback for datacenter environments (Render, AWS, GCP).
@@ -770,20 +788,27 @@ def get_video_stream_info(video_id: str):
                 "available_resolutions": []
             }
 
-        logger.warning(f"Video {video_id} protected by bot challenge. Providing mobile embed fallback.")
+        oembed = fetch_youtube_oembed(video_id)
+        real_title = oembed.get("title") or "Playing Video"
+        real_channel = oembed.get("author_name") or "Creator"
+        real_channel_url = oembed.get("author_url") or f"https://www.youtube.com/watch?v={video_id}"
+        c_avatar = f"/api/channel/avatar?name={urllib.parse.quote(real_channel)}"
+
+        logger.warning(f"Video {video_id} protected by bot challenge. Providing mobile embed fallback for '{real_title}'.")
         return {
             "id": video_id,
-            "title": "Playing Video (Mobile Fallback)",
-            "channel": "Creator",
+            "title": real_title,
+            "channel": real_channel,
             "channel_id": "",
-            "channel_url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_url": real_channel_url,
+            "channel_avatar": c_avatar,
             "channel_follower_count": None,
-            "description": "Direct native mobile player stream enabled.",
+            "description": f"Playing {real_title} by {real_channel}.",
             "duration": 0,
             "duration_string": "",
             "view_count": 0,
             "like_count": 0,
-            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
             "stream_url": f"/api/stream/{video_id}",
             "direct_stream_url": "",
             "embed_url": f"https://www.youtube-nocookie.com/embed/{video_id}?autoplay=1&playsinline=1&rel=0&modestbranding=1",

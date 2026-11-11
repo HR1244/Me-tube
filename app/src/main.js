@@ -409,11 +409,6 @@ function initNavigation() {
     switchTab('downloads');
   });
 
-  // Header Avatar shortcut -> Settings
-  document.getElementById('btn-header-avatar')?.addEventListener('click', () => {
-    switchTab('settings');
-  });
-
   // Sidebar Open/Close
   const sidebar = document.getElementById('sidebar-overlay');
   document.getElementById('btn-open-sidebar')?.addEventListener('click', () => {
