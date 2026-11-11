@@ -140,13 +140,39 @@ def generate_channel_avatar_svg(name: str) -> str:
 </svg>"""
 
 def resolve_avatar_via_innertube(name_or_id: str) -> Optional[str]:
-    """Fast resolution of official Google CDN creator avatar via Innertube in ~300ms."""
+    """Fast resolution of official Google CDN creator avatar via Innertube in ~200-300ms."""
     if not name_or_id:
         return None
     clean = str(name_or_id).strip()
     if clean in avatar_cache:
         return avatar_cache[clean]
 
+    # If it's a channel ID (UC...), use high-precision browse endpoint
+    if clean.startswith("UC"):
+        try:
+            payload = {
+                "context": {"client": {"hl": "en", "gl": "US", "clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
+                "browseId": clean
+            }
+            req = urllib.request.Request(
+                "https://www.youtube.com/youtubei/v1/browse",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            with urllib.request.urlopen(req, timeout=4) as res:
+                txt = res.read().decode("utf-8", errors="ignore")
+
+            matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/(?:ytc/)?[A-Za-z0-9_-]+', txt)
+            clean_matches = [m for m in matches if "default-user" not in m and "default_user" not in m]
+            if clean_matches:
+                base = clean_matches[0].split('=')[0]
+                avatar = f"{base}=s176-c-k-c0x00ffffff-no-rj"
+                avatar_cache[clean] = avatar
+                return avatar
+        except Exception as e:
+            logger.warning(f"Innertube browse avatar lookup failed for {clean}: {e}")
+
+    # For channel names / handles, use fast search endpoint
     try:
         payload = {
             "context": {"client": {"hl": "en", "gl": "US", "clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
@@ -160,15 +186,16 @@ def resolve_avatar_via_innertube(name_or_id: str) -> Optional[str]:
         with urllib.request.urlopen(req, timeout=4) as res:
             txt = res.read().decode("utf-8", errors="ignore")
 
-        # Extract authentic 100% original Google CDN avatar links
-        matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/[A-Za-z0-9_-]+', txt)
+        # Extract authentic 100% original Google CDN avatar links (handles /ytc/ and direct hashes)
+        matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/(?:ytc/)?[A-Za-z0-9_-]+', txt)
         clean_matches = [m for m in matches if "default-user" not in m and "default_user" not in m]
         if clean_matches:
-            avatar = f"{clean_matches[0]}=s176-c-k-c0x00ffffff-no-rj"
+            base = clean_matches[0].split('=')[0]
+            avatar = f"{base}=s176-c-k-c0x00ffffff-no-rj"
             avatar_cache[clean] = avatar
             return avatar
     except Exception as e:
-        logger.warning(f"Innertube avatar lookup failed for {clean}: {e}")
+        logger.warning(f"Innertube search avatar lookup failed for {clean}: {e}")
     return None
 
 def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:

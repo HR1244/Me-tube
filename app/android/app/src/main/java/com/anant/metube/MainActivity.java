@@ -33,7 +33,7 @@ public class MainActivity extends BridgeActivity {
                                 runOnUiThread(() -> {
                                     long now = System.currentTimeMillis();
                                     if (now - lastBackPressTime < 2000) {
-                                        finish();
+                                        MainActivity.this.finish();
                                     } else {
                                         lastBackPressTime = now;
                                         Toast.makeText(MainActivity.this, "Press back again to exit", Toast.LENGTH_SHORT).show();
@@ -43,7 +43,7 @@ public class MainActivity extends BridgeActivity {
                         }
                     );
                 } else {
-                    finish();
+                    MainActivity.this.finish();
                 }
             }
         });
@@ -128,7 +128,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onPause() {
+    public void onPause() {
         super.onPause();
         // Keep timers and media playback active in background for background audio / screen lock
         if (getBridge() != null && getBridge().getWebView() != null) {
