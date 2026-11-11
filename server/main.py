@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 import imageio_ffmpeg
@@ -23,6 +24,7 @@ logger = logging.getLogger("free_youtube_server")
 
 app = FastAPI(title="Free YouTube API (SnapTube / TubeMate style)", version="1.0.0")
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,6 +44,27 @@ logger.info(f"Using FFmpeg binary at: {FFMPEG_EXE}")
 # key: job_id -> dict with details & progress
 download_jobs: Dict[str, Dict[str, Any]] = {}
 jobs_lock = threading.Lock()
+
+# High-Performance In-Memory Query & Feed TTL Cache
+query_cache: Dict[str, Dict[str, Any]] = {}
+query_cache_lock = threading.Lock()
+DEFAULT_TTL = 300  # 5 minutes
+
+def get_cached(key: str) -> Optional[Any]:
+    with query_cache_lock:
+        if key in query_cache:
+            entry = query_cache[key]
+            if time.time() < entry.get("expires", 0):
+                return entry.get("data")
+            del query_cache[key]
+    return None
+
+def set_cached(key: str, data: Any, ttl: int = DEFAULT_TTL):
+    with query_cache_lock:
+        if len(query_cache) > 200:
+            oldest_key = min(query_cache.keys(), key=lambda k: query_cache[k].get("expires", 0))
+            query_cache.pop(oldest_key, None)
+        query_cache[key] = {"data": data, "expires": time.time() + ttl}
 
 COOKIES_FILE = BASE_DIR / "cookies.txt"
 
@@ -272,6 +295,11 @@ def get_user_personalized_feed():
 @app.get("/api/shorts")
 def get_shorts_feed(page: int = Query(1)):
     """Fetches strictly vertical YouTube Shorts (duration <= 60 seconds)."""
+    cache_key = f"shorts_{page}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
     page_modifiers = ["viral", "trending", "funny", "top", "popular"]
     kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]
     opts = get_base_ydl_opts()
@@ -302,7 +330,9 @@ def get_shorts_feed(page: int = Query(1)):
                     "url": f"https://www.youtube.com/watch?v={v_id}",
                     "is_short": True
                 })
-            return {"page": page, "shorts": shorts_list[:20]}
+            result = {"page": page, "shorts": shorts_list[:20]}
+            set_cached(cache_key, result, ttl=300)
+            return result
     except Exception as e:
         logger.error(f"Shorts fetch error: {e}")
         return {"page": page, "shorts": []}
@@ -536,6 +566,11 @@ def get_trending(
     category: str = Query("all", description="all, shorts, music, gaming, tech, news, podcasts"),
     page: int = Query(1, description="Page number for continuous infinite feed")
 ):
+    cache_key = f"trending_{category.lower()}_{page}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
     page_modifiers = ["today", "viral", "popular", "trending", "featured", "best"]
     kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]
     
@@ -589,7 +624,9 @@ def get_trending(
                     "thumbnail": thumbnail,
                     "url": f"https://www.youtube.com/watch?v={v_id}"
                 })
-            return {"category": category, "page": page, "videos": clean_results}
+            result = {"category": category, "page": page, "videos": clean_results}
+            set_cached(cache_key, result, ttl=300)
+            return result
     except Exception as e:
         logger.error(f"Error fetching trending: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -602,6 +639,12 @@ def search_videos(
     if not q or not q.strip():
         return {"query": "", "page": 1, "videos": []}
     
+    clean_q = q.strip().lower()
+    cache_key = f"search_{clean_q}_{page}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
     fetch_count = min(100, max(1, page) * 20)
     search_query = f"ytsearch{fetch_count}:{q.strip()}"
     opts = get_base_ydl_opts()
@@ -642,7 +685,9 @@ def search_videos(
                     "thumbnail": thumbnail,
                     "url": f"https://www.youtube.com/watch?v={v_id}"
                 })
-            return {"query": q, "videos": clean_results}
+            result = {"query": q, "videos": clean_results}
+            set_cached(cache_key, result, ttl=180)
+            return result
     except Exception as e:
         logger.error(f"Error searching videos: {e}")
         raise HTTPException(status_code=500, detail=str(e))

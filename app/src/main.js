@@ -630,12 +630,32 @@ async function loadFeed(category = 'all') {
   state.hasMore = true;
   state.isLoadingMore = false;
 
-  // Clean spinner icon only, NO text
-  container.innerHTML = `
-    <div class="spinner-box">
-      <div class="spinner"></div>
-    </div>
-  `;
+  // 1. Instant Cache-First (0ms Render on App Open & Category Switch)
+  const cacheKey = `metube_feed_cache_${category}`;
+  let hadCache = false;
+  if (!state.searchQuery) {
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.videos && parsed.videos.length > 0) {
+          state.videos = parsed.videos;
+          state.shorts = parsed.shorts || [];
+          renderFeed();
+          hadCache = true;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Show spinner only if no cache exists yet
+  if (!hadCache) {
+    container.innerHTML = `
+      <div class="spinner-box">
+        <div class="spinner"></div>
+      </div>
+    `;
+  }
 
   try {
     // Watch-History-Driven Dynamic Personalization:
@@ -684,6 +704,13 @@ async function loadFeed(category = 'all') {
 
     state.videos = (trendingRes && trendingRes.videos) || [];
     state.shorts = (shortsRes && shortsRes.videos) || [];
+
+    // Save to instant startup cache
+    if (!state.searchQuery && state.videos.length > 0) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ videos: state.videos, shorts: state.shorts }));
+      } catch (_) {}
+    }
 
     renderFeed();
   } catch (err) {
@@ -2156,6 +2183,67 @@ async function loadSubscriptionsView() {
     document.getElementById('btn-retry-subs')?.addEventListener('click', loadSubscriptionsView);
   }
 }
+
+// =========================================================
+// NATIVE ANDROID HARDWARE & GESTURE BACK BUTTON INTERCEPTOR
+// =========================================================
+window.handleAndroidBack = function() {
+  const authModal = document.getElementById('auth-modal');
+  if (authModal && authModal.style.display !== 'none' && authModal.style.display !== '') {
+    authModal.style.display = 'none';
+    return true;
+  }
+  const diagModal = document.getElementById('diagnostics-modal');
+  if (diagModal && diagModal.classList.contains('open')) {
+    diagModal.classList.remove('open');
+    return true;
+  }
+  const dlModal = document.getElementById('download-modal');
+  if (dlModal && dlModal.classList.contains('open')) {
+    dlModal.classList.remove('open');
+    return true;
+  }
+  const actionsSheet = document.getElementById('actions-modal');
+  if (actionsSheet && actionsSheet.classList.contains('open')) {
+    actionsSheet.classList.remove('open');
+    return true;
+  }
+  const channelModal = document.getElementById('channel-modal');
+  if (channelModal && channelModal.classList.contains('open')) {
+    channelModal.classList.remove('open');
+    return true;
+  }
+  const shortsModal = document.getElementById('shorts-modal');
+  if (shortsModal && shortsModal.style.display === 'block') {
+    const sVideo = document.getElementById('shorts-video-element');
+    if (sVideo) sVideo.pause();
+    shortsModal.style.display = 'none';
+    return true;
+  }
+  const playerModal = document.getElementById('player-modal');
+  if (playerModal && playerModal.classList.contains('open')) {
+    document.getElementById('btn-close-player')?.click();
+    return true;
+  }
+  const sidebar = document.getElementById('sidebar-overlay');
+  if (sidebar && sidebar.classList.contains('open')) {
+    sidebar.classList.remove('open');
+    return true;
+  }
+  if (state.searchQuery) {
+    document.getElementById('btn-exit-search')?.click();
+    return true;
+  }
+  if (state.activeTab !== 'home') {
+    switchTab('home');
+    return true;
+  }
+  return false;
+};
+
+window.addEventListener('popstate', () => {
+  window.handleAndroidBack();
+});
 
 // =========================================================
 // INITIALIZATION ON PAGE LOAD
