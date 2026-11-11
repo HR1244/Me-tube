@@ -159,7 +159,8 @@ export const api = {
   logout() {
     return request('/api/auth/logout', { method: 'POST' });
   },
-  getUserFeed() {
-    return request('/api/user/feed');
+  getUserFeed(channels = '') {
+    const q = channels ? `?channels=${encodeURIComponent(channels)}` : '';
+    return request(`/api/user/feed${q}`);
   }
 };
