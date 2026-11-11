@@ -13,12 +13,10 @@ import android.app.DownloadManager;
 import android.os.Environment;
 import android.webkit.URLUtil;
 import android.widget.LinearLayout;
-import android.widget.RelativeLayout;
-import android.widget.TextView;
 import android.widget.Button;
 import android.widget.Toast;
-import android.graphics.Typeface;
-import org.json.JSONObject;
+import android.util.Base64;
+import java.nio.charset.StandardCharsets;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -83,41 +81,14 @@ public class MainActivity extends BridgeActivity {
                             root.setOrientation(LinearLayout.VERTICAL);
                             root.setBackgroundColor(0xFF0F0F0F);
 
-                            // Header
-                            RelativeLayout header = new RelativeLayout(MainActivity.this);
-                            header.setBackgroundColor(0xFF202020);
-                            header.setPadding(32, 28, 32, 28);
-
-                            TextView title = new TextView(MainActivity.this);
-                            title.setText("Sign in to YouTube / Google");
-                            title.setTextColor(0xFFFFFFFF);
-                            title.setTextSize(16);
-                            title.setTypeface(null, Typeface.BOLD);
-                            RelativeLayout.LayoutParams titleParams = new RelativeLayout.LayoutParams(
-                                RelativeLayout.LayoutParams.WRAP_CONTENT,
-                                RelativeLayout.LayoutParams.WRAP_CONTENT
-                            );
-                            titleParams.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                            titleParams.addRule(RelativeLayout.CENTER_VERTICAL);
-                            title.setLayoutParams(titleParams);
-
+                            // Simple clean header bar
                             Button closeBtn = new Button(MainActivity.this);
-                            closeBtn.setText("✕ Cancel");
+                            closeBtn.setText("✕ Cancel / Close");
                             closeBtn.setTextColor(0xFFFF4444);
-                            closeBtn.setBackgroundColor(0x00000000);
-                            closeBtn.setTextSize(15);
-                            RelativeLayout.LayoutParams btnParams = new RelativeLayout.LayoutParams(
-                                RelativeLayout.LayoutParams.WRAP_CONTENT,
-                                RelativeLayout.LayoutParams.WRAP_CONTENT
-                            );
-                            btnParams.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-                            btnParams.addRule(RelativeLayout.CENTER_VERTICAL);
-                            closeBtn.setLayoutParams(btnParams);
+                            closeBtn.setBackgroundColor(0xFF1E1E1E);
+                            closeBtn.setTextSize(14);
                             closeBtn.setOnClickListener(v -> dialog.dismiss());
-
-                            header.addView(title);
-                            header.addView(closeBtn);
-                            root.addView(header);
+                            root.addView(closeBtn);
 
                             // Login WebView
                             WebView authView = new WebView(MainActivity.this);
@@ -148,10 +119,10 @@ public class MainActivity extends BridgeActivity {
 
                                     if (cookieStr != null && (cookieStr.contains("SAPISID") || cookieStr.contains("LOGIN_INFO") || cookieStr.contains("SID="))) {
                                         captured = true;
-                                        final String finalCookies = cookieStr;
+                                        final String b64 = Base64.encodeToString(cookieStr.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
                                         runOnUiThread(() -> {
                                             if (getBridge() != null && getBridge().getWebView() != null) {
-                                                String js = "if (window.handleNativeYouTubeLogin) { window.handleNativeYouTubeLogin(" + JSONObject.quote(finalCookies) + "); }";
+                                                String js = "if (window.handleNativeYouTubeLoginB64) { window.handleNativeYouTubeLoginB64('" + b64 + "'); }";
                                                 getBridge().getWebView().evaluateJavascript(js, null);
                                             }
                                             Toast.makeText(MainActivity.this, "YouTube Account Connected!", Toast.LENGTH_SHORT).show();
@@ -242,10 +213,10 @@ public class MainActivity extends BridgeActivity {
         }
 
         if (target != null && !target.isEmpty()) {
-            final String finalUrl = target;
+            final String b64 = Base64.encodeToString(target.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().postDelayed(() -> {
-                    String js = "if (window.handleSharedYouTubeUrl) { window.handleSharedYouTubeUrl(" + JSONObject.quote(finalUrl) + "); }";
+                    String js = "if (window.handleSharedYouTubeUrlB64) { window.handleSharedYouTubeUrlB64('" + b64 + "'); }";
                     getBridge().getWebView().evaluateJavascript(js, null);
                 }, 1200);
             }

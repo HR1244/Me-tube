@@ -2304,6 +2304,17 @@ window.handleNativeYouTubeLogin = async function(cookieString) {
   }
 };
 
+window.handleNativeYouTubeLoginB64 = function(b64) {
+  try {
+    const cookieStr = decodeURIComponent(escape(atob(b64)));
+    if (window.handleNativeYouTubeLogin) {
+      window.handleNativeYouTubeLogin(cookieStr);
+    }
+  } catch (e) {
+    console.error('Failed to decode native login cookies:', e);
+  }
+};
+
 // Global Bridge Handler for Android Share Intent
 window.handleSharedYouTubeUrl = function(url) {
   if (!url) return;
@@ -2311,6 +2322,17 @@ window.handleSharedYouTubeUrl = function(url) {
   if (vid) {
     showToast('Opening shared YouTube video...');
     openVideoById(vid);
+  }
+};
+
+window.handleSharedYouTubeUrlB64 = function(b64) {
+  try {
+    const url = decodeURIComponent(escape(atob(b64)));
+    if (window.handleSharedYouTubeUrl) {
+      window.handleSharedYouTubeUrl(url);
+    }
+  } catch (e) {
+    console.error('Failed to decode shared URL:', e);
   }
 };
 
