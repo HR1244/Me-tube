@@ -192,25 +192,61 @@ def health_check():
         "cookies_path": str(COOKIES_FILE),
     }
 
-@app.get("/api/channel/avatar")
+def resolve_real_youtube_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> Optional[str]:
+    """Dynamically resolves and caches the official 100% original YouTube circular creator avatar."""
+    cache_key = channel_id or channel_name
+    if cache_key and cache_key in avatar_cache:
+        return avatar_cache[cache_key]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+    }
+
+    urls_to_try = []
+    if channel_id and channel_id.startswith('UC'):
+        urls_to_try.append(f'https://www.youtube.com/channel/{channel_id}')
+    if channel_name:
+        clean = re.sub(r'[^a-zA-Z0-9]', '', channel_name)
+        if clean:
+            urls_to_try.append(f'https://www.youtube.com/@{clean}')
+        urls_to_try.append(f'https://www.youtube.com/results?search_query={urllib.parse.quote(channel_name)}&sp=EgIQAg%253D%253D')
+
+    for u in urls_to_try:
+        try:
+            req = urllib.request.Request(u, headers=headers)
+            with urllib.request.urlopen(req, timeout=3) as res:
+                html = res.read().decode('utf-8', errors='ignore')
+                matches = re.findall(r'(https://yt3\.googleusercontent\.com/[A-Za-z0-9_-]+)(?:=s[0-9]+-[^\"\'\s]+)?', html)
+                if matches:
+                    base_url = matches[0]
+                    if 'default_user' not in base_url:
+                        real_avatar = f"{base_url}=s176-c-k-c0x00ffffff-no-rj"
+                        if channel_id:
+                            avatar_cache[channel_id] = real_avatar
+                        if channel_name:
+                            avatar_cache[channel_name] = real_avatar
+                        return real_avatar
+        except Exception:
+            continue
+    return None
+
+@app.api_route("/api/channel/avatar", methods=["GET", "HEAD"])
 def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = None):
-    """Returns the creator's avatar image instantly with 0ms latency."""
+    """Returns the creator's real original YouTube avatar image via 302 redirect."""
     clean_name = (name or "Creator").strip()
     cache_key = id or clean_name
     
     if cache_key in avatar_cache:
         return RedirectResponse(url=avatar_cache[cache_key], status_code=302)
     
-    # Return high-resolution dynamic SVG avatar (guaranteed 200 OK!)
-    svg = generate_channel_avatar_svg(clean_name)
-    return Response(
-        content=svg,
-        media_type="image/svg+xml",
-        headers={
-            "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+    real_avatar = resolve_real_youtube_avatar(id, clean_name)
+    if real_avatar:
+        return RedirectResponse(url=real_avatar, status_code=302)
+    
+    # Official YouTube default circular avatar (guaranteed real YouTube asset)
+    default_yt_avatar = "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
+    return RedirectResponse(url=default_yt_avatar, status_code=302)
 
 class CookiePayload(BaseModel):
     cookies: str

@@ -30,6 +30,37 @@ public class MainActivity extends BridgeActivity {
             settings.setDatabaseEnabled(true);
             settings.setAllowFileAccess(true);
 
+            // Expose Direct Native Download Interface to JavaScript (100% reliable)
+            webView.addJavascriptInterface(new Object() {
+                @android.webkit.JavascriptInterface
+                public void startDownload(String url, String filename, String mimeType) {
+                    runOnUiThread(() -> {
+                        try {
+                            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                            String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : (filename != null && filename.endsWith(".mp3") ? "audio/mpeg" : "video/mp4");
+                            request.setMimeType(safeMime);
+                            request.setDescription("Downloading file via MeTube...");
+                            String safeTitle = (filename != null && !filename.isEmpty()) ? filename : "MeTube_Media";
+                            request.setTitle(safeTitle);
+                            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeTitle);
+                            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                            if (dm != null) {
+                                dm.enqueue(request);
+                            } else {
+                                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                                startActivity(intent);
+                            }
+                        } catch (Exception e) {
+                            try {
+                                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                                startActivity(intent);
+                            } catch (Exception ignored) {}
+                        }
+                    });
+                }
+            }, "AndroidDownloader");
+
             // Native Android Download Manager listener for file downloads
             webView.setDownloadListener(new DownloadListener() {
                 @Override

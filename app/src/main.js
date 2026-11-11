@@ -83,6 +83,47 @@ function formatDuration(seconds) {
   return `${mins}:${remSecs.toString().padStart(2, '0')}`;
 }
 
+export function showToast(message, duration = 2800) {
+  let toast = document.getElementById('metube-global-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'metube-global-toast';
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 74px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: rgba(28, 28, 28, 0.95);
+      color: #FFFFFF;
+      padding: 10px 18px;
+      border-radius: 24px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.15);
+      z-index: 99999;
+      pointer-events: none;
+      opacity: 0;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 90%;
+      text-align: center;
+    `;
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateX(-50%) translateY(0)';
+  
+  if (window._metubeToastTimer) clearTimeout(window._metubeToastTimer);
+  window._metubeToastTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(20px)';
+  }, duration);
+}
+
 // Official Real YouTube Creator Channel Profile Logos
 const OFFICIAL_CREATOR_AVATARS = {
   'MrBeast': 'https://yt3.googleusercontent.com/nxYrc_1_2f77DoBadyxMTmv7ZpRZapHR5jbuYe7PlPd5cIRJxtNNEYyOC0ZsxaDyJJzXrnJiuDE=s176-c-k-c0x00ffffff-no-rj',
@@ -123,7 +164,8 @@ export function getAvatarFallback(channelName) {
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  return getSvgAvatarDataUrl(clean);
+  // Official YouTube default circular avatar
+  return 'https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj';
 }
 
 export function resolveAvatarUrl(avatar, channelName, channelId) {
@@ -131,11 +173,14 @@ export function resolveAvatarUrl(avatar, channelName, channelId) {
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  if (avatar && avatar.startsWith('http')) return avatar;
+  if (avatar && avatar.startsWith('http') && !avatar.includes('localhost') && !avatar.includes('127.0.0.1')) {
+    return avatar;
+  }
   if (avatar && avatar.startsWith('/')) {
     return `${getServerUrl()}${avatar}`;
   }
-  return getAvatarFallback(clean);
+  const server = getServerUrl();
+  return `${server}/api/channel/avatar?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}`;
 }
 
 function getChannelAvatarUrl(channelName, channelId) {
@@ -479,6 +524,20 @@ function initNavigation() {
     if (clearBtn) clearBtn.style.display = searchInput.value ? 'flex' : 'none';
   });
 
+  searchInput?.addEventListener('paste', () => {
+    setTimeout(() => {
+      const val = (searchInput.value || '').trim();
+      const directVideoId = extractYouTubeVideoId(val);
+      if (directVideoId) {
+        searchInput.value = '';
+        if (clearBtn) clearBtn.style.display = 'none';
+        header?.classList.remove('search-mode-open');
+        showToast('Opening pasted YouTube video...');
+        openVideoById(directVideoId);
+      }
+    }, 60);
+  });
+
   clearBtn?.addEventListener('click', () => {
     searchInput.value = '';
     clearBtn.style.display = 'none';
@@ -489,6 +548,18 @@ function initNavigation() {
     e.preventDefault();
     const query = (searchInput.value || '').trim();
     if (!query) return;
+
+    // Direct YouTube Link or Video ID paste detection
+    const directVideoId = extractYouTubeVideoId(query);
+    if (directVideoId) {
+      searchInput.value = '';
+      if (clearBtn) clearBtn.style.display = 'none';
+      header?.classList.remove('search-mode-open');
+      showToast('Opening direct YouTube link...');
+      openVideoById(directVideoId);
+      return;
+    }
+
     state.searchQuery = query;
     header?.classList.remove('search-mode-open');
     if (banner) {
@@ -963,8 +1034,72 @@ function createShortsShelfElement(shortsList) {
 }
 
 // =========================================================
-// 5. VIDEO PLAYER (SPINNER ONLY, NO TEXT!)
+// 5. VIDEO PLAYER (SPINNER ONLY, NO TEXT!) & URL DIRECT OPEN
 // =========================================================
+export function extractYouTubeVideoId(input) {
+  if (!input) return null;
+  const str = input.trim();
+
+  // 1. Raw 11-char YouTube ID (e.g. dQw4w9WgXcQ)
+  if (/^[a-zA-Z0-9_-]{11}$/.test(str)) {
+    return str;
+  }
+
+  // 2. youtu.be/<id> or /shorts/<id> or /embed/<id>
+  const shortMatch = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/))([a-zA-Z0-9_-]{11})/i);
+  if (shortMatch) return shortMatch[1];
+
+  // 3. /watch?v=<id>
+  const watchMatch = str.match(/[?&]v=([a-zA-Z0-9_-]{11})/i);
+  if (watchMatch) return watchMatch[1];
+
+  return null;
+}
+
+export async function openVideoById(videoId) {
+  if (!videoId) return;
+  console.log(`[Player] Opening video from link/ID: ${videoId}`);
+
+  const initialVideo = {
+    id: videoId,
+    title: 'Loading YouTube Video...',
+    channel: 'YouTube',
+    channel_id: '',
+    channel_avatar: '',
+    thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    view_count: 'Views',
+    duration: 0
+  };
+
+  // Launch player immediately with 0ms visual feedback
+  openVideoPlayer(initialVideo);
+
+  // Fetch real metadata in background to update title & channel
+  try {
+    const details = await api.getVideo(videoId);
+    if (details && details.title) {
+      const fullVideo = {
+        ...initialVideo,
+        title: details.title,
+        channel: details.channel || 'Creator',
+        channel_id: details.channel_id || '',
+        channel_avatar: details.channel_avatar || '',
+        thumbnail: details.thumbnail || initialVideo.thumbnail,
+        view_count: details.view_count || 0,
+        description: details.description || ''
+      };
+      state.activeVideo = fullVideo;
+      const titleElem = document.getElementById('player-video-title');
+      const channelElem = document.getElementById('player-channel-name');
+      const avatarElem = document.getElementById('player-channel-avatar');
+      if (titleElem) titleElem.textContent = fullVideo.title;
+      if (channelElem) channelElem.textContent = fullVideo.channel;
+      if (avatarElem) avatarElem.src = resolveAvatarUrl(fullVideo.channel_avatar, fullVideo.channel, fullVideo.channel_id);
+      saveToWatchHistory(fullVideo);
+    }
+  } catch (_) {}
+}
+
 async function openVideoPlayer(video) {
   state.activeVideo = video;
   
@@ -1379,14 +1514,23 @@ export function triggerSaveToDevice(url, filename) {
   console.log(`[Download] Triggering device download for ${filename}: ${url}`);
   const absoluteUrl = url.startsWith('http') ? url : `${getServerUrl()}${url}`;
 
-  // If running in Capacitor Android environment, trigger native download intent
-  if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
-    console.log('[Download] Capacitor environment detected. Opening via system DownloadManager:', absoluteUrl);
+  // 1. Native Android APK Downloader Bridge (Enqueues directly in Android system DownloadManager)
+  if (typeof window !== 'undefined' && window.AndroidDownloader && window.AndroidDownloader.startDownload) {
+    console.log('[Download] Using native AndroidDownloader bridge for:', absoluteUrl);
+    const mime = filename && filename.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4';
+    showToast(`Downloading ${filename || 'file'} to /sdcard/Download...`);
+    window.AndroidDownloader.startDownload(absoluteUrl, filename, mime);
+    return;
+  }
+
+  // 2. Capacitor native shell fallback
+  if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) {
+    console.log('[Download] Opening via Capacitor system browser:', absoluteUrl);
     window.open(absoluteUrl, '_system');
     return;
   }
 
-  // Standard Browser download
+  // 3. Standard Web browser download
   try {
     const a = document.createElement('a');
     a.href = absoluteUrl;
@@ -1398,7 +1542,7 @@ export function triggerSaveToDevice(url, filename) {
       if (document.body.contains(a)) document.body.removeChild(a);
     }, 1000);
   } catch (_) {
-    window.open(absoluteUrl, '_blank');
+    window.location.href = absoluteUrl;
   }
 }
 
@@ -2275,6 +2419,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Load initial feed
   loadFeed('all');
+
+  // Check for initial URL query parameter or deep link (e.g. ?v=... or ?url=...)
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetVideo = urlParams.get('v') || urlParams.get('url') || urlParams.get('id');
+    if (targetVideo) {
+      const vid = extractYouTubeVideoId(targetVideo);
+      if (vid) {
+        setTimeout(() => openVideoById(vid), 400);
+      }
+    }
+  } catch (_) {}
 
   // Periodically check server health and poll active downloads
   setInterval(() => {
