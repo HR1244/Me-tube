@@ -75,7 +75,7 @@ public class MainActivity extends BridgeActivity {
                 public void launchYouTubeLogin() {
                     runOnUiThread(() -> {
                         try {
-                            Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+                            Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_NoTitleBar_Fullscreen);
 
                             LinearLayout root = new LinearLayout(MainActivity.this);
                             root.setOrientation(LinearLayout.VERTICAL);
