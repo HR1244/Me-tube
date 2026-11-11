@@ -135,8 +135,8 @@
               <button class="cat-filters-btn">Filters ⌥</button>
             </nav>
 
-            <!-- Subscribed Channels Story Row (YouTube Mobile Style) -->
-            <div class="subscriptions-bar-wrapper" id="subscriptions-bar">
+            <!-- Subscribed Channels Story Row (Hidden by default on Home) -->
+            <div class="subscriptions-bar-wrapper" id="subscriptions-bar" style="display:none;">
               <div class="subscriptions-scroll" id="subscriptions-scroll-list"></div>
             </div>
 
@@ -702,10 +702,13 @@
                   </div>
                 </div>
 
-                <!-- Vertical Video Element (9:16 Aspect Ratio) -->
-                <video id="shorts-video-element" playsinline loop style="width:100%; height:100%; object-fit:cover; background:#000;"></video>
+                <!-- High-Speed YouTube Embed Shorts Container -->
+                <div id="shorts-embed-container" style="position:absolute; inset:0; z-index:40; width:100%; height:100%; overflow:hidden; background:#000;"></div>
+
+                <!-- Vertical Video Element Fallback (9:16 Aspect Ratio) -->
+                <video id="shorts-video-element" playsinline loop style="display:none; width:100%; height:100%; object-fit:cover; background:#000; z-index:40;"></video>
                 <div id="shorts-spinner" style="position:absolute; display:none; z-index:50;"><div class="spinner"></div></div>
-                <div id="shorts-gesture-catcher" style="position:absolute; inset:0; z-index:45; touch-action:none;"></div>
+                <div id="shorts-gesture-catcher" style="position:absolute; inset:0; z-index:60; touch-action:none;"></div>
 
                 <!-- Right Floating Action Controls -->
                 <div style="position:absolute; right:12px; bottom:90px; display:flex; flex-direction:column; gap:18px; align-items:center; z-index:100;">

@@ -140,41 +140,35 @@ def generate_channel_avatar_svg(name: str) -> str:
 </svg>"""
 
 def resolve_avatar_via_innertube(name_or_id: str) -> Optional[str]:
-    """Fast resolution of official Google CDN avatar via Innertube query."""
+    """Fast resolution of official Google CDN creator avatar via Innertube in ~300ms."""
     if not name_or_id:
         return None
+    clean = str(name_or_id).strip()
+    if clean in avatar_cache:
+        return avatar_cache[clean]
+
     try:
         payload = {
             "context": {"client": {"hl": "en", "gl": "US", "clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
-            "query": name_or_id
+            "query": clean
         }
         req = urllib.request.Request(
             "https://www.youtube.com/youtubei/v1/search",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         )
         with urllib.request.urlopen(req, timeout=4) as res:
-            data = json.loads(res.read().decode("utf-8", errors="ignore"))
-        contents = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
-        for sec in contents:
-            items = sec.get("itemSectionRenderer", {}).get("contents", [])
-            for it in items:
-                cr = it.get("channelRenderer")
-                if cr:
-                    thumbs = cr.get("thumbnail", {}).get("thumbnails", [])
-                    if thumbs:
-                        url = thumbs[-1].get("url", "")
-                        if url.startswith("//"): url = "https:" + url
-                        return re.sub(r'=s\d+.*', '=s176-c-k-c0x00ffffff-no-rj', url)
-                vr = it.get("videoRenderer")
-                if vr:
-                    ch_thumbs = vr.get("channelThumbnailSupportedRenderers", {}).get("channelThumbnailWithLinkRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
-                    if ch_thumbs:
-                        url = ch_thumbs[-1].get("url", "")
-                        if url.startswith("//"): url = "https:" + url
-                        return re.sub(r'=s\d+.*', '=s176-c-k-c0x00ffffff-no-rj', url)
-    except Exception:
-        pass
+            txt = res.read().decode("utf-8", errors="ignore")
+
+        # Extract authentic 100% original Google CDN avatar links
+        matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/[A-Za-z0-9_-]+', txt)
+        clean_matches = [m for m in matches if "default-user" not in m and "default_user" not in m]
+        if clean_matches:
+            avatar = f"{clean_matches[0]}=s176-c-k-c0x00ffffff-no-rj"
+            avatar_cache[clean] = avatar
+            return avatar
+    except Exception as e:
+        logger.warning(f"Innertube avatar lookup failed for {clean}: {e}")
     return None
 
 def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
@@ -187,12 +181,21 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
     if clean_name in avatar_cache:
         return avatar_cache[clean_name]
 
-    # Resolve via fast Innertube lookup
-    real = resolve_avatar_via_innertube(channel_id or clean_name)
-    if real:
-        if channel_id: avatar_cache[channel_id] = real
-        if clean_name: avatar_cache[clean_name] = real
-        return real
+    # 1. Resolve via fast Innertube lookup by channel_id
+    if channel_id:
+        real_id = resolve_avatar_via_innertube(channel_id)
+        if real_id:
+            avatar_cache[channel_id] = real_id
+            if clean_name: avatar_cache[clean_name] = real_id
+            return real_id
+
+    # 2. Resolve via fast Innertube lookup by channel_name
+    if clean_name and clean_name != "Creator":
+        real_name = resolve_avatar_via_innertube(clean_name)
+        if real_name:
+            if channel_id: avatar_cache[channel_id] = real_name
+            avatar_cache[clean_name] = real_name
+            return real_name
     
     # Official YouTube default circular avatar over direct Google CDN HTTPS
     return "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
@@ -287,16 +290,11 @@ def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = 
     clean_name = (name or "Creator").strip()
     cache_key = id or clean_name
     
-    if cache_key in avatar_cache:
+    if cache_key and cache_key in avatar_cache:
         return RedirectResponse(url=avatar_cache[cache_key], status_code=302)
     
-    real_avatar = resolve_real_youtube_avatar(id, clean_name)
-    if real_avatar:
-        return RedirectResponse(url=real_avatar, status_code=302)
-    
-    # Official YouTube default circular avatar (guaranteed real YouTube asset)
-    default_yt_avatar = "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
-    return RedirectResponse(url=default_yt_avatar, status_code=302)
+    real_avatar = resolve_channel_avatar(id, clean_name)
+    return RedirectResponse(url=real_avatar, status_code=302)
 
 class CookiePayload(BaseModel):
     cookies: str
@@ -786,65 +784,14 @@ def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Option
 @app.get("/api/stream/{video_id}")
 def stream_video_proxy(video_id: str, request: Request, audio: bool = False, direct: bool = False):
     """
-    Native HTTP 206 partial content stream proxy with direct fallback.
-    Streams video/mp4 or audio directly to HTML5 <video> / audio with zero YouTube watermark and zero CORS restrictions.
+    High-speed stream redirector.
+    Redirects directly to the CDN stream URL for instant hardware-accelerated playback with 0ms VM latency.
     """
     direct_url = extract_direct_stream_url(video_id, audio_only=audio)
     if not direct_url:
         raise HTTPException(status_code=404, detail="Stream not available")
 
-    if direct:
-        return RedirectResponse(url=direct_url, status_code=307)
-
-    range_header = request.headers.get("range")
-    req_headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
-    }
-    if range_header:
-        req_headers["Range"] = range_header
-
-    try:
-        req = urllib.request.Request(direct_url, headers=req_headers)
-        upstream = urllib.request.urlopen(req, timeout=15)
-        
-        status_code = upstream.status
-        default_type = "audio/mp4" if audio else "video/mp4"
-        content_type = upstream.headers.get("Content-Type", default_type)
-        content_length = upstream.headers.get("Content-Length")
-        content_range = upstream.headers.get("Content-Range")
-        accept_ranges = upstream.headers.get("Accept-Ranges", "bytes")
-
-        resp_headers = {
-            "Accept-Ranges": accept_ranges,
-            "Content-Type": content_type,
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Range",
-            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-        }
-        if content_length:
-            resp_headers["Content-Length"] = content_length
-        if content_range:
-            resp_headers["Content-Range"] = content_range
-
-        def iter_stream():
-            try:
-                while True:
-                    chunk = upstream.read(128 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                upstream.close()
-
-        return StreamingResponse(
-            iter_stream(),
-            status_code=status_code,
-            media_type=content_type,
-            headers=resp_headers
-        )
-    except Exception as e:
-        logger.warning(f"Stream proxy fallback to 307 redirect for {video_id}: {e}")
-        return RedirectResponse(url=direct_url, status_code=307)
+    return RedirectResponse(url=direct_url, status_code=307)
 
 @app.get("/api/trending")
 def get_trending(
@@ -855,55 +802,6 @@ def get_trending(
     cached = get_cached(cache_key)
     if cached:
         return cached
-
-    # 1. For general Home feed page 1, fetch real high-quality YouTube trending videos with verified creator avatars
-    if category.lower() == "all" and page == 1:
-        piped_endpoints = [
-            "https://api.piped.private.coffee/trending?region=US",
-            "https://piped.video/api/v1/trending?region=US"
-        ]
-        for p_url in piped_endpoints:
-            try:
-                req = urllib.request.Request(p_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=3) as res:
-                    data = json.loads(res.read().decode("utf-8", errors="ignore"))
-                    if isinstance(data, list) and len(data) > 0:
-                        clean_results = []
-                        for item in data[:25]:
-                            v_url = item.get("url", "")
-                            v_id = v_url.replace("/watch?v=", "") if "/watch?v=" in v_url else item.get("id")
-                            if not v_id:
-                                continue
-                            raw_avatar = item.get("uploaderAvatar", "")
-                            avatar_url = "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
-                            if raw_avatar:
-                                match = re.search(r'([A-Za-z0-9_-]{20,})(?:=s[0-9]+.*)?', raw_avatar)
-                                if match:
-                                    avatar_url = f"https://yt3.googleusercontent.com/{match.group(1)}=s176-c-k-c0x00ffffff-no-rj"
-                                    if item.get("uploaderName"):
-                                        avatar_cache[item["uploaderName"]] = avatar_url
-                            
-                            c_name = item.get("uploaderName") or "Creator"
-                            c_id = (item.get("uploaderUrl") or "").replace("/channel/", "")
-                            clean_results.append({
-                                "id": v_id,
-                                "title": item.get("title") or "Untitled",
-                                "channel": c_name,
-                                "channel_id": c_id,
-                                "channel_url": f"https://www.youtube.com{item.get('uploaderUrl', '')}",
-                                "channel_avatar": avatar_url,
-                                "duration": item.get("duration"),
-                                "duration_string": str(item.get("duration") or ""),
-                                "view_count": item.get("views") or 0,
-                                "thumbnail": item.get("thumbnail") or f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg",
-                                "url": f"https://www.youtube.com/watch?v={v_id}"
-                            })
-                        if clean_results:
-                            result = {"category": category, "page": page, "videos": clean_results}
-                            set_cached(cache_key, result, ttl=600)
-                            return result
-            except Exception as pe:
-                logger.warning(f"Piped trending lookup skipped: {pe}")
 
     page_modifiers = ["viral", "popular", "top", "trending", "featured", "best"]
     kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]

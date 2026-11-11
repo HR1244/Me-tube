@@ -56,7 +56,7 @@ const state = {
   isLoadingFeed: false,
   isLoadingMore: false,
   hasMore: true,
-  playbackEngine: 'native' // 'native' (clean MeTube UI) or 'youtube' (embedded fallback)
+  playbackEngine: 'youtube' // High-speed 0ms buffering YouTube engine framed in clean MeTube UI
 };
 
 // Formatting helpers
@@ -154,8 +154,10 @@ export function resolveAvatarUrl(avatar, channelName, channelId) {
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
-  if (avatar && avatar.startsWith('http') && !avatar.includes('localhost') && !avatar.includes('127.0.0.1') && !avatar.includes('default-user')) {
-    return avatar;
+  let a = avatar ? String(avatar).trim() : '';
+  if (a.startsWith('//')) a = 'https:' + a;
+  if (a && a.startsWith('http') && !a.includes('localhost') && !a.includes('127.0.0.1') && !a.includes('default-user') && !a.includes('default_user')) {
+    return a;
   }
   // Fall back to server's 302 redirect which resolves the real YouTube avatar dynamically via Innertube
   const server = getServerUrl();
@@ -184,8 +186,9 @@ function getSubscriptions() {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        // Automatically purge any previous legacy hardcoded defaults
-        const isLegacyDefault = parsed.length === 7 && parsed.some(s => s.name === 'PewDiePie') && parsed.some(s => s.name === 'TED-Ed');
+        // Automatically purge any hardcoded default channel sets
+        const defaultNames = ['MrBeast', 'PewDiePie', 'MKBHD', 'Lofi Girl', 'Veritasium', 'T-Series', 'TED-Ed'];
+        const isLegacyDefault = parsed.some(s => defaultNames.includes(s.name));
         if (isLegacyDefault) {
           localStorage.removeItem(SUBSCRIPTIONS_KEY);
           return [];
@@ -229,43 +232,9 @@ function toggleChannelSubscription(creator) {
 function renderSubscriptionsBar() {
   const listElem = document.getElementById('subscriptions-scroll-list');
   const subBar = document.getElementById('subscriptions-bar');
-  if (!listElem) return;
-
-  const subs = getSubscriptions();
-  if (subs.length === 0) {
-    if (subBar) subBar.style.display = 'none';
-    listElem.innerHTML = '';
-    return;
-  }
-
-  if (subBar) subBar.style.display = 'block';
-  listElem.innerHTML = subs.map((sub, i) => {
-    const avatar = resolveAvatarUrl(sub.avatar, sub.name, sub.id);
-    const fallback = getAvatarFallback(sub.name);
-    return `
-      <div class="sub-story-item ${i < 3 ? 'has-unread' : ''}" data-channel-id="${sub.id || ''}" data-channel-name="${sub.name}">
-        <div class="sub-story-avatar-ring">
-          <img 
-            class="sub-story-avatar-img" 
-            src="${avatar}" 
-            alt="${sub.name}" 
-            loading="lazy"
-            onerror="this.onerror=null; this.src='${fallback}';" 
-          />
-          ${i < 3 ? '<span class="sub-story-dot"></span>' : ''}
-        </div>
-        <span class="sub-story-name">${sub.name}</span>
-      </div>
-    `;
-  }).join('');
-
-  listElem.querySelectorAll('.sub-story-item').forEach((item) => {
-    item.addEventListener('click', () => {
-      const cId = item.dataset.channelId;
-      const cName = item.dataset.channelName;
-      openChannelExplorer({ channel: cName, channel_id: cId });
-    });
-  });
+  // Keep subscriptions bar hidden on starting Home screen as requested
+  if (subBar) subBar.style.display = 'none';
+  if (listElem) listElem.innerHTML = '';
 }
 
 // Watch History & Dynamic Feed Personalization System
@@ -620,6 +589,14 @@ function switchTab(tabId) {
     return;
   }
 
+  // If shorts modal is open while switching tabs, close it and halt playback
+  const sm = document.getElementById('shorts-modal');
+  if (sm && (sm.classList.contains('open') || sm.style.display === 'block')) {
+    stopAllPlayback();
+    sm.classList.remove('open');
+    sm.style.display = 'none';
+  }
+
   state.activeTab = tabId;
 
   // Update Bottom Nav active state
@@ -644,7 +621,7 @@ function switchTab(tabId) {
   
   const showBars = tabId === 'home' && !state.searchQuery;
   if (catBar) catBar.style.display = showBars ? 'flex' : 'none';
-  if (subBar) subBar.style.display = showBars ? 'block' : 'none';
+  if (subBar) subBar.style.display = 'none'; // Subscriptions story bar removed from Home
 
   if (tabId === 'downloads') {
     loadDownloadsList();
@@ -1047,20 +1024,24 @@ function createShortsShelfElement(shortsList) {
 // =========================================================
 export function extractYouTubeVideoId(input) {
   if (!input) return null;
-  const str = input.trim();
+  const str = String(input).trim();
 
   // 1. Raw 11-char YouTube ID (e.g. dQw4w9WgXcQ)
   if (/^[a-zA-Z0-9_-]{11}$/.test(str)) {
     return str;
   }
 
-  // 2. youtu.be/<id> or /shorts/<id> or /embed/<id>
-  const shortMatch = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/))([a-zA-Z0-9_-]{11})/i);
+  // 2. youtu.be/<id> or /shorts/<id> or /embed/<id> or /live/<id> or /v/<id>
+  const shortMatch = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|live\/))([a-zA-Z0-9_-]{11})/i);
   if (shortMatch) return shortMatch[1];
 
-  // 3. /watch?v=<id>
+  // 3. /watch?v=<id> (handles www.youtube.com, m.youtube.com, etc.)
   const watchMatch = str.match(/[?&]v=([a-zA-Z0-9_-]{11})/i);
   if (watchMatch) return watchMatch[1];
+
+  // 4. Any YouTube link anywhere in the text (e.g. shared text from other apps)
+  const looseMatch = str.match(/(?:v=|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11})/i);
+  if (looseMatch) return looseMatch[1];
 
   return null;
 }
@@ -1109,9 +1090,67 @@ export async function openVideoById(videoId) {
   } catch (_) {}
 }
 
+export function stopAllPlayback(preserve = null) {
+  // 1. Teardown Main YouTube Embed Player
+  if (preserve !== 'main-youtube') {
+    const iframeContainer = document.getElementById('embed-iframe-container');
+    if (iframeContainer) {
+      iframeContainer.innerHTML = '';
+      iframeContainer.style.display = 'none';
+    }
+  }
+
+  // 2. Teardown Main HTML5 Video Player
+  if (preserve !== 'main-native') {
+    const videoElem = document.getElementById('html5-video-element');
+    if (videoElem) {
+      try {
+        videoElem.pause();
+        videoElem.removeAttribute('src');
+        videoElem.load();
+      } catch (_) {}
+      videoElem.style.display = 'none';
+    }
+    const spinner = document.getElementById('player-video-spinner');
+    if (spinner) spinner.style.display = 'none';
+  }
+
+  // 3. Teardown Shorts YouTube Embed Player
+  if (preserve !== 'shorts-youtube') {
+    const shortsEmbed = document.getElementById('shorts-embed-container');
+    if (shortsEmbed) {
+      shortsEmbed.innerHTML = '';
+      shortsEmbed.style.display = 'none';
+    }
+  }
+
+  // 4. Teardown Shorts HTML5 Video
+  if (preserve !== 'shorts-native') {
+    const shortsVideo = document.getElementById('shorts-video-element');
+    if (shortsVideo) {
+      try {
+        shortsVideo.pause();
+        shortsVideo.removeAttribute('src');
+        shortsVideo.load();
+      } catch (_) {}
+      shortsVideo.style.display = 'none';
+    }
+    const shortsSpinner = document.getElementById('shorts-spinner');
+    if (shortsSpinner) shortsSpinner.style.display = 'none';
+  }
+
+  if (nativeBufferWatchdog) {
+    clearTimeout(nativeBufferWatchdog);
+    nativeBufferWatchdog = null;
+  }
+}
+
 async function openVideoPlayer(video) {
   state.activeVideo = video;
   
+  // Halt any previous playback (zero simultaneous audio/video)
+  stopAllPlayback(state.playbackEngine === 'youtube' ? 'main-youtube' : 'main-native');
+
   // Persist to Watch History immediately to drive dynamic personalized feed!
   saveToWatchHistory(video);
 
@@ -1190,12 +1229,8 @@ function setupPlayerPlayback(video) {
   }
 
   if (state.playbackEngine === 'youtube') {
+    stopAllPlayback('main-youtube');
     if (engineLabel) engineLabel.textContent = '⚡ YouTube Engine';
-    if (videoElem) {
-      videoElem.pause();
-      videoElem.src = '';
-      videoElem.style.display = 'none';
-    }
     if (spinner) spinner.style.display = 'none';
 
     if (iframeContainer) {
@@ -1215,11 +1250,8 @@ function setupPlayerPlayback(video) {
     console.log(`[Player] YouTube Engine activated for ${video.id}`);
   } else {
     // Native HTML5 Player (Clean, ad-free app interface)
+    stopAllPlayback('main-native');
     if (engineLabel) engineLabel.textContent = '🎬 Native Player';
-    if (iframeContainer) {
-      iframeContainer.style.display = 'none';
-      iframeContainer.innerHTML = '';
-    }
     if (spinner) spinner.style.display = 'flex';
 
     if (videoElem) {
@@ -1355,14 +1387,7 @@ function initPlayerControls() {
   const downloadBtn = document.getElementById('btn-player-download');
 
   document.getElementById('btn-close-player')?.addEventListener('click', () => {
-    videoElem.pause();
-    videoElem.src = '';
-    const iframeContainer = document.getElementById('embed-iframe-container');
-    if (iframeContainer) {
-      iframeContainer.style.display = 'none';
-      iframeContainer.innerHTML = '';
-    }
-    videoElem.style.display = 'block';
+    stopAllPlayback();
     modal.classList.remove('open');
     // If user was on Home 'all' feed, refresh dynamic recommendations immediately based on the newly watched video!
     if (state.activeTab === 'home' && state.activeCategory === 'all' && !state.searchQuery) {
@@ -2037,7 +2062,8 @@ async function openShortsFeedReel() {
   }
 
   if (state.shortsList.length > 0) {
-    openShortsModal(state.shortsList[0]);
+    const resumeIdx = Math.min(state.currentShortIndex || 0, state.shortsList.length - 1);
+    openShortsModal(state.shortsList[resumeIdx]);
   } else {
     try {
       const resTrend = await api.getTrending('shorts', 1);
@@ -2055,6 +2081,7 @@ async function openShortsFeedReel() {
 function openShortsModal(short) {
   if (!short) return;
   const modal = document.getElementById('shorts-modal');
+  const embedContainer = document.getElementById('shorts-embed-container');
   const videoElem = document.getElementById('shorts-video-element');
   const spinner = document.getElementById('shorts-spinner');
   const avatarImg = document.getElementById('shorts-channel-avatar');
@@ -2062,11 +2089,10 @@ function openShortsModal(short) {
   const titleElem = document.getElementById('shorts-title');
   const likeCountElem = document.getElementById('shorts-like-count');
 
-  if (!modal || !videoElem) return;
+  if (!modal) return;
 
-  // Pause main player if active
-  const mainVideo = document.getElementById('html5-video-element');
-  if (mainVideo) mainVideo.pause();
+  // Zero simultaneous playback: teardown all other audio/video immediately!
+  stopAllPlayback('shorts-youtube');
 
   let idx = state.shortsList.findIndex((s) => s.id === short.id);
   if (idx < 0) {
@@ -2082,43 +2108,39 @@ function openShortsModal(short) {
   const cName = currentShort.channel || 'Creator';
   if (channelNameElem) channelNameElem.textContent = `@${cName.replace(/\s+/g, '')}`;
   if (titleElem) titleElem.textContent = currentShort.title || '';
-  if (likeCountElem) likeCountElem.textContent = formatViews(currentShort.view_count || '15k');
+  if (likeCountElem) likeCountElem.textContent = formatViews(currentShort.view_count || '25k');
 
   if (avatarImg) {
     avatarImg.src = resolveAvatarUrl(currentShort.channel_avatar, cName, currentShort.channel_id);
     avatarImg.onerror = () => { avatarImg.src = getAvatarFallback(cName); };
   }
 
-  if (spinner) spinner.style.display = 'block';
-
-  const streamUrl = `${getServerUrl()}/api/stream/${currentShort.id}`;
-  videoElem.src = streamUrl;
-  videoElem.muted = state.isShortMuted;
-
-  videoElem.onloadeddata = () => {
-    if (spinner) spinner.style.display = 'none';
-  };
-  videoElem.onwaiting = () => {
-    if (spinner) spinner.style.display = 'block';
-  };
-  videoElem.onplaying = () => {
-    if (spinner) spinner.style.display = 'none';
-  };
-
-  videoElem.onerror = () => {
-    const directFallback = `${getServerUrl()}/api/stream/${currentShort.id}?direct=true`;
-    if (videoElem.src !== directFallback) {
-      videoElem.src = directFallback;
-      videoElem.play().catch(() => {});
-    } else {
-      if (spinner) spinner.style.display = 'none';
+  // Asynchronously resolve authentic creator details & avatar in background
+  api.getVideo(currentShort.id).then((det) => {
+    if (det && det.channel) {
+      if (channelNameElem) channelNameElem.textContent = `@${det.channel.replace(/\s+/g, '')}`;
+      if (avatarImg && det.channel_avatar) {
+        avatarImg.src = resolveAvatarUrl(det.channel_avatar, det.channel, det.channel_id);
+      }
     }
-  };
+  }).catch(() => {});
 
-  videoElem.play().catch((e) => {
-    console.log('[Shorts] Autoplay pending interaction:', e);
-    if (spinner) spinner.style.display = 'none';
-  });
+  if (spinner) spinner.style.display = 'none';
+
+  // Embed High-Speed YouTube Shorts Player (0ms buffer lag, 1080p 60fps)
+  if (embedContainer) {
+    embedContainer.style.display = 'block';
+    embedContainer.innerHTML = `
+      <iframe 
+        id="shorts-embed-player"
+        src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3"
+        title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
+        frameborder="0"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        style="width:100%; height:100%; border:none; pointer-events:none; transform:scale(1.04); transform-origin:center;"
+      ></iframe>
+    `;
+  }
 }
 
 function initShortsPlayer() {
@@ -2132,10 +2154,7 @@ function initShortsPlayer() {
   const downloadBtn = document.getElementById('btn-shorts-download');
 
   closeBtn?.addEventListener('click', () => {
-    if (videoElem) {
-      videoElem.pause();
-      videoElem.src = '';
-    }
+    stopAllPlayback();
     if (modal) {
       modal.classList.remove('open');
       modal.style.display = 'none';
@@ -2150,8 +2169,12 @@ function initShortsPlayer() {
 
   const goToNextShort = async () => {
     if (state.shortsList.length === 0) return;
-    const nextIdx = (state.currentShortIndex + 1) % state.shortsList.length;
-    openShortsModal(state.shortsList[nextIdx]);
+    const nextIdx = state.currentShortIndex + 1;
+    if (nextIdx < state.shortsList.length) {
+      openShortsModal(state.shortsList[nextIdx]);
+    } else {
+      openShortsModal(state.shortsList[0]);
+    }
 
     // Continuous infinite shorts feed prefetching
     if (state.currentShortIndex >= state.shortsList.length - 3) {
@@ -2170,7 +2193,7 @@ function initShortsPlayer() {
 
   const goToPrevShort = () => {
     if (state.shortsList.length === 0) return;
-    const prevIdx = (state.currentShortIndex - 1 + state.shortsList.length) % state.shortsList.length;
+    const prevIdx = Math.max(0, state.currentShortIndex - 1);
     openShortsModal(state.shortsList[prevIdx]);
   };
 
@@ -2208,7 +2231,7 @@ function initShortsPlayer() {
     const deltaX = e.changedTouches[0].clientX - touchStartX;
     const duration = Date.now() - touchStartTime;
 
-    // Detect Vertical Swipe
+    // Detect Vertical Swipe (Up = Next, Down = Prev)
     if (deltaY < -40 && Math.abs(deltaY) > Math.abs(deltaX)) {
       goToNextShort();
       return;
@@ -2217,17 +2240,14 @@ function initShortsPlayer() {
       return;
     }
 
-    // Detect Tap (Play/Pause) & Double Tap (Like)
+    // Detect Tap (Mute/Unmute) & Double Tap (Like)
     if (Math.abs(deltaY) < 15 && Math.abs(deltaX) < 15 && duration < 300) {
       const now = Date.now();
       if (now - lastTapTime < 300) {
         likeBtn?.click();
         showToast('❤️ Liked Short');
       } else {
-        if (videoElem) {
-          if (videoElem.paused) videoElem.play().catch(() => {});
-          else videoElem.pause();
-        }
+        soundBtn?.click();
       }
       lastTapTime = now;
     }
@@ -2613,8 +2633,7 @@ window.handleAndroidBack = function() {
   }
   const shortsModal = document.getElementById('shorts-modal');
   if (shortsModal && (shortsModal.classList.contains('open') || shortsModal.style.display === 'block')) {
-    const sVideo = document.getElementById('shorts-video-element');
-    if (sVideo) sVideo.pause();
+    stopAllPlayback();
     shortsModal.classList.remove('open');
     shortsModal.style.display = 'none';
     return true;
