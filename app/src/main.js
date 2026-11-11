@@ -34,6 +34,15 @@ window.addEventListener('error', (e) => { logToSystem('WINDOW_ERR', e.message, `
 window.addEventListener('unhandledrejection', (e) => { logToSystem('PROMISE_REJECT', e.reason); });
 console.log('[System] MeTube pure mobile engine initialized.');
 
+// Background Play & Lockscreen Support: Prevent WebView / YouTube from pausing when minimized or screen locked
+try {
+  Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+  Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+} catch (_) {}
+window.addEventListener('visibilitychange', (e) => {
+  e.stopImmediatePropagation();
+}, true);
+
 // App State
 const state = {
   activeTab: 'home',
@@ -1090,7 +1099,103 @@ export async function openVideoById(videoId) {
   } catch (_) {}
 }
 
+// =========================================================
+// FLOATING MINI-PLAYER & BACKGROUND AUDIO CONTROLLER
+// =========================================================
+export function updateMediaSession(video) {
+  if (!('mediaSession' in navigator) || !video) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: video.title || 'MeTube Video',
+      artist: video.channel || 'MeTube Creator',
+      album: 'MeTube Background Audio',
+      artwork: [
+        { src: video.thumbnail || `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`, sizes: '512x512', type: 'image/jpeg' }
+      ]
+    });
+    navigator.mediaSession.setActionHandler('play', () => {
+      resumeCurrentPlayback();
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+      pauseCurrentPlayback();
+    });
+    navigator.mediaSession.setActionHandler('stop', () => {
+      stopAllPlayback();
+      hideMiniPlayer();
+    });
+  } catch (err) {
+    console.warn('[MediaSession] Error registering metadata:', err);
+  }
+}
+
+export function minimizeToMiniPlayer() {
+  const modal = document.getElementById('player-modal');
+  const miniBar = document.getElementById('mini-player-bar');
+  if (modal) modal.classList.remove('open');
+  if (miniBar && state.activeVideo) {
+    miniBar.style.display = 'flex';
+    const miniIcon = document.getElementById('btn-mini-play-pause');
+    if (miniIcon) miniIcon.textContent = '⏸';
+  }
+}
+
+export function expandFromMiniPlayer() {
+  const modal = document.getElementById('player-modal');
+  const miniBar = document.getElementById('mini-player-bar');
+  if (miniBar) miniBar.style.display = 'none';
+  if (modal) modal.classList.add('open');
+}
+
+export function hideMiniPlayer() {
+  const miniBar = document.getElementById('mini-player-bar');
+  if (miniBar) miniBar.style.display = 'none';
+}
+
+export function resumeCurrentPlayback() {
+  if (state.playbackEngine === 'youtube') {
+    const iframe = document.getElementById('youtube-embed-player');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+    }
+  } else {
+    const videoElem = document.getElementById('html5-video-element');
+    if (videoElem) videoElem.play().catch(() => {});
+  }
+  const btn = document.getElementById('btn-mini-play-pause');
+  if (btn) btn.textContent = '⏸';
+}
+
+export function pauseCurrentPlayback() {
+  if (state.playbackEngine === 'youtube') {
+    const iframe = document.getElementById('youtube-embed-player');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+    }
+  } else {
+    const videoElem = document.getElementById('html5-video-element');
+    if (videoElem) videoElem.pause();
+  }
+  const btn = document.getElementById('btn-mini-play-pause');
+  if (btn) btn.textContent = '▶';
+}
+
+let isMiniPaused = false;
+export function toggleMiniPlayPause() {
+  if (isMiniPaused) {
+    resumeCurrentPlayback();
+    isMiniPaused = false;
+  } else {
+    pauseCurrentPlayback();
+    isMiniPaused = true;
+  }
+}
+
 export function stopAllPlayback(preserve = null) {
+  // If not preserving main playback, hide floating mini-player too
+  if (!preserve || preserve.startsWith('shorts')) {
+    hideMiniPlayer();
+  }
+
   // 1. Teardown Main YouTube Embed Player
   if (preserve !== 'main-youtube') {
     const iframeContainer = document.getElementById('embed-iframe-container');
@@ -1173,6 +1278,19 @@ async function openVideoPlayer(video) {
   const cName = video.channel || 'Creator';
   channelNameElem.textContent = cName;
   channelSubsElem.textContent = 'Creator';
+
+  // Update Floating Mini-Player info
+  const miniThumb = document.getElementById('mini-player-thumb');
+  const miniTitle = document.getElementById('mini-player-title');
+  const miniChannel = document.getElementById('mini-player-channel');
+  const miniBar = document.getElementById('mini-player-bar');
+  if (miniThumb) miniThumb.src = video.thumbnail || `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+  if (miniTitle) miniTitle.textContent = video.title || 'Playing Video';
+  if (miniChannel) miniChannel.textContent = cName;
+  if (miniBar) miniBar.style.display = 'none'; // Hidden while full player is active
+
+  // Setup MediaSession for background audio & lockscreen controls
+  updateMediaSession(video);
 
   // Update Subscribe button state
   const isSubbed = isChannelSubscribed(video.channel_id, cName);
@@ -1386,13 +1504,34 @@ function initPlayerControls() {
   const loopBtn = document.getElementById('btn-loop-toggle');
   const downloadBtn = document.getElementById('btn-player-download');
 
+  document.getElementById('btn-minimize-player')?.addEventListener('click', () => {
+    minimizeToMiniPlayer();
+  });
+
   document.getElementById('btn-close-player')?.addEventListener('click', () => {
     stopAllPlayback();
+    hideMiniPlayer();
     modal.classList.remove('open');
     // If user was on Home 'all' feed, refresh dynamic recommendations immediately based on the newly watched video!
     if (state.activeTab === 'home' && state.activeCategory === 'all' && !state.searchQuery) {
       loadFeed('all');
     }
+  });
+
+  // Floating Mini-Player bar listeners
+  document.getElementById('mini-player-expand-btn')?.addEventListener('click', () => {
+    expandFromMiniPlayer();
+  });
+
+  document.getElementById('btn-mini-play-pause')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMiniPlayPause();
+  });
+
+  document.getElementById('btn-mini-close')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    stopAllPlayback();
+    hideMiniPlayer();
   });
 
   speedSelect?.addEventListener('change', (e) => {
@@ -1408,7 +1547,11 @@ function initPlayerControls() {
   bgAudioBtn?.addEventListener('click', () => {
     state.isAudioMode = !state.isAudioMode;
     bgAudioBtn.classList.toggle('active', state.isAudioMode);
-    videoElem.style.opacity = state.isAudioMode ? '0.05' : '1';
+    if (state.isAudioMode) {
+      showToast('🎧 Background Audio ON: Music keeps playing with screen locked or app minimized!');
+    } else {
+      showToast('Background Audio OFF');
+    }
   });
 
   document.getElementById('btn-engine-toggle')?.addEventListener('click', () => {
@@ -2640,7 +2783,8 @@ window.handleAndroidBack = function() {
   }
   const playerModal = document.getElementById('player-modal');
   if (playerModal && playerModal.classList.contains('open')) {
-    document.getElementById('btn-close-player')?.click();
+    // Minimize to mini-player so video audio keeps playing seamlessly in background!
+    minimizeToMiniPlayer();
     return true;
   }
   const sidebar = document.getElementById('sidebar-overlay');

@@ -252,6 +252,21 @@
               </section>
             </main>
 
+            <!-- Floating Bottom Mini-Player Bar (Background Play & Continuous Listening) -->
+            <div id="mini-player-bar" class="mini-player-bar" style="display:none;">
+              <div class="mini-player-left" id="mini-player-expand-btn">
+                <img id="mini-player-thumb" src="" alt="Thumbnail" class="mini-player-thumb" />
+                <div class="mini-player-info">
+                  <span id="mini-player-title" class="mini-player-title">Playing Video</span>
+                  <span id="mini-player-channel" class="mini-player-channel">Creator</span>
+                </div>
+              </div>
+              <div class="mini-player-controls">
+                <button id="btn-mini-play-pause" class="mini-player-btn" title="Play / Pause">⏸</button>
+                <button id="btn-mini-close" class="mini-player-btn" title="Close">✕</button>
+              </div>
+            </div>
+
             <!-- Bottom Navigation Bar -->
             <nav class="metube-bottom-nav">
               <button class="nav-item active" data-tab="home">
@@ -364,7 +379,8 @@
             <!-- Video Player Modal -->
             <div class="player-modal" id="player-modal">
               <div class="player-top-bar">
-                <button class="icon-button" id="btn-close-player" title="Close Player">✕</button>
+                <button class="icon-button" id="btn-minimize-player" title="Minimize to Mini-Player">▼</button>
+                <button class="icon-button" id="btn-close-player" title="Close Player" style="margin-left:4px;">✕</button>
                 <div style="flex:1;"></div>
                 <button class="icon-button" id="btn-player-debug" title="Live Diagnostics" style="font-size:14px; margin-right:6px;">🐞</button>
                 <button class="icon-button" id="btn-player-download" title="Download">

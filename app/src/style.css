@@ -1066,6 +1066,101 @@ body.is-mobile-device .phone-home-indicator {
 }
 
 /* =========================================================
+   FLOATING BOTTOM MINI-PLAYER BAR (BACKGROUND PLAY)
+   ========================================================= */
+.mini-player-bar {
+  position: absolute;
+  bottom: calc(52px + var(--safe-bottom, 0px));
+  left: 0;
+  right: 0;
+  height: 52px;
+  background: #181818;
+  border-top: 1px solid #2a2a2a;
+  border-bottom: 1px solid #0f0f0f;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  z-index: 250;
+  box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  animation: slideUpMini 0.22s ease-out;
+}
+
+@keyframes slideUpMini {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.mini-player-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  overflow: hidden;
+  height: 100%;
+}
+
+.mini-player-thumb {
+  width: 52px;
+  height: 34px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #222;
+}
+
+.mini-player-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 2px;
+  justify-content: center;
+}
+
+.mini-player-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #FFFFFF;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-player-channel {
+  font-size: 10px;
+  color: var(--text-gray);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.mini-player-btn {
+  background: transparent;
+  border: none;
+  color: #FFFFFF;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.15s;
+}
+
+.mini-player-btn:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* =========================================================
    BOTTOM NAVIGATION BAR
    ========================================================= */
 .metube-bottom-nav {
