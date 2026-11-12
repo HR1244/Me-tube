@@ -280,6 +280,9 @@ public class MainActivity extends BridgeActivity {
                     activeAudioUrl = audioUrl != null ? audioUrl : "";
                     activeThumbUrl = thumbUrl != null ? thumbUrl : "";
 
+                    if (bgEnabled && DirectYouTubeResolver.isValidYouTubeId(activeVideoId)) {
+                        DirectYouTubeResolver.prewarmAsync(activeVideoId);
+                    }
                     if (bgEnabled && isPlaying) {
                         startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
                     } else if (!bgEnabled && !MediaPlaybackService.isNativeAudioActive) {
@@ -352,6 +355,11 @@ public class MainActivity extends BridgeActivity {
             webView.addJavascriptInterface(new Object() {
                 @JavascriptInterface
                 public long startDownload(String url, String filename, String mimeType) {
+                    return startDownloadWithUa(url, filename, mimeType, null);
+                }
+
+                @JavascriptInterface
+                public long startDownloadWithUa(String url, String filename, String mimeType, String customUa) {
                     try {
                         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
                         String lower = filename != null ? filename.toLowerCase() : "";
@@ -360,7 +368,10 @@ public class MainActivity extends BridgeActivity {
                             : (lower.endsWith(".mp3") ? "audio/mpeg" : (lower.endsWith(".m4a") ? "audio/mp4" : "video/mp4"));
                         request.setMimeType(safeMime);
                         request.setDescription("Downloading to phone storage via MeTube");
-                        request.addRequestHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 MeTube/2.0");
+                        String effectiveUa = (customUa != null && !customUa.isEmpty())
+                            ? customUa
+                            : "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 MeTube/2.0";
+                        request.addRequestHeader("User-Agent", effectiveUa);
                         String safeTitle = (filename != null && !filename.isEmpty())
                             ? filename.replaceAll("[^a-zA-Z0-9._-]", "_")
                             : "MeTube_Media.mp4";
@@ -539,6 +550,56 @@ public class MainActivity extends BridgeActivity {
                 }
             }, "AndroidUpdater");
 
+            // 6. On-Device InnerTube Resolver Bridge (runs on phone's residential IP, zero datacenter bot block)
+            webView.addJavascriptInterface(new Object() {
+                @JavascriptInterface
+                public void resolveForDownloadAsync(String callbackId, String videoId, String formatType) {
+                    new Thread(() -> {
+                        JSONObject out = new JSONObject();
+                        try {
+                            DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
+                            boolean wantAudio = formatType != null && (formatType.equalsIgnoreCase("mp3") || formatType.equalsIgnoreCase("audio") || formatType.equalsIgnoreCase("m4a"));
+                            if (res != null) {
+                                String targetUrl = wantAudio ? res.audioUrl : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : res.audioUrl);
+                                String ext = wantAudio ? res.audioExt : "mp4";
+                                String mime = wantAudio ? res.audioMime : "video/mp4";
+                                if (targetUrl != null && !targetUrl.isEmpty() && !targetUrl.contains(".m3u8")) {
+                                    out.put("ok", true);
+                                    out.put("url", targetUrl);
+                                    out.put("audioUrl", res.audioUrl);
+                                    out.put("videoUrl", res.videoUrl);
+                                    out.put("ext", ext);
+                                    out.put("mimeType", mime);
+                                    out.put("userAgent", res.userAgent);
+                                    out.put("title", res.title);
+                                } else {
+                                    out.put("ok", false);
+                                    out.put("error", "No direct progressive stream");
+                                }
+                            } else {
+                                out.put("ok", false);
+                                out.put("error", "Resolution unavailable");
+                            }
+                        } catch (Exception e) {
+                            try {
+                                out.put("ok", false);
+                                out.put("error", e.getMessage());
+                            } catch (Exception ignored) {}
+                        }
+                        String safeCb = callbackId != null ? callbackId.replace("'", "") : "";
+                        String b64 = Base64.encodeToString(out.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+                        runOnUiThread(() -> {
+                            if (getBridge() != null && getBridge().getWebView() != null) {
+                                getBridge().getWebView().evaluateJavascript(
+                                    "window.__onNativeInnerTube && window.__onNativeInnerTube('" + safeCb + "','" + b64 + "');",
+                                    null
+                                );
+                            }
+                        });
+                    }).start();
+                }
+            }, "AndroidInnerTube");
+
             webView.setDownloadListener(new DownloadListener() {
                 @Override
                 public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
@@ -707,6 +768,7 @@ public class MainActivity extends BridgeActivity {
     private void startMediaServiceAction(String action, boolean isHandoff) {
         Intent svc = new Intent(this, MediaPlaybackService.class);
         svc.setAction(action);
+        svc.putExtra("videoId", activeVideoId);
         svc.putExtra("title", activeTitle);
         svc.putExtra("artist", activeArtist);
         svc.putExtra("artwork", activeThumbUrl);
@@ -736,7 +798,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onPause() {
         super.onPause();
-        if (bgAudioEnabled && mediaIsPlaying && !activeAudioUrl.isEmpty()) {
+        if (bgAudioEnabled && mediaIsPlaying && (!activeAudioUrl.isEmpty() || DirectYouTubeResolver.isValidYouTubeId(activeVideoId))) {
             // Seamlessly hand audio playback over to OS-level MediaPlaybackService
             startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
             if (getBridge() != null && getBridge().getWebView() != null) {

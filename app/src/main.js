@@ -1383,6 +1383,58 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// Keep YT iframe timeline & BG audio readiness synced even when iframe postMessage pauses
+setInterval(() => {
+  if (state.playbackEngine === 'youtube' && ytIsPlaying && state.activeVideo && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
+    ytCurrentTimeSec += 1;
+    if (ytDurationSec > 0 && ytCurrentTimeSec > ytDurationSec) ytCurrentTimeSec = ytDurationSec;
+    syncNativeMediaService(true, false);
+  }
+}, 1000);
+
+const _nativeInnerTubeCbs = new Map();
+window.__onNativeInnerTube = (callbackId, b64) => {
+  const cb = _nativeInnerTubeCbs.get(callbackId);
+  if (!cb) return;
+  _nativeInnerTubeCbs.delete(callbackId);
+  try {
+    const bin = atob(b64 || '');
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const jsonStr = new TextDecoder('utf-8').decode(bytes);
+    cb(JSON.parse(jsonStr));
+  } catch (err) {
+    cb({ ok: false, error: err?.message || 'Native InnerTube parse failed' });
+  }
+};
+
+export function resolveViaNativeInnerTube(videoId, formatType = 'audio') {
+  return new Promise((resolve) => {
+    if (!videoId || !window.AndroidInnerTube?.resolveForDownloadAsync) {
+      resolve({ ok: false, error: 'Native InnerTube unavailable' });
+      return;
+    }
+    const cbId = `it_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const timer = setTimeout(() => {
+      if (_nativeInnerTubeCbs.has(cbId)) {
+        _nativeInnerTubeCbs.delete(cbId);
+        resolve({ ok: false, error: 'Native resolution timed out' });
+      }
+    }, 15000);
+    _nativeInnerTubeCbs.set(cbId, (res) => {
+      clearTimeout(timer);
+      resolve(res || { ok: false, error: 'Empty response' });
+    });
+    try {
+      window.AndroidInnerTube.resolveForDownloadAsync(cbId, videoId, formatType === 'audio' ? 'audio' : 'video');
+    } catch (err) {
+      clearTimeout(timer);
+      _nativeInnerTubeCbs.delete(cbId);
+      resolve({ ok: false, error: err?.message || 'Bridge invocation failed' });
+    }
+  });
+}
+
 export function syncNativeMediaService(playingOverride = null, force = false) {
   try {
     if (!window.AndroidMediaService?.syncState) return;
@@ -2376,6 +2428,51 @@ function initDownloadModal() {
     confirmText.textContent = 'Starting Download...';
 
     try {
+      const canUseNativeDirect = !state.activeVideo.isExternal
+        && Boolean(state.activeVideo.id)
+        && Boolean(window.AndroidInnerTube?.resolveForDownloadAsync)
+        && Boolean(window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload);
+
+      if (canUseNativeDirect) {
+        const fmtType = state.selectedFormat.type === 'audio' ? 'audio' : 'video';
+        const nativeRes = await resolveViaNativeInnerTube(state.activeVideo.id, fmtType);
+        if (nativeRes?.ok && nativeRes.url) {
+          const rawTitle = state.activeVideo.title || nativeRes.title || state.activeVideo.id;
+          const safeTitle = rawTitle.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 60) || state.activeVideo.id;
+          const ext = nativeRes.ext || (fmtType === 'audio' ? 'm4a' : 'mp4');
+          const filename = `${safeTitle}.${ext}`;
+          const jobId = `local_${state.activeVideo.id}_${fmtType}_${Date.now()}`;
+          const localJob = {
+            job_id: jobId,
+            video_id: state.activeVideo.id,
+            title: rawTitle,
+            format_type: fmtType,
+            quality: fmtType === 'audio' ? 'M4A Audio' : (state.selectedFormat.quality || 'Direct'),
+            status: 'client_ready',
+            filename,
+            client_direct_url: nativeRes.url,
+            userAgent: nativeRes.userAgent || '',
+            mimeType: nativeRes.mimeType || (fmtType === 'audio' ? 'audio/mp4' : 'video/mp4'),
+            isLocalDirect: true,
+            created_at: Date.now()
+          };
+          state.localDownloads = [localJob, ...(state.localDownloads || [])].slice(0, 40);
+          saveLocalDownloads(state.localDownloads);
+          autoSavedJobIds.add(jobId);
+          saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
+          triggerSaveToDevice(nativeRes.url, filename, jobId, nativeRes.userAgent || '', localJob.mimeType);
+
+          modal.classList.remove('open');
+          confirmBtn.disabled = false;
+          confirmText.textContent = `Download ${state.selectedFormat.label}`;
+          syncNativeOverlayFlag();
+          lastDownloadsSyncAt = 0;
+          loadDownloadsList(true);
+          switchTab('downloads');
+          return;
+        }
+      }
+
       await api.startDownload(
         state.activeVideo.isExternal ? '' : state.activeVideo.id,
         state.selectedFormat.type,
@@ -2433,22 +2530,40 @@ function saveNativeDmMap(map) {
   try { localStorage.setItem(NATIVE_DM_MAP_KEY, JSON.stringify(map)); } catch (_) {}
 }
 
+const LOCAL_DL_KEY = 'metube_local_downloads';
+function loadLocalDownloads() {
+  try {
+    const raw = localStorage.getItem(LOCAL_DL_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+function saveLocalDownloads(list) {
+  try { localStorage.setItem(LOCAL_DL_KEY, JSON.stringify((list || []).slice(0, 40))); } catch (_) {}
+}
+
 const autoSavedJobIds = loadSetFromStorage(AUTOSAVED_JOBS_KEY);
+const autoRecoveredJobIds = new Set();
 state.nativeDmProgress = loadNativeDmMap();
+state.localDownloads = loadLocalDownloads();
 let downloadPollTimer = null;
 let downloadsInFlight = null;
 let lastDownloadsSyncAt = 0;
 
-export function triggerSaveToDevice(url, filename, jobId = null) {
+export function triggerSaveToDevice(url, filename, jobId = null, customUa = null, explicitMime = null) {
   console.log(`[Download] Triggering device download for ${filename}: ${url}`);
   const absoluteUrl = url.startsWith('http') ? url : `${getServerUrl()}${url}`;
 
   // 1. Native Android APK Downloader Bridge (Enqueues directly in Android DownloadManager + tracks byte progress)
-  if (typeof window !== 'undefined' && window.AndroidDownloader && window.AndroidDownloader.startDownload) {
+  if (typeof window !== 'undefined' && (window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload)) {
     console.log('[Download] Using native AndroidDownloader bridge for:', absoluteUrl);
     const lowerName = (filename || '').toLowerCase();
-    const mime = lowerName.endsWith('.mp3') ? 'audio/mpeg' : (lowerName.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
-    const dmId = Number(window.AndroidDownloader.startDownload(absoluteUrl, filename, mime) || -1);
+    const mime = explicitMime || (lowerName.endsWith('.mp3') ? 'audio/mpeg' : (lowerName.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4'));
+    const dmId = window.AndroidDownloader.startDownloadWithUa
+      ? Number(window.AndroidDownloader.startDownloadWithUa(absoluteUrl, filename, mime, customUa || '') || -1)
+      : Number(window.AndroidDownloader.startDownload(absoluteUrl, filename, mime) || -1);
     if (jobId && dmId > 0) {
       state.nativeDmProgress[jobId] = {
         dmId,
@@ -2458,7 +2573,8 @@ export function triggerSaveToDevice(url, filename, jobId = null) {
         totalBytes: 0,
         localUri: '',
         mimeType: mime,
-        filename
+        filename,
+        customUa: customUa || ''
       };
       saveNativeDmMap(state.nativeDmProgress);
     }
@@ -2489,6 +2605,43 @@ export function triggerSaveToDevice(url, filename, jobId = null) {
   }
 }
 
+function getMergedDownloadsList() {
+  const local = Array.isArray(state.localDownloads) ? state.localDownloads : [];
+  const localIds = new Set(local.map((l) => l.job_id));
+  const remote = Array.isArray(state.downloads) ? state.downloads.filter((d) => !localIds.has(d.job_id)) : [];
+  return [...local, ...remote];
+}
+
+async function recoverJobViaNativeInnerTube(item) {
+  if (!item?.video_id || !window.AndroidInnerTube?.resolveForDownloadAsync) return false;
+  const fmtType = item.format_type === 'audio' ? 'audio' : 'video';
+  const res = await resolveViaNativeInnerTube(item.video_id, fmtType);
+  if (!res?.ok || !res.url) return false;
+  const safeBase = (item.title || res.title || item.video_id).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 60) || item.video_id;
+  const ext = res.ext || (fmtType === 'audio' ? 'm4a' : 'mp4');
+  const filename = item.filename || `${safeBase}.${ext}`;
+  const recoveredJob = {
+    job_id: item.job_id,
+    video_id: item.video_id,
+    title: item.title || res.title || item.video_id,
+    format_type: fmtType,
+    quality: fmtType === 'audio' ? 'M4A Audio' : (item.quality || 'Direct'),
+    status: 'client_ready',
+    filename,
+    client_direct_url: res.url,
+    userAgent: res.userAgent || '',
+    mimeType: res.mimeType || (fmtType === 'audio' ? 'audio/mp4' : 'video/mp4'),
+    isLocalDirect: true,
+    created_at: item.created_at || Date.now()
+  };
+  state.localDownloads = [recoveredJob, ...(state.localDownloads || []).filter((d) => d.job_id !== item.job_id)].slice(0, 40);
+  saveLocalDownloads(state.localDownloads);
+  autoSavedJobIds.add(item.job_id);
+  saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
+  triggerSaveToDevice(res.url, filename, item.job_id, res.userAgent || '', recoveredJob.mimeType);
+  return true;
+}
+
 async function loadDownloadsList(force = false) {
   const container = document.getElementById('downloads-list');
   const counter = document.getElementById('nav-download-counter');
@@ -2504,15 +2657,16 @@ async function loadDownloadsList(force = false) {
     const cached = localStorage.getItem('metube_downloads_cache');
     if (cached) {
       const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        state.downloads = parsed;
-        renderDownloadsDOM(container, counter, parsed);
-        hadCache = true;
-      }
+      if (Array.isArray(parsed)) state.downloads = parsed;
     }
   } catch (e) {}
+  const initialMerged = getMergedDownloadsList();
+  if (initialMerged.length > 0) {
+    renderDownloadsDOM(container, counter, initialMerged);
+    hadCache = true;
+  }
 
-  if (!hadCache && state.downloads.length === 0) {
+  if (!hadCache) {
     container.innerHTML = `
       <div class="spinner-box">
         <div class="spinner"></div>
@@ -2535,17 +2689,32 @@ async function loadDownloadsList(force = false) {
 
       // Auto-save completed downloads to Android device storage once & track DownloadManager progress
       let hasActiveNative = false;
-      state.downloads.forEach((item) => {
+      const merged = getMergedDownloadsList();
+      merged.forEach((item) => {
         const isReady = item.status === 'completed' || item.status === 'client_ready';
-        if (isReady && item.filename && !autoSavedJobIds.has(item.job_id)) {
+        if (!item.isLocalDirect && item.status === 'error' && item.video_id && !autoRecoveredJobIds.has(item.job_id) && window.AndroidInnerTube?.resolveForDownloadAsync) {
+          autoRecoveredJobIds.add(item.job_id);
+          recoverJobViaNativeInnerTube(item).then((ok) => {
+            if (ok) loadDownloadsList(true);
+          });
+        } else if (isReady && item.filename && !autoSavedJobIds.has(item.job_id)) {
           autoSavedJobIds.add(item.job_id);
           saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
           const rawUrl = item.status === 'completed'
             ? api.getFileDownloadUrl(item.filename)
             : (item.client_direct_url || item.download_url || '');
-          if (rawUrl) {
+          if (!item.isLocalDirect && rawUrl && String(rawUrl).includes('/api/stream/') && item.video_id && !autoRecoveredJobIds.has(item.job_id) && window.AndroidInnerTube?.resolveForDownloadAsync) {
+            autoRecoveredJobIds.add(item.job_id);
+            recoverJobViaNativeInnerTube(item).then((ok) => {
+              if (!ok) {
+                const fileUrl = rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`;
+                triggerSaveToDevice(fileUrl, item.filename, item.job_id);
+              }
+              loadDownloadsList(true);
+            });
+          } else if (rawUrl) {
             const fileUrl = rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`;
-            triggerSaveToDevice(fileUrl, item.filename, item.job_id);
+            triggerSaveToDevice(fileUrl, item.filename, item.job_id, item.userAgent || null, item.mimeType || null);
           }
         }
 
@@ -2573,7 +2742,8 @@ async function loadDownloadsList(force = false) {
       });
       saveNativeDmMap(state.nativeDmProgress);
 
-      renderDownloadsDOM(container, counter, state.downloads);
+      const finalMerged = getMergedDownloadsList();
+      renderDownloadsDOM(container, counter, finalMerged);
 
       // Active polling if server OR phone DownloadManager is still working
       const hasActiveServer = state.downloads.some(
@@ -2587,7 +2757,10 @@ async function loadDownloadsList(force = false) {
         downloadPollTimer = setTimeout(() => loadDownloadsList(true), 1200);
       }
     } catch (err) {
-      if (!hadCache) {
+      const offlineMerged = getMergedDownloadsList();
+      if (offlineMerged.length > 0) {
+        renderDownloadsDOM(container, counter, offlineMerged);
+      } else if (!hadCache) {
         container.innerHTML = `
           <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:13px;">
             No downloads found.
@@ -2656,7 +2829,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
           <span style="font-size:10px; font-weight:800; background:#272727; color:#FFF; padding:2px 7px; border-radius:4px;">
             ${(item.format_type || 'MP4').toUpperCase()} • ${item.quality}
           </span>
-          <button class="quick-btn btn-delete-download" data-job="${item.job_id}" title="Delete">🗑️</button>
+          <button class="quick-btn btn-delete-download" data-job="${item.job_id}" data-local="${item.isLocalDirect ? '1' : '0'}" title="Delete">🗑️</button>
         </div>
         <div style="font-size:13px; font-weight:700; color:#FFF; line-height:17px;">${item.title}</div>
         
@@ -2687,7 +2860,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
         ${isError ? `
           <div style="margin-top:8px; font-size:11px; color:#FF5252; background:rgba(255,82,82,0.1); padding:8px 10px; border-radius:6px;">
             <div style="margin-bottom:4px;">${errText}</div>
-            ${item.video_id ? `<button class="btn-fast-dl-card" data-video-id="${item.video_id}" style="margin-top:4px; background:#272727; color:#FFF; border:1px solid #444; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; width:100%; cursor:pointer;">⚡ Download via Fast Browser Direct</button>` : ''}
+            ${item.video_id ? `<button class="btn-fast-dl-card" data-job="${item.job_id}" data-video-id="${item.video_id}" data-type="${item.format_type || 'video'}" style="margin-top:4px; background:#272727; color:#FFF; border:1px solid #444; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; width:100%; cursor:pointer;">🔄 Retry On Device</button>` : ''}
           </div>
         ` : ''}
 
@@ -2695,14 +2868,14 @@ function renderDownloadsDOM(container, counter, downloadsList) {
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid var(--border-subtle);">
             ${dmSuccess ? `
               <span style="font-size:11px; font-weight:700; color:#4ADE80;">✓ Saved in Downloads/MeTube</span>
-              <button class="btn-open-native" data-uri="${dm.localUri || ''}" data-mime="${dm.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
+              <button class="btn-open-native" data-uri="${dm.localUri || ''}" data-mime="${dm.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
                 ▶ Open / Play
               </button>
             ` : `
-              <button class="btn-save-device" data-job="${item.job_id}" data-url="${fileUrl}" data-filename="${item.filename}" style="flex:1; background:#FF0000; color:#FFF; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
+              <button class="btn-save-device" data-job="${item.job_id}" data-video-id="${item.video_id || ''}" data-type="${item.format_type || 'video'}" data-url="${fileUrl}" data-filename="${item.filename}" data-ua="${(item.userAgent || dm?.customUa || '').replace(/"/g, '&quot;')}" data-mime="${(item.mimeType || dm?.mimeType || '').replace(/"/g, '&quot;')}" style="flex:1; background:#FF0000; color:#FFF; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
                 <span>${dmFailed ? '🔄 Retry Save to Phone' : '💾 Save to Device'}</span>
               </button>
-              <button class="btn-play-offline" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
+              <button class="btn-play-offline" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
                 ▶ Play
               </button>
             `}
@@ -2712,11 +2885,25 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     `;
   }).join('');
 
-  // Attach Save to Device event (for browser fallback or retry)
+  // Attach Save to Device event (with fresh InnerTube re-resolution on failed YouTube items)
   container.querySelectorAll('.btn-save-device').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.preventDefault();
-      triggerSaveToDevice(btn.dataset.url, btn.dataset.filename, btn.dataset.job || null);
+      const jobId = btn.dataset.job || null;
+      const vId = btn.dataset.videoId || '';
+      const fmtType = btn.dataset.type || 'video';
+      const dm = jobId ? state.nativeDmProgress[jobId] : null;
+      if (vId && window.AndroidInnerTube?.resolveForDownloadAsync && (dm?.status === 16 || String(btn.dataset.url).includes('/api/stream/'))) {
+        btn.disabled = true;
+        const fresh = await resolveViaNativeInnerTube(vId, fmtType === 'audio' ? 'audio' : 'video');
+        btn.disabled = false;
+        if (fresh?.ok && fresh.url) {
+          triggerSaveToDevice(fresh.url, btn.dataset.filename, jobId, fresh.userAgent || '', fresh.mimeType || btn.dataset.mime || null);
+          setTimeout(() => loadDownloadsList(true), 600);
+          return;
+        }
+      }
+      triggerSaveToDevice(btn.dataset.url, btn.dataset.filename, jobId, btn.dataset.ua || null, btn.dataset.mime || null);
       setTimeout(() => loadDownloadsList(true), 600);
     });
   });
@@ -2732,12 +2919,26 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     });
   });
 
-  // Attach Fast DL event on error cards
+  // Attach Retry On Device (or external fallback) event on error cards
   container.querySelectorAll('.btn-fast-dl-card').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.preventDefault();
       const vId = btn.dataset.videoId;
+      const jobId = btn.dataset.job;
+      const fmtType = btn.dataset.type === 'audio' ? 'audio' : 'video';
       if (!vId) return;
+      if (window.AndroidInnerTube?.resolveForDownloadAsync) {
+        btn.disabled = true;
+        btn.textContent = 'Resolving on phone...';
+        const existing = getMergedDownloadsList().find((d) => d.job_id === jobId) || { job_id: jobId, video_id: vId, format_type: fmtType };
+        const ok = await recoverJobViaNativeInnerTube(existing);
+        if (ok) {
+          loadDownloadsList(true);
+          return;
+        }
+        btn.disabled = false;
+        btn.textContent = '⚡ Open Web Downloader';
+      }
       const directWebUrl = `https://y2mate.is/en/?url=https://www.youtube.com/watch?v=${vId}`;
       if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
         window.open(directWebUrl, '_system');
@@ -2751,13 +2952,18 @@ function renderDownloadsDOM(container, counter, downloadsList) {
   container.querySelectorAll('.btn-delete-download').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const jobId = btn.dataset.job;
+      const isLocal = btn.dataset.local === '1';
       delete state.nativeDmProgress[jobId];
       autoSavedJobIds.delete(jobId);
       saveNativeDmMap(state.nativeDmProgress);
       saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-      try {
-        await api.deleteDownload(jobId);
-      } catch (_) {}
+      state.localDownloads = (state.localDownloads || []).filter((d) => d.job_id !== jobId);
+      saveLocalDownloads(state.localDownloads);
+      if (!isLocal) {
+        try {
+          await api.deleteDownload(jobId);
+        } catch (_) {}
+      }
       loadDownloadsList(true);
     });
   });
@@ -2765,7 +2971,14 @@ function renderDownloadsDOM(container, counter, downloadsList) {
   // Attach Play Offline event
   container.querySelectorAll('.btn-play-offline').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const fileUrl = api.getFileDownloadUrl(btn.dataset.filename);
+      if (btn.dataset.uri && window.AndroidDownloader?.openDownloadedFile) {
+        window.AndroidDownloader.openDownloadedFile(btn.dataset.uri, btn.dataset.mime || 'video/mp4');
+        return;
+      }
+      const rawUrl = btn.dataset.url;
+      const fileUrl = (rawUrl && rawUrl !== '#' && !rawUrl.includes('undefined'))
+        ? rawUrl
+        : api.getFileDownloadUrl(btn.dataset.filename);
       openOfflinePlayer(fileUrl, btn.dataset.filename, btn.dataset.type);
     });
   });
@@ -3380,6 +3593,7 @@ function openShortsModal(short) {
         ></iframe>
       `;
     }
+    syncNativeMediaService(true, true);
   };
 
   // Try crisp Ad/Logo-free Native Vertical Video Stream first

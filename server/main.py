@@ -1467,28 +1467,33 @@ def stream_video_proxy(
     audio: bool = False,
     direct: bool = False,
     proxy: bool = False,
-    quality: Optional[int] = None,
+    quality: Optional[str] = None,
     device_id: Optional[str] = None
 ):
     """High-speed stream proxy (default for Googlevideo IP-bound URLs) with HTTP Range seeking."""
     dev_id = extract_device_id(request, device_id)
+    parsed_quality: Optional[int] = None
+    if quality:
+        q_digits = re.sub(r"\D", "", str(quality))
+        if q_digits:
+            parsed_quality = int(q_digits)
     sc_key = f"{dev_id}:{video_id}"
     direct_url = None
 
     cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
     if cached_entry and time.time() < cached_entry.get("expires", 0):
-        direct_url = _pick_cached_stream_url(cached_entry, audio, quality)
+        direct_url = _pick_cached_stream_url(cached_entry, audio, parsed_quality)
 
     if not direct_url:
         try:
             extract_youtube_info_cached(video_id, device_id=dev_id)
             cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
-            direct_url = _pick_cached_stream_url(cached_entry, audio, quality)
+            direct_url = _pick_cached_stream_url(cached_entry, audio, parsed_quality)
         except Exception as exc:
             logger.warning(f"Cached stream resolution failed for {video_id}: {exc}")
 
     if not direct_url:
-        direct_url = extract_direct_stream_url(video_id, audio_only=audio, device_id=dev_id, max_height=quality)
+        direct_url = extract_direct_stream_url(video_id, audio_only=audio, device_id=dev_id, max_height=parsed_quality)
     if not direct_url:
         raise HTTPException(status_code=404, detail="Stream not available")
 

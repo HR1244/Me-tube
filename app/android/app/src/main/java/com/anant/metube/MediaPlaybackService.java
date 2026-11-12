@@ -55,6 +55,9 @@ public class MediaPlaybackService extends Service {
     public static volatile long nativePositionMs = 0L;
     public static volatile String currentStreamUrl = "";
 
+    private static final String DEFAULT_UA =
+        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36";
+
     private ExoPlayer exoPlayer;
     private MediaSession mediaSession;
     private PowerManager.WakeLock wakeLock;
@@ -62,7 +65,11 @@ public class MediaPlaybackService extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean retriedFallback = false;
     private int tickCounter = 0;
+    private volatile int playSeq = 0;
 
+    private String currentVideoId = "";
+    private String currentFallbackUrl = "";
+    private String currentUserAgent = DEFAULT_UA;
     private String currentTitle = "MeTube";
     private String currentArtist = "Background Audio";
     private String currentArtworkUrl = "";
@@ -162,6 +169,7 @@ public class MediaPlaybackService extends Service {
         }
 
         if (ACTION_HANDOFF_RETURN.equals(action)) {
+            ++playSeq;
             snapshotPosition();
             isNativeAudioActive = false;
             mainHandler.removeCallbacks(positionTicker);
@@ -173,6 +181,7 @@ public class MediaPlaybackService extends Service {
         }
 
         // Update metadata from intent extras
+        String videoId = intent.getStringExtra("videoId");
         String title = intent.getStringExtra("title");
         String artist = intent.getStringExtra("artist");
         String artwork = intent.getStringExtra("artwork");
@@ -181,6 +190,7 @@ public class MediaPlaybackService extends Service {
         long durMs = intent.getLongExtra("durationMs", 0L);
         boolean shouldPlay = intent.getBooleanExtra("isPlaying", true);
 
+        if (videoId != null) currentVideoId = videoId;
         if (title != null && !title.isEmpty()) currentTitle = title;
         if (artist != null && !artist.isEmpty()) currentArtist = artist;
         if (durMs > 0) currentDurationMs = durMs;
@@ -195,10 +205,41 @@ public class MediaPlaybackService extends Service {
         // Promote immediately to Foreground Service before anything else
         promoteForeground();
 
-        if (ACTION_HANDOFF_PLAY.equals(action) && streamUrl != null && !streamUrl.isEmpty()) {
+        if (ACTION_HANDOFF_PLAY.equals(action) && ((streamUrl != null && !streamUrl.isEmpty()) || DirectYouTubeResolver.isValidYouTubeId(videoId))) {
             acquireLocks();
             retriedFallback = false;
-            startNativePlayer(streamUrl, posMs, shouldPlay);
+            currentFallbackUrl = streamUrl != null ? streamUrl : "";
+            isNativeAudioActive = true;
+            isNativePlaying = shouldPlay;
+            final int mySeq = ++playSeq;
+            final boolean isOfflineFile = currentFallbackUrl.contains("/api/download/file/");
+
+            if (!isOfflineFile && DirectYouTubeResolver.isValidYouTubeId(videoId)) {
+                DirectYouTubeResolver.ResolvedStream cached = DirectYouTubeResolver.getCached(videoId);
+                if (cached != null && cached.audioUrl != null && !cached.audioUrl.isEmpty()) {
+                    startNativePlayer(cached.audioUrl, cached.userAgent, posMs, shouldPlay);
+                } else {
+                    updateNotificationAndSession();
+                    new Thread(() -> {
+                        DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
+                        if (mySeq != playSeq || !isNativeAudioActive) return;
+                        String targetUrl = (res != null && res.audioUrl != null && !res.audioUrl.isEmpty()) ? res.audioUrl : currentFallbackUrl;
+                        String targetUa = (res != null && res.audioUrl != null && !res.audioUrl.isEmpty()) ? res.userAgent : DEFAULT_UA;
+                        if (res != null && res.durationMs > 0 && currentDurationMs <= 0) {
+                            currentDurationMs = res.durationMs;
+                        }
+                        if (targetUrl != null && !targetUrl.isEmpty()) {
+                            mainHandler.post(() -> {
+                                if (mySeq == playSeq && isNativeAudioActive) {
+                                    startNativePlayer(targetUrl, targetUa, posMs, shouldPlay);
+                                }
+                            });
+                        }
+                    }).start();
+                }
+            } else if (!currentFallbackUrl.isEmpty()) {
+                startNativePlayer(currentFallbackUrl, DEFAULT_UA, posMs, shouldPlay);
+            }
         } else if (ACTION_START_OR_UPDATE.equals(action)) {
             // Notification-only foreground tracking while WebView is foreground
             acquireLocks();
@@ -208,8 +249,9 @@ public class MediaPlaybackService extends Service {
         return START_STICKY;
     }
 
-    private void startNativePlayer(String url, long seekMs, boolean playWhenReady) {
+    private void startNativePlayer(String url, String userAgent, long seekMs, boolean playWhenReady) {
         try {
+            String effectiveUa = (userAgent != null && !userAgent.isEmpty()) ? userAgent : DEFAULT_UA;
             if (isNativeAudioActive && exoPlayer != null && url.equals(currentStreamUrl)) {
                 if (seekMs > 0 && Math.abs(exoPlayer.getCurrentPosition() - seekMs) > 2500) {
                     exoPlayer.seekTo(seekMs);
@@ -223,12 +265,13 @@ public class MediaPlaybackService extends Service {
 
             releaseMediaPlayer();
             currentStreamUrl = url;
+            currentUserAgent = effectiveUa;
             pendingSeekMs = Math.max(0L, seekMs);
             isNativeAudioActive = true;
             isNativePlaying = playWhenReady;
 
             DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
-                .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36")
+                .setUserAgent(effectiveUa)
                 .setAllowCrossProtocolRedirects(true)
                 .setConnectTimeoutMs(30000)
                 .setReadTimeoutMs(30000);
@@ -271,13 +314,21 @@ public class MediaPlaybackService extends Service {
                 @Override
                 public void onPlayerError(PlaybackException error) {
                     Log.e(TAG, "ExoPlayer background error (" + error.getErrorCodeName() + "): " + error.getMessage());
-                    if (!retriedFallback && currentStreamUrl != null && currentStreamUrl.contains("audio=true")) {
+                    if (!retriedFallback) {
                         retriedFallback = true;
-                        String fallbackUrl = currentStreamUrl.replace("audio=true", "audio=false");
                         long posNow = Math.max(nativePositionMs, pendingSeekMs);
-                        currentStreamUrl = "";
-                        mainHandler.post(() -> startNativePlayer(fallbackUrl, posNow, true));
-                        return;
+                        if (currentFallbackUrl != null && !currentFallbackUrl.isEmpty() && !currentFallbackUrl.equals(currentStreamUrl)) {
+                            String nextUrl = currentFallbackUrl;
+                            currentStreamUrl = "";
+                            mainHandler.post(() -> startNativePlayer(nextUrl, DEFAULT_UA, posNow, true));
+                            return;
+                        }
+                        if (currentStreamUrl != null && currentStreamUrl.contains("audio=true")) {
+                            String fallbackUrl = currentStreamUrl.replace("audio=true", "audio=false");
+                            currentStreamUrl = "";
+                            mainHandler.post(() -> startNativePlayer(fallbackUrl, DEFAULT_UA, posNow, true));
+                            return;
+                        }
                     }
                     isNativeAudioActive = false;
                     isNativePlaying = false;
