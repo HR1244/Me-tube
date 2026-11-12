@@ -6,8 +6,10 @@ import json
 import logging
 import threading
 import re
+import random
 import urllib.request
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -36,12 +38,16 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+COOKIES_DIR = BASE_DIR / "user_cookies"
+COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+USER_META_DIR = BASE_DIR / "user_meta"
+USER_META_DIR.mkdir(parents=True, exist_ok=True)
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 logger.info(f"Using FFmpeg binary at: {FFMPEG_EXE}")
 
 # Active and completed download jobs:
-# key: job_id -> dict with details & progress
+# key: job_id -> dict with details & progress (strictly scoped per device_id)
 download_jobs: Dict[str, Dict[str, Any]] = {}
 jobs_lock = threading.Lock()
 
@@ -61,12 +67,49 @@ def get_cached(key: str) -> Optional[Any]:
 
 def set_cached(key: str, data: Any, ttl: int = DEFAULT_TTL):
     with query_cache_lock:
-        if len(query_cache) > 200:
+        if len(query_cache) > 250:
             oldest_key = min(query_cache.keys(), key=lambda k: query_cache[k].get("expires", 0))
             query_cache.pop(oldest_key, None)
         query_cache[key] = {"data": data, "expires": time.time() + ttl}
 
-COOKIES_FILE = BASE_DIR / "cookies.txt"
+def extract_device_id(request: Optional[Request] = None, explicit_id: Optional[str] = None) -> str:
+    """Extracts and sanitizes the per-device identifier to strictly isolate user auth & downloads."""
+    raw = explicit_id or (request.headers.get("X-Device-Id") if request else None) or (request.query_params.get("device_id") if request else None) or "shared_default"
+    clean = re.sub(r'[^A-Za-z0-9_-]', '', str(raw).strip())[:64]
+    return clean if len(clean) >= 4 else "shared_default"
+
+def get_cookies_file(device_id: Optional[str] = None) -> Optional[Path]:
+    """Returns the isolated cookies.txt path strictly belonging to the requesting device."""
+    dev = extract_device_id(explicit_id=device_id)
+    dev_cookie = COOKIES_DIR / f"{dev}.txt"
+    if dev_cookie.exists() and dev_cookie.stat().st_size > 10:
+        return dev_cookie
+    return None
+
+def get_user_meta(device_id: Optional[str] = None) -> Dict[str, Any]:
+    dev = extract_device_id(explicit_id=device_id)
+    meta_file = USER_META_DIR / f"{dev}.json"
+    if meta_file.exists():
+        try:
+            return json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+def save_user_meta(device_id: str, meta: Dict[str, Any]):
+    dev = extract_device_id(explicit_id=device_id)
+    meta_file = USER_META_DIR / f"{dev}.json"
+    meta_file.write_text(json.dumps(meta), encoding="utf-8")
+
+def cleanup_old_downloads(max_age_seconds: int = 7200):
+    """Garbage collects stale download files older than max_age_seconds."""
+    now = time.time()
+    try:
+        for f in DOWNLOADS_DIR.iterdir():
+            if f.is_file() and (now - f.stat().st_mtime) > max_age_seconds:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 # In-memory Caches for zero-latency responses
 avatar_cache: Dict[str, str] = {
@@ -95,21 +138,23 @@ FALLBACK_STREAM_INSTANCES = [
     "https://piped.video"
 ]
 
-def get_base_ydl_opts() -> dict:
+def get_base_ydl_opts(device_id: Optional[str] = None, for_youtube: bool = True) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
         "socket_timeout": 12,
-        "extractor_args": {
+    }
+    if for_youtube:
+        opts["extractor_args"] = {
             "youtube": {
                 "player_client": ["android"]
             }
-        },
-    }
-    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
-        opts["cookiefile"] = str(COOKIES_FILE)
-        logger.info(f"Using YouTube cookies from: {COOKIES_FILE}")
+        }
+    cookie_path = get_cookies_file(device_id)
+    if cookie_path:
+        opts["cookiefile"] = str(cookie_path)
+        logger.info(f"Using isolated device cookies from: {cookie_path.name}")
     return opts
 
 banner_cache: Dict[str, str] = {}
@@ -139,93 +184,175 @@ def generate_channel_avatar_svg(name: str) -> str:
   <text x="88" y="106" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" fill="#FFFFFF" text-anchor="middle">{initial}</text>
 </svg>"""
 
-def resolve_avatar_via_innertube(name_or_id: str) -> Optional[str]:
-    """Fast resolution of official Google CDN creator avatar via Innertube in ~200-300ms."""
+def innertube_request(endpoint: str, payload: Dict[str, Any], timeout: int = 5) -> Dict[str, Any]:
+    """Shared YouTube Innertube API JSON POST helper."""
+    base_payload = {
+        "context": {
+            "client": {
+                "hl": "en",
+                "gl": "IN",
+                "clientName": "WEB",
+                "clientVersion": "2.20250101.00.00"
+            }
+        }
+    }
+    base_payload.update(payload)
+    req = urllib.request.Request(
+        f"https://www.youtube.com/youtubei/v1/{endpoint.lstrip('/')}",
+        data=json.dumps(base_payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8", errors="ignore"))
+
+def is_valid_avatar_url(url: Optional[str]) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    low = url.lower()
+    if "default-user" in low or "default_user" in low:
+        return False
+    # Guard against truncated URLs like https://yt3.ggpht.com/a=s176...
+    if re.search(r'/(?:a|ytc)=', url) or url.endswith("/a") or url.endswith("/ytc"):
+        return False
+    return url.startswith("http")
+
+def normalize_yt_avatar(url: Optional[str]) -> str:
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    base = url.split("=")[0]
+    if base.endswith("/a") or base.endswith("/ytc"):
+        return ""
+    if "yt3." in base or "ggpht.com" in base or "googleusercontent.com" in base:
+        return f"{base}=s176-c-k-c0x00ffffff-no-rj"
+    return url
+
+def _extract_innertube_avatar_from_json(data: Any) -> Optional[str]:
+    """Extracts authentic Google CDN avatar from Innertube browse or channel search JSON."""
+    if not isinstance(data, dict):
+        return None
+    header = data.get("header", {})
+    # 1. Newer pageHeaderRenderer
+    try:
+        sources = (
+            header.get("pageHeaderRenderer", {})
+            .get("content", {})
+            .get("pageHeaderViewModel", {})
+            .get("image", {})
+            .get("decoratedAvatarViewModel", {})
+            .get("avatar", {})
+            .get("avatarViewModel", {})
+            .get("image", {})
+            .get("sources", [])
+        )
+        if sources:
+            cand = normalize_yt_avatar(sources[-1].get("url"))
+            if is_valid_avatar_url(cand):
+                return cand
+    except Exception:
+        pass
+    # 2. Classic c4TabbedHeaderRenderer
+    try:
+        thumbs = header.get("c4TabbedHeaderRenderer", {}).get("avatar", {}).get("thumbnails", [])
+        if thumbs:
+            cand = normalize_yt_avatar(thumbs[-1].get("url"))
+            if is_valid_avatar_url(cand):
+                return cand
+    except Exception:
+        pass
+    # 3. Search channelRenderer
+    try:
+        sections = (
+            data.get("contents", {})
+            .get("twoColumnSearchResultsRenderer", {})
+            .get("primaryContents", {})
+            .get("sectionListRenderer", {})
+            .get("contents", [])
+        )
+        for sec in sections:
+            for it in sec.get("itemSectionRenderer", {}).get("contents", []):
+                cr = it.get("channelRenderer")
+                if cr:
+                    thumbs = cr.get("thumbnail", {}).get("thumbnails", [])
+                    if thumbs:
+                        cand = normalize_yt_avatar(thumbs[-1].get("url"))
+                        if is_valid_avatar_url(cand):
+                            return cand
+    except Exception:
+        pass
+    # 4. Regex fallback preserving full paths including /a/ and /ytc/ hashes
+    txt = json.dumps(data)
+    matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/(?:(?:ytc|a)/)?[A-Za-z0-9_-]{12,}', txt)
+    for m in matches:
+        cand = normalize_yt_avatar(m)
+        if is_valid_avatar_url(cand):
+            return cand
+    return None
+
+def resolve_avatar_via_innertube(name_or_id: str, force_refresh: bool = False) -> Optional[str]:
+    """Fast resolution of official Google CDN creator avatar via structured Innertube in ~200ms."""
     if not name_or_id:
         return None
     clean = str(name_or_id).strip()
-    if clean in avatar_cache:
+    if not force_refresh and clean in avatar_cache and is_valid_avatar_url(avatar_cache[clean]):
         return avatar_cache[clean]
 
-    # If it's a channel ID (UC...), use high-precision browse endpoint
+    # 1. If it's a channel ID (UC...), browse directly
     if clean.startswith("UC"):
         try:
-            payload = {
-                "context": {"client": {"hl": "en", "gl": "US", "clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
-                "browseId": clean
-            }
-            req = urllib.request.Request(
-                "https://www.youtube.com/youtubei/v1/browse",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            )
-            with urllib.request.urlopen(req, timeout=4) as res:
-                txt = res.read().decode("utf-8", errors="ignore")
-
-            matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/(?:ytc/)?[A-Za-z0-9_-]+', txt)
-            clean_matches = [m for m in matches if "default-user" not in m and "default_user" not in m]
-            if clean_matches:
-                base = clean_matches[0].split('=')[0]
-                avatar = f"{base}=s176-c-k-c0x00ffffff-no-rj"
+            data = innertube_request("browse", {"browseId": clean}, timeout=4)
+            avatar = _extract_innertube_avatar_from_json(data)
+            if avatar:
                 avatar_cache[clean] = avatar
                 return avatar
         except Exception as e:
             logger.warning(f"Innertube browse avatar lookup failed for {clean}: {e}")
 
-    # For channel names / handles, use fast search endpoint
+    # 2. Search specifically with Channels filter (params="EgIQAg==") for authentic channelRenderer icon in 1 fast call
     try:
-        payload = {
-            "context": {"client": {"hl": "en", "gl": "US", "clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
-            "query": clean
-        }
-        req = urllib.request.Request(
-            "https://www.youtube.com/youtubei/v1/search",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        )
-        with urllib.request.urlopen(req, timeout=4) as res:
-            txt = res.read().decode("utf-8", errors="ignore")
-
-        # Extract authentic 100% original Google CDN avatar links (handles /ytc/ and direct hashes)
-        matches = re.findall(r'https?://yt3\.(?:ggpht|googleusercontent)\.com/(?:ytc/)?[A-Za-z0-9_-]+', txt)
-        clean_matches = [m for m in matches if "default-user" not in m and "default_user" not in m]
-        if clean_matches:
-            base = clean_matches[0].split('=')[0]
-            avatar = f"{base}=s176-c-k-c0x00ffffff-no-rj"
+        data = innertube_request("search", {"query": clean, "params": "EgIQAg=="}, timeout=2.5)
+        avatar = _extract_innertube_avatar_from_json(data)
+        if avatar:
             avatar_cache[clean] = avatar
             return avatar
     except Exception as e:
-        logger.warning(f"Innertube search avatar lookup failed for {clean}: {e}")
+        logger.warning(f"Innertube channel search avatar lookup failed for {clean}: {e}")
     return None
 
-def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> str:
-    """Returns a direct 100% reliable HTTPS Google CDN avatar URL (no broken icons, no relative HTTP paths)."""
+def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str], force_refresh: bool = False) -> str:
+    """Returns a direct genuine HTTPS Google CDN creator avatar URL (auto-refreshable)."""
     clean_name = (channel_name or "Creator").strip()
     cache_key = channel_id or clean_name
-    
-    if cache_key and cache_key in avatar_cache:
-        return avatar_cache[cache_key]
-    if clean_name in avatar_cache:
-        return avatar_cache[clean_name]
 
-    # 1. Resolve via fast Innertube lookup by channel_id
+    if not force_refresh:
+        if cache_key and cache_key in avatar_cache and is_valid_avatar_url(avatar_cache[cache_key]):
+            return avatar_cache[cache_key]
+        if clean_name in avatar_cache and is_valid_avatar_url(avatar_cache[clean_name]):
+            return avatar_cache[clean_name]
+
     if channel_id:
-        real_id = resolve_avatar_via_innertube(channel_id)
-        if real_id:
+        real_id = resolve_avatar_via_innertube(channel_id, force_refresh=force_refresh)
+        if real_id and is_valid_avatar_url(real_id):
             avatar_cache[channel_id] = real_id
-            if clean_name: avatar_cache[clean_name] = real_id
+            if clean_name and clean_name not in ("Creator", "YouTube Shorts"):
+                avatar_cache[clean_name] = real_id
             return real_id
 
-    # 2. Resolve via fast Innertube lookup by channel_name
-    if clean_name and clean_name != "Creator":
-        real_name = resolve_avatar_via_innertube(clean_name)
-        if real_name:
-            if channel_id: avatar_cache[channel_id] = real_name
+    if clean_name and clean_name not in ("Creator", "YouTube Shorts"):
+        real_name = resolve_avatar_via_innertube(clean_name, force_refresh=force_refresh)
+        if real_name and is_valid_avatar_url(real_name):
+            if channel_id:
+                avatar_cache[channel_id] = real_name
             avatar_cache[clean_name] = real_name
             return real_name
-    
-    # Official YouTube default circular avatar over direct Google CDN HTTPS
-    return "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj"
+
+    # Return SVG monogram data URI if creator has no public CDN avatar yet (never truncated broken img)
+    return generate_channel_avatar_svg(clean_name)
 
 def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str]) -> str:
     """Scrapes and caches the real YouTube channel panoramic banner."""
@@ -254,85 +381,77 @@ def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str
     return fallback_banner
 
 class DownloadRequest(BaseModel):
-    video_id: str
+    video_id: str = ""
+    url: Optional[str] = None
     format_type: str  # 'mp3' or 'mp4'
-    quality: str      # '1080p', '720p', '480p', '360p', '320k', '192k', '128k'
+    quality: str      # '1080p', '720p', '480p', '360p', '320k', '192k', '128k', 'best'
     title: Optional[str] = "video"
+    device_id: Optional[str] = None
 
 @app.get("/api/health")
-def health_check():
-    has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0)
+def health_check(request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
+    dev_cookie = get_cookies_file(dev_id)
     return {
         "status": "online",
         "ffmpeg": bool(FFMPEG_EXE and os.path.exists(FFMPEG_EXE)),
         "ffmpeg_path": FFMPEG_EXE,
         "downloads_dir": str(DOWNLOADS_DIR),
         "yt_dlp_version": yt_dlp.version.__version__,
-        "cookies_loaded": has_cookies,
-        "cookies_path": str(COOKIES_FILE),
+        "cookies_loaded": bool(dev_cookie),
+        "device_id": dev_id,
     }
-
-def resolve_real_youtube_avatar(channel_id: Optional[str], channel_name: Optional[str]) -> Optional[str]:
-    """Dynamically resolves and caches the official 100% original YouTube circular creator avatar."""
-    cache_key = channel_id or channel_name
-    if cache_key and cache_key in avatar_cache:
-        return avatar_cache[cache_key]
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9'
-    }
-
-    urls_to_try = []
-    if channel_id and channel_id.startswith('UC'):
-        urls_to_try.append(f'https://www.youtube.com/channel/{channel_id}')
-    if channel_name:
-        clean = re.sub(r'[^a-zA-Z0-9]', '', channel_name)
-        if clean:
-            urls_to_try.append(f'https://www.youtube.com/@{clean}')
-        urls_to_try.append(f'https://www.youtube.com/results?search_query={urllib.parse.quote(channel_name)}&sp=EgIQAg%253D%253D')
-
-    for u in urls_to_try:
-        try:
-            req = urllib.request.Request(u, headers=headers)
-            with urllib.request.urlopen(req, timeout=3) as res:
-                html = res.read().decode('utf-8', errors='ignore')
-                matches = re.findall(r'(https://yt3\.googleusercontent\.com/[A-Za-z0-9_-]+)(?:=s[0-9]+-[^\"\'\s]+)?', html)
-                if matches:
-                    base_url = matches[0]
-                    if 'default_user' not in base_url:
-                        real_avatar = f"{base_url}=s176-c-k-c0x00ffffff-no-rj"
-                        if channel_id:
-                            avatar_cache[channel_id] = real_avatar
-                        if channel_name:
-                            avatar_cache[channel_name] = real_avatar
-                        return real_avatar
-        except Exception:
-            continue
-    return None
 
 @app.api_route("/api/channel/avatar", methods=["GET", "HEAD"])
-def get_channel_avatar_endpoint(id: Optional[str] = None, name: Optional[str] = None):
-    """Returns the creator's real original YouTube avatar image via 302 redirect."""
+def get_channel_avatar_endpoint(
+    id: Optional[str] = None,
+    name: Optional[str] = None,
+    refresh: bool = False,
+    raw: bool = False
+):
+    """Returns the creator's genuine original YouTube avatar (supports force refresh and byte proxy)."""
     clean_name = (name or "Creator").strip()
     cache_key = id or clean_name
-    
-    if cache_key and cache_key in avatar_cache:
-        return RedirectResponse(url=avatar_cache[cache_key], status_code=302)
-    
-    real_avatar = resolve_channel_avatar(id, clean_name)
-    return RedirectResponse(url=real_avatar, status_code=302)
+
+    if refresh:
+        if id: avatar_cache.pop(id, None)
+        if clean_name: avatar_cache.pop(clean_name, None)
+
+    if not refresh and cache_key and cache_key in avatar_cache and is_valid_avatar_url(avatar_cache[cache_key]):
+        resolved = avatar_cache[cache_key]
+    else:
+        resolved = resolve_channel_avatar(id, clean_name, force_refresh=refresh)
+
+    if resolved.startswith("data:image/svg+xml"):
+        svg_body = urllib.parse.unquote(resolved.split(",", 1)[1]) if "," in resolved else resolved
+        return Response(content=svg_body, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=1800"})
+
+    if raw:
+        try:
+            req = urllib.request.Request(resolved, headers={"User-Agent": "Mozilla/5.0", "Referer": ""})
+            with urllib.request.urlopen(req, timeout=5) as res:
+                ctype = res.headers.get("Content-Type", "image/jpeg")
+                return Response(content=res.read(), media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+        except Exception:
+            pass
+
+    return RedirectResponse(url=resolved, status_code=302, headers={"Cache-Control": "public, max-age=3600"})
 
 class CookiePayload(BaseModel):
     cookies: str
+    device_id: Optional[str] = None
+    account_name: Optional[str] = None
+    account_email: Optional[str] = None
+    account_avatar: Optional[str] = None
 
 @app.post("/api/auth/cookies")
-def save_user_cookies(payload: CookiePayload):
-    """Saves YouTube cookies for authenticated sessions and personalized feeds."""
+def save_user_cookies(payload: CookiePayload, request: Request):
+    """Saves per-device YouTube cookies cleanly isolated from all other devices."""
+    dev_id = extract_device_id(request, payload.device_id)
     raw = payload.cookies.strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty cookies provided")
-    
+
     if "Netscape" not in raw and "\t" not in raw:
         lines = ["# Netscape HTTP Cookie File", "# https://curl.haxx.se/rfc/cookie_spec.html"]
         for item in raw.split(";"):
@@ -340,37 +459,64 @@ def save_user_cookies(payload: CookiePayload):
             if "=" in item:
                 k, v = item.split("=", 1)
                 lines.append(f".youtube.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
+                lines.append(f".google.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
         formatted = "\n".join(lines) + "\n"
     else:
         formatted = raw
 
-    COOKIES_FILE.write_text(formatted, encoding="utf-8")
-    logger.info("Successfully updated YouTube cookies for authenticated session!")
-    return {"status": "success", "message": "YouTube account connected successfully!"}
+    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
+    dev_cookie_file.write_text(formatted, encoding="utf-8")
+    meta = {
+        "device_id": dev_id,
+        "account_name": payload.account_name or "YouTube Account",
+        "account_email": payload.account_email or "",
+        "account_avatar": payload.account_avatar or "",
+        "updated_at": time.time(),
+    }
+    save_user_meta(dev_id, meta)
+    logger.info(f"Updated isolated YouTube cookies for device {dev_id} ({meta['account_name']})")
+    return {"status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
 
 @app.get("/api/auth/status")
-def get_auth_status():
-    has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10)
+def get_auth_status(request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
+    has_cookies = bool(get_cookies_file(dev_id))
+    meta = get_user_meta(dev_id) if has_cookies else {}
     return {
         "authenticated": has_cookies,
-        "source": "cookies.txt" if has_cookies else "none"
+        "device_id": dev_id,
+        "account_name": meta.get("account_name", "YouTube Account") if has_cookies else "",
+        "account_email": meta.get("account_email", "") if has_cookies else "",
+        "account_avatar": meta.get("account_avatar", "") if has_cookies else "",
+        "source": f"device:{dev_id}" if has_cookies else "none"
     }
 
 @app.post("/api/auth/logout")
-def logout_auth():
-    if COOKIES_FILE.exists():
-        COOKIES_FILE.unlink()
-    return {"status": "success", "authenticated": False}
+def logout_auth(request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
+    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
+    if dev_cookie_file.exists():
+        dev_cookie_file.unlink()
+    meta_file = USER_META_DIR / f"{dev_id}.json"
+    if meta_file.exists():
+        meta_file.unlink()
+    return {"status": "success", "authenticated": False, "device_id": dev_id}
 
 @app.get("/api/user/feed")
 def get_user_personalized_feed(
-    channels: Optional[str] = Query(None, description="Comma-separated creator channel names or handles")
+    request: Request,
+    channels: Optional[str] = Query(None, description="Comma-separated creator channel names or handles"),
+    device_id: Optional[str] = Query(None)
 ):
-    """Fetches user's subscriptions and personalized videos when authenticated or provided subscribed channels."""
-    # 1. If cookies exist on server, extract official subscriptions feed
-    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10:
-        opts = get_base_ydl_opts()
+    """Fetches ONLY this device's subscriptions & personalized videos when authenticated or given followed channels."""
+    dev_id = extract_device_id(request, device_id)
+    cookie_file = get_cookies_file(dev_id)
+
+    # 1. If device cookies exist, extract official personalized subscriptions feed
+    if cookie_file:
+        opts = get_base_ydl_opts(dev_id)
         opts["extract_flat"] = True
+        opts["playlist_items"] = "1-30"
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 res = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
@@ -403,15 +549,15 @@ def get_user_personalized_feed(
                     if clean_results:
                         return {"authenticated": True, "videos": clean_results}
         except Exception as e:
-            logger.warning(f"User cookie subscriptions feed error: {e}")
+            logger.warning(f"User cookie subscriptions feed error for {dev_id}: {e}")
 
-    # 2. Extract uploads from user's followed creator channels
+    # 2. Extract uploads from this user's followed creator channels
     if channels:
         ch_list = [c.strip() for c in channels.split(",") if c.strip()][:8]
         if ch_list:
             clean_results = []
             seen_ids = set()
-            opts = get_base_ydl_opts()
+            opts = get_base_ydl_opts(dev_id)
             opts["extract_flat"] = True
             opts["playlist_items"] = "1-4"
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -452,43 +598,159 @@ def get_user_personalized_feed(
 
     return {"authenticated": False, "videos": []}
 
-def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> List[Dict[str, Any]]:
-    """
-    Direct YouTube Innertube API search.
-    Fetches real video results in ~300ms including:
-    - Official Google CDN creator avatars (yt3.ggpht.com)
-    - Full-resolution thumbnails (i.ytimg.com)
-    - Channel IDs, View Counts, Durations, and Titles
-    """
-    payload = {
-        "context": {
-            "client": {
-                "hl": "en",
-                "gl": "US",
-                "clientName": "WEB",
-                "clientVersion": "2.20240101.00.00"
-            }
-        },
-        "query": query
+video_creator_cache: Dict[str, Dict[str, str]] = {}
+
+def resolve_video_creator_meta(video_id: str) -> Dict[str, str]:
+    """Fast concurrent-safe lookup of real creator name, handle/channel URL, and genuine YouTube icon."""
+    if video_id in video_creator_cache:
+        return video_creator_cache[video_id]
+    oembed = fetch_youtube_oembed(video_id)
+    c_name = (oembed.get("author_name") or "").strip()
+    c_url = (oembed.get("author_url") or "").strip()
+    c_handle = ""
+    if "/@" in c_url:
+        c_handle = "@" + c_url.split("/@", 1)[1].strip("/")
+    avatar = ""
+    if c_handle or c_name:
+        avatar = resolve_channel_avatar(None, c_handle or c_name)
+    meta = {
+        "channel": c_name or "Creator",
+        "channel_id": c_handle,
+        "channel_url": c_url,
+        "channel_avatar": avatar or generate_channel_avatar_svg(c_name or "C"),
     }
-    req = urllib.request.Request(
-        "https://www.youtube.com/youtubei/v1/search",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        }
-    )
-    
-    videos = []
+    if c_name:
+        video_creator_cache[video_id] = meta
+    return meta
+
+def enrich_items_avatars(items: List[Dict[str, Any]], max_enrich: int = 16) -> List[Dict[str, Any]]:
+    """Concurrently resolves real creator names & original Google CDN icons for items missing avatars."""
+    targets = [
+        it for it in items
+        if (not is_valid_avatar_url(it.get("channel_avatar")) or it.get("channel") in ("", "YouTube Shorts", "Creator"))
+    ][:max_enrich]
+    if not targets:
+        return items
+
+    def _fill(it: Dict[str, Any]):
+        vid = it.get("id")
+        c_id = it.get("channel_id") or ""
+        c_name = it.get("channel") or ""
+        if c_name in ("", "YouTube Shorts", "Creator") and vid:
+            meta = resolve_video_creator_meta(vid)
+            it["channel"] = meta["channel"]
+            if not c_id and meta["channel_id"]:
+                it["channel_id"] = meta["channel_id"]
+            if meta["channel_url"] and not it.get("channel_url"):
+                it["channel_url"] = meta["channel_url"]
+            if meta["channel_avatar"]:
+                it["channel_avatar"] = meta["channel_avatar"]
+        elif not is_valid_avatar_url(it.get("channel_avatar")):
+            it["channel_avatar"] = resolve_channel_avatar(c_id, c_name)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_fill, targets))
+    return items
+
+def _parse_video_renderer(vr: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    vid = vr.get("videoId")
+    if not vid:
+        return None
+    title = "".join(r.get("text", "") for r in vr.get("title", {}).get("runs", []))
+    if not title:
+        title = vr.get("title", {}).get("accessibility", {}).get("accessibilityData", {}).get("label") or vr.get("title", {}).get("simpleText") or "Video"
+
+    owner_runs = vr.get("ownerText", {}).get("runs", [{}])
+    c_name = owner_runs[0].get("text", "Creator") if owner_runs else "Creator"
+    c_id = owner_runs[0].get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId", "") if owner_runs else ""
+
+    thumbs = vr.get("thumbnail", {}).get("thumbnails", [])
+    thumb = thumbs[-1].get("url") if thumbs else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    if thumb.startswith("//"):
+        thumb = "https:" + thumb
+
+    ch_thumbs = vr.get("channelThumbnailSupportedRenderers", {}).get("channelThumbnailWithLinkRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
+    avatar = normalize_yt_avatar(ch_thumbs[-1].get("url")) if ch_thumbs else ""
+    if is_valid_avatar_url(avatar):
+        if c_name: avatar_cache[c_name] = avatar
+        if c_id: avatar_cache[c_id] = avatar
+    else:
+        avatar = resolve_channel_avatar(c_id, c_name)
+
+    dur_text = vr.get("lengthText", {}).get("simpleText") or ""
+    views_text = vr.get("shortViewCountText", {}).get("simpleText") or vr.get("viewCountText", {}).get("simpleText") or "0 views"
+
+    views_num = 0
+    m_views = re.search(r'([\d\.,]+)', views_text.replace(',', ''))
+    if m_views:
+        try:
+            val = float(m_views.group(1))
+            if 'K' in views_text or 'k' in views_text: views_num = int(val * 1000)
+            elif 'M' in views_text or 'm' in views_text: views_num = int(val * 1000000)
+            elif 'B' in views_text or 'b' in views_text: views_num = int(val * 1000000000)
+            else: views_num = int(val)
+        except Exception:
+            views_num = 0
+
+    return {
+        "id": vid,
+        "title": title,
+        "channel": c_name,
+        "channel_id": c_id,
+        "channel_url": f"https://www.youtube.com/channel/{c_id}" if c_id else "",
+        "channel_avatar": avatar,
+        "duration_string": dur_text,
+        "view_count": views_num,
+        "view_count_text": views_text,
+        "thumbnail": thumb,
+        "url": f"https://www.youtube.com/watch?v={vid}"
+    }
+
+def innertube_search_paged(
+    query: str = "",
+    limit: int = 25,
+    only_shorts: bool = False,
+    continuation: Optional[str] = None,
+    enrich_limit: int = 10
+) -> Dict[str, Any]:
+    """Direct YouTube Innertube API search supporting continuation tokens and genuine Shorts creator enrichment."""
+    payload: Dict[str, Any] = {"continuation": continuation} if continuation else {"query": query}
+    videos: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+    seen_ids = set()
+
     try:
-        with urllib.request.urlopen(req, timeout=5) as res:
-            data = json.loads(res.read().decode("utf-8", errors="ignore"))
-            
-        contents = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
-        for sec in contents:
+        data = innertube_request("search", payload, timeout=6)
+        section_contents: List[Dict[str, Any]] = []
+
+        if continuation:
+            for cmd in data.get("onResponseReceivedCommands", []):
+                items_cont = cmd.get("appendContinuationItemsAction", {}).get("continuationItems", [])
+                section_contents.extend(items_cont)
+        else:
+            section_contents = (
+                data.get("contents", {})
+                .get("twoColumnSearchResultsRenderer", {})
+                .get("primaryContents", {})
+                .get("sectionListRenderer", {})
+                .get("contents", [])
+            )
+
+        for sec in section_contents:
+            if "continuationItemRenderer" in sec:
+                tok = sec["continuationItemRenderer"].get("continuationEndpoint", {}).get("continuationCommand", {}).get("token")
+                if tok:
+                    next_token = tok
+                continue
+
             items = sec.get("itemSectionRenderer", {}).get("contents", [])
             for it in items:
+                if "continuationItemRenderer" in it:
+                    tok = it["continuationItemRenderer"].get("continuationEndpoint", {}).get("continuationCommand", {}).get("token")
+                    if tok:
+                        next_token = tok
+                    continue
+
                 if only_shorts:
                     # 1. Shorts Grid Shelf
                     grid = it.get("gridShelfViewModel", {}).get("contents", [])
@@ -499,20 +761,20 @@ def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> 
                             if not vid:
                                 m_id = re.search(r'item-([A-Za-z0-9_-]{11})', sh.get("entityId", ""))
                                 if m_id: vid = m_id.group(1)
-                            if not vid: continue
-                            
+                            if not vid or vid in seen_ids:
+                                continue
+                            seen_ids.add(vid)
                             s_title = sh.get("overlayMetadata", {}).get("primaryText", {}).get("content") or "Short"
                             s_views = sh.get("overlayMetadata", {}).get("secondaryText", {}).get("content") or "Shorts"
                             s_sources = sh.get("thumbnailViewModel", {}).get("thumbnailViewModel", {}).get("image", {}).get("sources", [])
                             s_thumb = s_sources[-1].get("url") if s_sources else f"https://i.ytimg.com/vi/{vid}/frame0.jpg"
                             if s_thumb.startswith("//"): s_thumb = "https:" + s_thumb
-                            
                             videos.append({
                                 "id": vid,
                                 "title": s_title,
-                                "channel": "YouTube Shorts",
+                                "channel": "Creator",
                                 "channel_id": "",
-                                "channel_avatar": "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj",
+                                "channel_avatar": "",
                                 "duration": 30,
                                 "duration_string": "0:30",
                                 "view_count": 50000,
@@ -523,13 +785,14 @@ def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> 
                             })
                             if len(videos) >= limit:
                                 break
-                    # 2. Older Reel Shelf format
-                    reel_shelf = it.get("reelShelfRenderer", {}).get("items", [])
-                    for r_item in reel_shelf:
+                    # 2. Classic Reel Shelf
+                    for r_item in it.get("reelShelfRenderer", {}).get("items", []):
                         r_it = r_item.get("reelItemRenderer")
                         if r_it:
                             vid = r_it.get("videoId")
-                            if not vid: continue
+                            if not vid or vid in seen_ids:
+                                continue
+                            seen_ids.add(vid)
                             s_title = r_it.get("headline", {}).get("simpleText") or "Short"
                             s_views = r_it.get("viewCountText", {}).get("simpleText") or "Shorts"
                             r_thumbs = r_it.get("thumbnail", {}).get("thumbnails", [])
@@ -538,9 +801,9 @@ def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> 
                             videos.append({
                                 "id": vid,
                                 "title": s_title,
-                                "channel": "YouTube Shorts",
+                                "channel": "Creator",
                                 "channel_id": "",
-                                "channel_avatar": "https://yt3.googleusercontent.com/a/default-user=s176-c-k-c0x00ffffff-no-rj",
+                                "channel_avatar": "",
                                 "duration": 30,
                                 "duration_string": "0:30",
                                 "view_count": 50000,
@@ -552,88 +815,109 @@ def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> 
                             if len(videos) >= limit:
                                 break
                 else:
-                    # Standard Video Renderer
                     vr = it.get("videoRenderer")
                     if vr:
-                        vid = vr.get("videoId")
-                        if not vid:
-                            continue
-                        
-                        title = "".join(r.get("text", "") for r in vr.get("title", {}).get("runs", []))
-                        if not title:
-                            title = vr.get("title", {}).get("accessibility", {}).get("accessibilityData", {}).get("label") or "Video"
-                            
-                        owner_runs = vr.get("ownerText", {}).get("runs", [{}])
-                        c_name = owner_runs[0].get("text", "Creator") if owner_runs else "Creator"
-                        c_id = owner_runs[0].get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId", "") if owner_runs else ""
-                        
-                        thumbs = vr.get("thumbnail", {}).get("thumbnails", [])
-                        thumb = thumbs[-1].get("url") if thumbs else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-                        if thumb.startswith("//"): thumb = "https:" + thumb
-                        
-                        ch_thumbs = vr.get("channelThumbnailSupportedRenderers", {}).get("channelThumbnailWithLinkRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
-                        avatar = ch_thumbs[0].get("url") if ch_thumbs else ""
-                        if avatar.startswith("//"): avatar = "https:" + avatar
-                        if avatar:
-                            avatar = re.sub(r'=s\d+.*', '=s176-c-k-c0x00ffffff-no-rj', avatar)
-                            if c_name: avatar_cache[c_name] = avatar
-                            if c_id: avatar_cache[c_id] = avatar
-                        else:
-                            avatar = resolve_channel_avatar(c_id, c_name)
-                        
-                        dur_text = vr.get("lengthText", {}).get("simpleText") or ""
-                        views_text = vr.get("shortViewCountText", {}).get("simpleText") or vr.get("viewCountText", {}).get("simpleText") or "0 views"
-                        
-                        views_num = 0
-                        m_views = re.search(r'([\d\.,]+)', views_text.replace(',', ''))
-                        if m_views:
-                            try:
-                                val = float(m_views.group(1))
-                                if 'K' in views_text or 'k' in views_text: views_num = int(val * 1000)
-                                elif 'M' in views_text or 'm' in views_text: views_num = int(val * 1000000)
-                                elif 'B' in views_text or 'b' in views_text: views_num = int(val * 1000000000)
-                                else: views_num = int(val)
-                            except Exception:
-                                views_num = 0
-
-                        videos.append({
-                            "id": vid,
-                            "title": title,
-                            "channel": c_name,
-                            "channel_id": c_id,
-                            "channel_url": f"https://www.youtube.com/channel/{c_id}" if c_id else "",
-                            "channel_avatar": avatar,
-                            "duration_string": dur_text,
-                            "view_count": views_num,
-                            "view_count_text": views_text,
-                            "thumbnail": thumb,
-                            "url": f"https://www.youtube.com/watch?v={vid}"
-                        })
+                        parsed = _parse_video_renderer(vr)
+                        if parsed and parsed["id"] not in seen_ids:
+                            seen_ids.add(parsed["id"])
+                            videos.append(parsed)
+                            if len(videos) >= limit:
+                                break
+                    elif "shelfRenderer" in it:
+                        sc = it["shelfRenderer"].get("content", {})
+                        shelf_items = (
+                            sc.get("verticalListRenderer", {}).get("items", [])
+                            or sc.get("expandedShelfContentsRenderer", {}).get("items", [])
+                            or sc.get("horizontalListRenderer", {}).get("items", [])
+                        )
+                        for si in shelf_items:
+                            svr = si.get("videoRenderer")
+                            if svr:
+                                parsed = _parse_video_renderer(svr)
+                                if parsed and parsed["id"] not in seen_ids:
+                                    seen_ids.add(parsed["id"])
+                                    videos.append(parsed)
+                                    if len(videos) >= limit:
+                                        break
                         if len(videos) >= limit:
                             break
-            if len(videos) >= limit:
+            if len(videos) >= limit and next_token:
                 break
     except Exception as e:
         logger.error(f"Innertube search error for '{query}': {e}")
-        
-    return videos
+
+    if videos and enrich_limit > 0:
+        enrich_items_avatars(videos, max_enrich=enrich_limit)
+
+    return {"videos": videos, "next_token": next_token}
+
+def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> List[Dict[str, Any]]:
+    return innertube_search_paged(query=query, limit=limit, only_shorts=only_shorts, enrich_limit=8).get("videos", [])
+
+SHORTS_DISCOVERY_TOPICS = [
+    "#shorts viral today",
+    "trending shorts india",
+    "amazing facts #shorts",
+    "funny comedy #shorts",
+    "music dance #shorts",
+    "tech gadgets #shorts",
+    "sports skills #shorts",
+    "gaming highlights #shorts",
+    "movie edits #shorts",
+    "satisfying clips #shorts",
+    "travel nature #shorts",
+    "cooking street food #shorts",
+]
 
 @app.get("/api/shorts")
-def get_shorts_feed(page: int = Query(1)):
-    """Fetches strictly vertical YouTube Shorts via high-speed Innertube."""
-    cache_key = f"shorts_feed_{page}"
-    cached = get_cached(cache_key)
-    if cached:
-        return cached
+def get_shorts_feed(
+    page: int = Query(1),
+    next_token: Optional[str] = Query(None),
+    interests: Optional[str] = Query(None, description="Comma-separated user interest keywords or creator names"),
+    seen: Optional[str] = Query(None, description="Comma-separated seen video IDs"),
+    seed: Optional[str] = Query(None, description="Randomization seed per session/refresh")
+):
+    """Fetches randomized & personalized vertical YouTube Shorts via high-speed Innertube (<1s)."""
+    seen_set = {x.strip() for x in (seen or "").split(",") if x.strip()}
+    interest_terms = [x.strip() for x in (interests or "").split(",") if len(x.strip()) > 1]
 
-    query = "shorts trending" if page == 1 else f"shorts viral {page}"
-    shorts_list = innertube_search(query, limit=30, only_shorts=True)
-    if not shorts_list:
-        shorts_list = innertube_search("#shorts", limit=30, only_shorts=True)
+    pool = list(SHORTS_DISCOVERY_TOPICS)
+    if interest_terms:
+        custom_topics = [f"{t} #shorts" for t in interest_terms[:4]]
+        pool = custom_topics + pool
 
-    result = {"page": page, "shorts": shorts_list}
-    set_cached(cache_key, result, ttl=300)
-    return result
+    rng = random.Random(f"{seed or int(time.time() // 60)}_{page}")
+    results: List[Dict[str, Any]] = []
+    out_token: Optional[str] = None
+
+    if next_token:
+        res = innertube_search_paged(limit=25, only_shorts=True, continuation=next_token, enrich_limit=0)
+        out_token = res.get("next_token")
+        for item in res.get("videos", []):
+            if item["id"] not in seen_set:
+                seen_set.add(item["id"])
+                results.append(item)
+
+    if len(results) < 12:
+        topic = rng.choice(pool)
+        res = innertube_search_paged(query=topic, limit=25, only_shorts=True, enrich_limit=0)
+        if not out_token:
+            out_token = res.get("next_token")
+        for item in res.get("videos", []):
+            if item["id"] not in seen_set:
+                seen_set.add(item["id"])
+                results.append(item)
+
+    if not results:
+        res = innertube_search_paged(query="#shorts", limit=25, only_shorts=True, enrich_limit=0)
+        results = res.get("videos", [])
+        out_token = out_token or res.get("next_token")
+
+    rng.shuffle(results)
+    final_shorts = results[:25]
+    if final_shorts:
+        enrich_items_avatars(final_shorts, max_enrich=12)
+    return {"page": page, "next_token": out_token, "shorts": final_shorts}
 
 @app.get("/api/channel/banner")
 def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = None):
@@ -737,28 +1021,23 @@ def resolve_stream_fallback(video_id: str) -> Dict[str, Any]:
             continue
     return {}
 
-def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Optional[str]:
-    """Extracts and caches the direct MP4/audio stream URL using datacenter proxy and yt-dlp."""
+def extract_direct_stream_url(
+    video_id: str,
+    audio_only: bool = False,
+    device_id: Optional[str] = None,
+    max_height: Optional[int] = None
+) -> Optional[str]:
+    """Extracts and caches the direct MP4/audio stream URL using yt-dlp first then datacenter fallback."""
     now = time.time()
-    cache_key = f"{video_id}_audio" if audio_only else video_id
+    cache_key = f"{video_id}_{'audio' if audio_only else (max_height or 'best')}"
     if cache_key in stream_cache:
         cached = stream_cache[cache_key]
         if cached.get("expires", 0) > now and cached.get("url"):
             return cached["url"]
 
-    has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0)
-    
-    # 1. In datacenter environments without cookies, fast Piped/proxy stream is 10x faster and never blocked by bot challenges
-    if not has_cookies:
-        fb = resolve_stream_fallback(video_id)
-        if audio_only and fb.get("audio_url"):
-            return fb["audio_url"]
-        if fb.get("url"):
-            return fb["url"]
-
-    # 2. Try native yt-dlp extraction
-    opts = get_base_ydl_opts()
-    opts["socket_timeout"] = 5
+    # 1. Try native yt-dlp extraction first (Oracle VM has fast direct access)
+    opts = get_base_ydl_opts(device_id)
+    opts["socket_timeout"] = 6
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -766,7 +1045,7 @@ def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Option
             formats = info.get("formats", []) if info else []
             if audio_only:
                 audio_formats = [
-                    f for f in formats 
+                    f for f in formats
                     if f.get("acodec") != "none" and f.get("vcodec") == "none" and f.get("url")
                 ]
                 audio_formats.sort(key=lambda x: x.get("abr") or 0, reverse=True)
@@ -778,9 +1057,13 @@ def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Option
                             break
             else:
                 progressive = [
-                    f for f in formats 
+                    f for f in formats
                     if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
                 ]
+                if max_height:
+                    matching = [f for f in progressive if (f.get("height") or 0) <= max_height]
+                    if matching:
+                        progressive = matching
                 progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
                 chosen_url = progressive[0]["url"] if progressive else None
                 if not chosen_url:
@@ -792,14 +1075,14 @@ def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Option
             if chosen_url:
                 stream_cache[cache_key] = {
                     "url": chosen_url,
-                    "expires": now + 14400,
+                    "expires": now + 10800,
                     "title": info.get("title", "")
                 }
                 return chosen_url
     except Exception as e:
         logger.warning(f"yt-dlp stream extraction failed for {video_id} ({e})")
 
-    # 3. Final Fallback to datacenter stream proxy
+    # 2. Fallback to Piped proxy instances
     fb = resolve_stream_fallback(video_id)
     if audio_only and fb.get("audio_url"):
         return fb["audio_url"]
@@ -808,87 +1091,163 @@ def extract_direct_stream_url(video_id: str, audio_only: bool = False) -> Option
 
     return None
 
+def _proxy_remote_stream(direct_url: str, request: Request):
+    """Streams remote video/audio with HTTP Range support when direct client access fails."""
+    req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    rng_header = request.headers.get("range")
+    if rng_header:
+        req_headers["Range"] = rng_header
+    req = urllib.request.Request(direct_url, headers=req_headers)
+    upstream = urllib.request.urlopen(req, timeout=15)
+    resp_headers = {}
+    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+        val = upstream.headers.get(h)
+        if val:
+            resp_headers[h] = val
+    resp_headers.setdefault("Accept-Ranges", "bytes")
+
+    def _iter_chunks():
+        try:
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+
+    return StreamingResponse(_iter_chunks(), status_code=upstream.status, headers=resp_headers)
+
 @app.get("/api/stream/{video_id}")
-def stream_video_proxy(video_id: str, request: Request, audio: bool = False, direct: bool = False):
-    """
-    High-speed stream redirector.
-    Redirects directly to the CDN stream URL for instant hardware-accelerated playback with 0ms VM latency.
-    """
-    direct_url = extract_direct_stream_url(video_id, audio_only=audio)
+def stream_video_proxy(
+    video_id: str,
+    request: Request,
+    audio: bool = False,
+    direct: bool = False,
+    proxy: bool = False,
+    quality: Optional[int] = None,
+    device_id: Optional[str] = None
+):
+    """High-speed stream redirector or HTTP Range proxy for hardware-accelerated native playback."""
+    dev_id = extract_device_id(request, device_id)
+    direct_url = extract_direct_stream_url(video_id, audio_only=audio, device_id=dev_id, max_height=quality)
     if not direct_url:
         raise HTTPException(status_code=404, detail="Stream not available")
 
+    if proxy:
+        try:
+            return _proxy_remote_stream(direct_url, request)
+        except Exception as pe:
+            logger.warning(f"Stream range proxy failed for {video_id}, falling back to redirect: {pe}")
+
     return RedirectResponse(url=direct_url, status_code=307)
+
+TRENDING_TOPIC_POOLS = {
+    "all": [
+        "popular trending videos today",
+        "viral videos around the world",
+        "featured documentaries science space",
+        "top music entertainment highlights",
+        "trending tech gadgets review",
+        "best gaming moments esports",
+        "amazing talent performances",
+        "world cinema trailers 4k",
+    ],
+    "music": ["official music video top hits", "trending songs billboard", "live concert performance", "indie chill lofi mix", "bollywood punjabi latest hits"],
+    "gaming": ["popular gaming gameplay", "esports tournament highlights", "open world rpg walkthrough", "indie games spotlight", "minecraft valorant best moments"],
+    "tech": ["latest tech reviews gadgets", "smartphone camera comparison", "ai hardware innovations", "pc build setup tour"],
+    "news": ["world news headlines today", "science discoveries space news", "global economy briefing", "sports breaking highlights"],
+    "podcasts": ["trending podcasts interview", "creator podcast full episode", "tech startup founder interview", "comedy podcast clips"],
+    "unwatched": ["top viral videos", "must watch short documentaries", "hidden gem educational videos", "creative filmmaking showcase"],
+    "live": ["live stream now", "live music radio stream", "live gaming stream"],
+}
+
+def _filter_feed_spam(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    filtered = []
+    for item in items:
+        title_lower = (item.get("title") or "").lower()
+        c_lower = (item.get("channel") or "").lower()
+        if any(s in title_lower or s in c_lower for s in ["wedding atrocities", "today trending troll", "garam garam varthalu", "tamil troll", "telugu troll"]):
+            continue
+        filtered.append(item)
+    return filtered
 
 @app.get("/api/trending")
 def get_trending(
     category: str = Query("all", description="all, shorts, music, gaming, tech, news, podcasts"),
-    page: int = Query(1, description="Page number for continuous infinite feed")
+    page: int = Query(1, description="Page number for continuous infinite feed"),
+    next_token: Optional[str] = Query(None, description="Innertube continuation token")
 ):
-    cache_key = f"trending_{category.lower()}_{page}"
-    cached = get_cached(cache_key)
-    if cached:
-        return cached
+    cat = category.lower()
+    if cat == "shorts":
+        res = get_shorts_feed(page=page, next_token=next_token)
+        return {"category": category, "page": page, "next_token": res.get("next_token"), "videos": res.get("shorts", [])}
 
-    page_modifiers = ["viral", "popular", "top", "trending", "featured", "best"]
-    kw = page_modifiers[(max(1, page) - 1) % len(page_modifiers)]
-    
-    category_queries = {
-        "all": f"popular youtube trending {kw}",
-        "shorts": "shorts trending",
-        "music": "official music video top hits",
-        "gaming": "popular gaming gameplay",
-        "tech": "latest tech reviews gadgets",
-        "news": "world news headlines today",
-        "podcasts": "trending podcasts interview",
-        "unwatched": "top viral videos",
-        "live": "live stream now",
-    }
-    q = category_queries.get(category.lower(), f"trending {category} {kw}")
-    if page > 1 and category.lower() != "shorts":
-        q = f"{q} page {page}"
+    cache_key = f"trending_{cat}_{page}_{hash(next_token) if next_token else 0}"
+    if not next_token:
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
 
     try:
-        is_shorts = (category.lower() == "shorts")
-        clean_results = innertube_search(q, limit=25, only_shorts=is_shorts)
-        
-        # Filter out low-grade regional clickbait / spam meme channels
-        filtered_results = []
-        for item in clean_results:
-            title_lower = (item.get("title") or "").lower()
-            c_lower = (item.get("channel") or "").lower()
-            if any(s in title_lower or s in c_lower for s in ["wedding atrocities", "today trending troll", "garam garam varthalu", "tamil troll", "telugu troll"]):
-                continue
-            filtered_results.append(item)
-            
-        result = {"category": category, "page": page, "videos": filtered_results}
-        set_cached(cache_key, result, ttl=300)
+        out_token: Optional[str] = None
+        clean_results: List[Dict[str, Any]] = []
+
+        if next_token:
+            paged = innertube_search_paged(limit=25, only_shorts=False, continuation=next_token)
+            clean_results = paged.get("videos", [])
+            out_token = paged.get("next_token")
+
+        if len(clean_results) < 8:
+            topics = TRENDING_TOPIC_POOLS.get(cat, [f"trending {cat} videos", f"popular {cat} showcase", f"best {cat} highlights"])
+            q = topics[(max(1, page) - 1) % len(topics)]
+            paged = innertube_search_paged(query=q, limit=25, only_shorts=False)
+            existing = {v["id"] for v in clean_results}
+            for v in paged.get("videos", []):
+                if v["id"] not in existing:
+                    clean_results.append(v)
+                    existing.add(v["id"])
+            if paged.get("next_token"):
+                out_token = paged.get("next_token")
+
+        filtered_results = _filter_feed_spam(clean_results)
+        result = {"category": category, "page": page, "next_token": out_token, "videos": filtered_results}
+        if not next_token and filtered_results:
+            set_cached(cache_key, result, ttl=240)
         return result
     except Exception as e:
         logger.error(f"Error fetching trending: {e}")
-        return {"category": category, "page": page, "videos": []}
+        return {"category": category, "page": page, "next_token": None, "videos": []}
 
 @app.get("/api/search")
 def search_videos(
     q: str = Query(..., description="Search keyword"),
-    page: int = Query(1, description="Page number")
+    page: int = Query(1, description="Page number"),
+    next_token: Optional[str] = Query(None, description="Innertube continuation token")
 ):
     if not q or not q.strip():
-        return {"query": "", "page": 1, "videos": []}
-    
-    clean_q = q.strip()
-    cache_key = f"search_{clean_q.lower()}_{page}"
-    cached = get_cached(cache_key)
-    if cached:
-        return cached
+        return {"query": "", "page": 1, "next_token": None, "videos": []}
 
-    search_query = f"{clean_q} {page}" if page > 1 else clean_q
-    
+    clean_q = q.strip()
+    cache_key = f"search_{clean_q.lower()}_{page}_{hash(next_token) if next_token else 0}"
+    if not next_token:
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
+
     try:
-        # High-Speed Innertube Search with 100% Genuine Avatars
-        videos = innertube_search(search_query, limit=25, only_shorts=False)
+        if next_token:
+            paged = innertube_search_paged(limit=25, only_shorts=False, continuation=next_token)
+        else:
+            search_query = clean_q if page == 1 else f"{clean_q} videos part {page}"
+            paged = innertube_search_paged(query=search_query, limit=25, only_shorts=False)
+
+        videos = paged.get("videos", [])
         if videos:
-            result = {"query": clean_q, "page": page, "videos": videos}
+            result = {"query": clean_q, "page": page, "next_token": paged.get("next_token"), "videos": videos}
             set_cached(cache_key, result, ttl=300)
             return result
     except Exception as ie:
@@ -943,12 +1302,13 @@ def search_videos(
         return {"query": q, "videos": []}
 
 @app.get("/api/video/{video_id}")
-def get_video_stream_info(video_id: str):
+def get_video_stream_info(video_id: str, request: Request, device_id: Optional[str] = None):
     """
     Extracts ad-free direct stream playback URLs for native player (video and audio only).
     """
+    dev_id = extract_device_id(request, device_id)
     url = f"https://www.youtube.com/watch?v={video_id}"
-    opts = get_base_ydl_opts()
+    opts = get_base_ydl_opts(dev_id)
     
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1112,33 +1472,280 @@ def get_video_stream_info(video_id: str):
             "available_resolutions": []
         }
 
+def _resolve_browse_id(clean_id: str) -> Optional[str]:
+    if clean_id.startswith("UC") and len(clean_id) >= 20:
+        return clean_id
+    try:
+        if clean_id.startswith("http://") or clean_id.startswith("https://"):
+            nav = innertube_request("navigation/resolve_url", {"url": clean_id}, timeout=4)
+        elif clean_id.startswith("@"):
+            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/{clean_id}"}, timeout=4)
+        else:
+            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/@{clean_id.replace(' ', '')}"}, timeout=4)
+        bid = nav.get("endpoint", {}).get("browseEndpoint", {}).get("browseId")
+        if bid and bid.startswith("UC"):
+            return bid
+    except Exception:
+        pass
+    try:
+        data = innertube_request("search", {"query": clean_id.lstrip("@"), "params": "EgIQAg=="}, timeout=4)
+        sections = (
+            data.get("contents", {})
+            .get("twoColumnSearchResultsRenderer", {})
+            .get("primaryContents", {})
+            .get("sectionListRenderer", {})
+            .get("contents", [])
+        )
+        for sec in sections:
+            for it in sec.get("itemSectionRenderer", {}).get("contents", []):
+                cr = it.get("channelRenderer")
+                if cr and cr.get("channelId"):
+                    return cr["channelId"]
+    except Exception:
+        pass
+    return None
+
+def _parse_channel_tab_items(tab_renderer: Dict[str, Any], tab_lower: str, c_id: str, c_title: str, avatar: str, limit: int) -> List[Dict[str, Any]]:
+    items_out: List[Dict[str, Any]] = []
+    seen = set()
+    content = tab_renderer.get("content", {})
+    raw_nodes: List[Dict[str, Any]] = []
+
+    if "richGridRenderer" in content:
+        raw_nodes.extend(content["richGridRenderer"].get("contents", []))
+    elif "sectionListRenderer" in content:
+        for sec in content["sectionListRenderer"].get("contents", []):
+            for it in sec.get("itemSectionRenderer", {}).get("contents", []):
+                if "gridRenderer" in it:
+                    raw_nodes.extend(it["gridRenderer"].get("items", []))
+                elif "shelfRenderer" in it:
+                    sc = it["shelfRenderer"].get("content", {})
+                    if "horizontalListRenderer" in sc:
+                        raw_nodes.extend(sc["horizontalListRenderer"].get("items", []))
+                    elif "expandedShelfContentsRenderer" in sc:
+                        raw_nodes.extend(sc["expandedShelfContentsRenderer"].get("items", []))
+                else:
+                    raw_nodes.append(it)
+
+    for node in raw_nodes:
+        if len(items_out) >= limit:
+            break
+        inner = node.get("richItemRenderer", {}).get("content", node) if isinstance(node, dict) else {}
+        if not isinstance(inner, dict):
+            continue
+
+        # 1. Videos (gridVideoRenderer or videoRenderer)
+        vr = inner.get("videoRenderer") or inner.get("gridVideoRenderer")
+        if vr and vr.get("videoId"):
+            vid = vr["videoId"]
+            if vid in seen:
+                continue
+            seen.add(vid)
+            title = "".join(r.get("text", "") for r in vr.get("title", {}).get("runs", [])) or vr.get("title", {}).get("simpleText") or "Video"
+            thumbs = vr.get("thumbnail", {}).get("thumbnails", [])
+            thumb = thumbs[-1].get("url") if thumbs else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+            if thumb.startswith("//"): thumb = "https:" + thumb
+            views_text = vr.get("shortViewCountText", {}).get("simpleText") or vr.get("viewCountText", {}).get("simpleText") or ""
+            dur_text = vr.get("lengthText", {}).get("simpleText") or ""
+            items_out.append({
+                "id": vid, "title": title, "channel": c_title, "channel_id": c_id, "channel_avatar": avatar,
+                "duration_string": dur_text, "view_count_text": views_text, "thumbnail": thumb,
+                "url": f"https://www.youtube.com/watch?v={vid}", "type": "video"
+            })
+            continue
+
+        # 2. Shorts (shortsLockupViewModel or reelItemRenderer)
+        sh = inner.get("shortsLockupViewModel")
+        if sh:
+            vid = sh.get("onTap", {}).get("innertubeCommand", {}).get("reelWatchEndpoint", {}).get("videoId")
+            if not vid:
+                m = re.search(r'item-([A-Za-z0-9_-]{11})', sh.get("entityId", ""))
+                if m: vid = m.group(1)
+            if vid and vid not in seen:
+                seen.add(vid)
+                s_title = sh.get("overlayMetadata", {}).get("primaryText", {}).get("content") or "Short"
+                s_views = sh.get("overlayMetadata", {}).get("secondaryText", {}).get("content") or "Shorts"
+                s_sources = sh.get("thumbnailViewModel", {}).get("thumbnailViewModel", {}).get("image", {}).get("sources", [])
+                s_thumb = s_sources[-1].get("url") if s_sources else f"https://i.ytimg.com/vi/{vid}/frame0.jpg"
+                if s_thumb.startswith("//"): s_thumb = "https:" + s_thumb
+                items_out.append({
+                    "id": vid, "title": s_title, "channel": c_title, "channel_id": c_id, "channel_avatar": avatar,
+                    "duration": 30, "duration_string": "0:30", "view_count_text": s_views, "thumbnail": s_thumb,
+                    "url": f"https://www.youtube.com/watch?v={vid}", "is_short": True, "type": "short"
+                })
+                continue
+
+        ri = inner.get("reelItemRenderer")
+        if ri and ri.get("videoId"):
+            vid = ri["videoId"]
+            if vid not in seen:
+                seen.add(vid)
+                s_title = ri.get("headline", {}).get("simpleText") or "Short"
+                s_views = ri.get("viewCountText", {}).get("simpleText") or "Shorts"
+                r_thumbs = ri.get("thumbnail", {}).get("thumbnails", [])
+                s_thumb = r_thumbs[-1].get("url") if r_thumbs else f"https://i.ytimg.com/vi/{vid}/frame0.jpg"
+                if s_thumb.startswith("//"): s_thumb = "https:" + s_thumb
+                items_out.append({
+                    "id": vid, "title": s_title, "channel": c_title, "channel_id": c_id, "channel_avatar": avatar,
+                    "duration": 30, "duration_string": "0:30", "view_count_text": s_views, "thumbnail": s_thumb,
+                    "url": f"https://www.youtube.com/watch?v={vid}", "is_short": True, "type": "short"
+                })
+                continue
+
+        # 3. Playlists (gridPlaylistRenderer or lockupViewModel)
+        gp = inner.get("gridPlaylistRenderer")
+        if gp and gp.get("playlistId"):
+            pid = gp["playlistId"]
+            if pid not in seen:
+                seen.add(pid)
+                p_title = "".join(r.get("text", "") for r in gp.get("title", {}).get("runs", [])) or gp.get("title", {}).get("simpleText") or "Playlist"
+                p_thumbs = gp.get("thumbnail", {}).get("thumbnails", []) or (gp.get("thumbnailRenderer", {}).get("playlistVideoThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", []))
+                p_thumb = p_thumbs[-1].get("url") if p_thumbs else f"https://i.ytimg.com/vi/{c_id}/hqdefault.jpg"
+                if p_thumb.startswith("//"): p_thumb = "https:" + p_thumb
+                cnt = gp.get("videoCountShortText", {}).get("simpleText") or gp.get("videoCountText", {}).get("runs", [{}])[0].get("text") or ""
+                items_out.append({
+                    "id": pid, "title": p_title, "channel": c_title, "channel_id": c_id, "channel_avatar": avatar,
+                    "item_count": cnt, "thumbnail": p_thumb,
+                    "url": f"https://www.youtube.com/playlist?list={pid}", "type": "playlist"
+                })
+                continue
+
+        lv = inner.get("lockupViewModel")
+        if lv and lv.get("contentId"):
+            cid_item = lv["contentId"]
+            ctype = lv.get("contentType", "")
+            is_pl = ("PLAYLIST" in ctype or tab_lower.startswith("playlist"))
+            if cid_item not in seen:
+                seen.add(cid_item)
+                p_title = lv.get("metadata", {}).get("lockupMetadataViewModel", {}).get("title", {}).get("content") or "Playlist"
+                sources = lv.get("contentImage", {}).get("collectionThumbnailViewModel", {}).get("primaryThumbnail", {}).get("thumbnailViewModel", {}).get("image", {}).get("sources", [])
+                if not sources:
+                    sources = lv.get("contentImage", {}).get("thumbnailViewModel", {}).get("image", {}).get("sources", [])
+                p_thumb = sources[-1].get("url") if sources else f"https://i.ytimg.com/vi/{cid_item}/hqdefault.jpg"
+                if p_thumb.startswith("//"): p_thumb = "https:" + p_thumb
+                items_out.append({
+                    "id": cid_item, "title": p_title, "channel": c_title, "channel_id": c_id, "channel_avatar": avatar,
+                    "thumbnail": p_thumb,
+                    "url": f"https://www.youtube.com/playlist?list={cid_item}" if is_pl else f"https://www.youtube.com/watch?v={cid_item}",
+                    "type": "playlist" if is_pl else "video"
+                })
+
+    return items_out
+
 @app.get("/api/channel")
 def get_channel_content(
-    id: str = Query(..., description="Channel ID, handle (@username), name, or URL"),
+    id: Optional[str] = Query(None, description="Channel ID, handle (@username), name, or URL"),
+    channel_id: Optional[str] = Query(None, description="Alias for id"),
     tab: str = Query("videos", description="videos, shorts, playlists"),
     limit: int = Query(30, description="Max items to return")
 ):
-    """
-    Fetches a channel's details and items for videos, shorts, or playlists.
-    """
-    clean_id = id.strip()
-    if clean_id.startswith("http://") or clean_id.startswith("https://"):
-        base_url = clean_id.rstrip("/")
-    elif clean_id.startswith("@"):
-        base_url = f"https://www.youtube.com/{clean_id}"
-    elif clean_id.startswith("UC"):
-        base_url = f"https://www.youtube.com/channel/{clean_id}"
-    else:
-        base_url = f"https://www.youtube.com/@{clean_id}"
+    """Fetches channel profile, genuine banner/avatar, subscribers, and Videos/Shorts/Playlists via high-speed Innertube browse."""
+    raw_id = (id or channel_id or "").strip()
+    if not raw_id:
+        raise HTTPException(status_code=400, detail="Missing channel id")
 
-    tab_lower = tab.lower()
-    if tab_lower in ["shorts", "short"]:
-        target_url = f"{base_url}/shorts"
-    elif tab_lower in ["playlists", "playlist"]:
-        target_url = f"{base_url}/playlists"
-    else:
-        target_url = f"{base_url}/videos"
+    tab_lower = tab.lower().rstrip("s")
+    tab_norm = "playlists" if tab_lower == "playlist" else ("shorts" if tab_lower == "short" else "videos")
+    cache_key = f"channel_{raw_id.lower()}_{tab_norm}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
 
+    # 1. Fast Innertube browse extraction (~350ms vs 8s yt-dlp)
+    try:
+        browse_id = _resolve_browse_id(raw_id)
+        if browse_id:
+            data = innertube_request("browse", {"browseId": browse_id}, timeout=6)
+            header = data.get("header", {})
+            c_title = raw_id
+            sub_text = ""
+            handle = ""
+            banner = ""
+            desc = ""
+
+            if "pageHeaderRenderer" in header:
+                phr = header["pageHeaderRenderer"]
+                phvm = phr.get("content", {}).get("pageHeaderViewModel", {})
+                c_title = phr.get("pageTitle") or phvm.get("title", {}).get("dynamicTextViewModel", {}).get("text", {}).get("content") or raw_id
+                banner_srcs = phvm.get("banner", {}).get("imageBannerViewModel", {}).get("image", {}).get("sources", [])
+                if banner_srcs:
+                    banner = banner_srcs[-1].get("url") or ""
+                for row in phvm.get("metadata", {}).get("contentMetadataViewModel", {}).get("metadataRows", []):
+                    for part in row.get("metadataParts", []):
+                        txt = part.get("text", {}).get("content") or ""
+                        if txt.startswith("@"):
+                            handle = txt
+                        elif "subscriber" in txt.lower():
+                            sub_text = txt
+                desc = phvm.get("description", {}).get("descriptionPreviewViewModel", {}).get("description", {}).get("content") or ""
+            elif "c4TabbedHeaderRenderer" in header:
+                c4 = header["c4TabbedHeaderRenderer"]
+                c_title = c4.get("title") or raw_id
+                sub_text = c4.get("subscriberCountText", {}).get("simpleText") or ""
+                handle = c4.get("channelHandleText", {}).get("runs", [{}])[0].get("text") or ""
+                b_thumbs = c4.get("banner", {}).get("thumbnails", [])
+                if b_thumbs:
+                    banner = b_thumbs[-1].get("url") or ""
+
+            avatar = _extract_innertube_avatar_from_json(data) or resolve_channel_avatar(browse_id, c_title)
+            if banner and banner.startswith("//"):
+                banner = "https:" + banner
+            if not banner:
+                banner = resolve_channel_banner(browse_id, c_title)
+
+            # Find requested tab among twoColumnBrowseResultsRenderer.tabs
+            tabs = data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
+            chosen_tab = None
+            target_keywords = {"videos": "video", "shorts": "short", "playlists": "playlist"}[tab_norm]
+            for t in tabs:
+                tr = t.get("tabRenderer")
+                if not tr:
+                    continue
+                t_title = (tr.get("title") or "").lower()
+                if target_keywords in t_title:
+                    chosen_tab = tr
+                    break
+
+            if chosen_tab and not chosen_tab.get("selected"):
+                t_params = chosen_tab.get("endpoint", {}).get("browseEndpoint", {}).get("params")
+                if t_params:
+                    tab_data = innertube_request("browse", {"browseId": browse_id, "params": t_params}, timeout=6)
+                    for t2 in tab_data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", []):
+                        tr2 = t2.get("tabRenderer")
+                        if tr2 and tr2.get("selected"):
+                            chosen_tab = tr2
+                            break
+
+            items = _parse_channel_tab_items(chosen_tab or {}, tab_norm, browse_id, c_title, avatar, limit) if chosen_tab else []
+            # If Innertube browse resolved the channel header cleanly, return even if tab has 0 items (e.g. no playlists tab)
+            res_obj = {
+                "channel_id": browse_id,
+                "title": c_title,
+                "handle": handle,
+                "description": desc,
+                "subscribers": sub_text or None,
+                "subscriber_count_text": sub_text,
+                "avatar": avatar,
+                "banner": banner,
+                "tab": tab_norm,
+                "items": items
+            }
+            set_cached(cache_key, res_obj, ttl=300)
+            return res_obj
+    except Exception as ie:
+        logger.warning(f"Innertube channel browse fallback to yt-dlp for {raw_id}: {ie}")
+
+    # 2. Fallback to yt-dlp channel extractor
+    if raw_id.startswith("http://") or raw_id.startswith("https://"):
+        base_url = raw_id.rstrip("/")
+    elif raw_id.startswith("@"):
+        base_url = f"https://www.youtube.com/{raw_id}"
+    elif raw_id.startswith("UC"):
+        base_url = f"https://www.youtube.com/channel/{raw_id}"
+    else:
+        base_url = f"https://www.youtube.com/@{raw_id.replace(' ', '')}"
+
+    target_url = f"{base_url}/{tab_norm}"
     opts = get_base_ydl_opts()
     opts["extract_flat"] = True
     opts["playlist_items"] = f"1-{limit}"
@@ -1150,6 +1757,9 @@ def get_channel_content(
                 raise HTTPException(status_code=404, detail="Channel not found")
 
             entries = res.get("entries", []) or []
+            c_id = res.get("channel_id") or res.get("id") or raw_id
+            c_title = res.get("channel") or res.get("uploader") or (res.get("title") or "").split(" - ")[0]
+            avatar = resolve_channel_avatar(c_id, c_title)
             clean_items = []
             for item in entries:
                 if not item:
@@ -1157,39 +1767,36 @@ def get_channel_content(
                 item_id = item.get("id")
                 if not item_id:
                     continue
-
                 thumbs = item.get("thumbnails") or []
                 thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{item_id}/hqdefault.jpg"
-
                 clean_items.append({
                     "id": item_id,
                     "title": item.get("title") or "Untitled",
-                    "channel": item.get("uploader") or res.get("uploader") or res.get("channel") or "",
-                    "channel_id": item.get("channel_id") or res.get("channel_id") or "",
+                    "channel": item.get("uploader") or c_title,
+                    "channel_id": item.get("channel_id") or c_id,
+                    "channel_avatar": avatar,
                     "duration": item.get("duration"),
                     "duration_string": str(item.get("duration_string") or ""),
                     "view_count": item.get("view_count") or 0,
                     "thumbnail": thumbnail,
                     "url": item.get("url") or f"https://www.youtube.com/watch?v={item_id}",
                     "item_count": item.get("playlist_count") or item.get("item_count"),
-                    "type": "playlist" if tab_lower in ["playlists", "playlist"] else ("short" if tab_lower in ["shorts", "short"] else "video")
+                    "type": "playlist" if tab_norm == "playlists" else ("short" if tab_norm == "shorts" else "video")
                 })
 
-            c_id = res.get("channel_id") or res.get("id") or clean_id
-            c_title = res.get("channel") or res.get("uploader") or (res.get("title") or "").split(" - ")[0]
-            avatar = resolve_channel_avatar(c_id, c_title)
-            banner = f"/api/channel/banner?id={c_id}&name={urllib.parse.quote(c_title)}"
-
-            return {
+            res_obj = {
                 "channel_id": c_id,
                 "title": c_title,
+                "handle": "",
                 "description": res.get("description") or "",
                 "subscribers": res.get("channel_follower_count"),
                 "avatar": avatar,
-                "banner": banner,
-                "tab": tab_lower,
+                "banner": resolve_channel_banner(c_id, c_title),
+                "tab": tab_norm,
                 "items": clean_items
             }
+            set_cached(cache_key, res_obj, ttl=300)
+            return res_obj
     except Exception as e:
         logger.error(f"Error fetching channel content: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1243,14 +1850,144 @@ def get_playlist_content(playlist_id: str, limit: int = Query(30)):
         logger.error(f"Error fetching playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _build_format_presets(duration: int = 0, formats: Optional[List[Dict[str, Any]]] = None):
+    heights_present = sorted({f.get("height") for f in (formats or []) if f.get("height")}, reverse=True)
+    audio_presets = [
+        {"type": "mp3", "quality": "320k", "label": "MP3 High (320 kbps)", "est_size_mb": round((duration * 320 / 8) / 1024, 1) if duration else None},
+        {"type": "mp3", "quality": "192k", "label": "MP3 Medium (192 kbps)", "est_size_mb": round((duration * 192 / 8) / 1024, 1) if duration else None},
+        {"type": "mp3", "quality": "128k", "label": "MP3 Standard (128 kbps)", "est_size_mb": round((duration * 128 / 8) / 1024, 1) if duration else None},
+    ]
+    video_presets = [
+        {"type": "mp4", "quality": "1080p", "label": "1080p Full HD (MP4)", "est_size_mb": round((duration * 3500 / 8) / 1024, 1) if duration else None},
+        {"type": "mp4", "quality": "720p", "label": "720p HD (MP4)", "est_size_mb": round((duration * 1800 / 8) / 1024, 1) if duration else None},
+        {"type": "mp4", "quality": "480p", "label": "480p Standard (MP4)", "est_size_mb": round((duration * 900 / 8) / 1024, 1) if duration else None},
+        {"type": "mp4", "quality": "360p", "label": "360p Data Saver (MP4)", "est_size_mb": round((duration * 500 / 8) / 1024, 1) if duration else None},
+    ]
+    if heights_present and max(heights_present) > 1080:
+        video_presets.insert(0, {"type": "mp4", "quality": f"{max(heights_present)}p", "label": f"{max(heights_present)}p Ultra HD (MP4)", "est_size_mb": round((duration * 7000 / 8) / 1024, 1) if duration else None})
+    return audio_presets, video_presets
+
+def _is_youtube_url(u: str) -> bool:
+    low = (u or "").lower()
+    return any(h in low for h in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
+
+def _extract_universal_info(target_url: str, dev_id: str) -> Dict[str, Any]:
+    """Shared universal yt-dlp media extractor for YouTube, Instagram, Facebook, TikTok, X, etc."""
+    is_yt = _is_youtube_url(target_url)
+    opts = get_base_ydl_opts(dev_id, for_youtube=is_yt)
+    opts["socket_timeout"] = 12
+    if not is_yt:
+        opts["http_headers"] = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target_url, download=False)
+            if isinstance(info, dict) and info.get("entries"):
+                info = next((e for e in info["entries"] if e), info)
+            if not info:
+                raise HTTPException(status_code=404, detail="Could not extract media from URL")
+
+            formats = info.get("formats") or []
+            progressive = [
+                f for f in formats
+                if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
+            ]
+            progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
+            any_video = [f for f in formats if f.get("vcodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]]
+            any_video.sort(key=lambda x: x.get("height") or 0, reverse=True)
+            audio_only = [f for f in formats if f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]]
+            audio_only.sort(key=lambda x: (x.get("vcodec") == "none", x.get("abr") or 0), reverse=True)
+
+            direct_url = (progressive[0]["url"] if progressive else None) or (any_video[0]["url"] if any_video else None) or info.get("url") or ""
+            audio_url = audio_only[0]["url"] if audio_only else direct_url
+            dur = info.get("duration") or 0
+            audio_presets, video_presets = _build_format_presets(dur, formats)
+            thumbs = info.get("thumbnails") or []
+            thumb = info.get("thumbnail") or (thumbs[-1]["url"] if thumbs else "")
+            vid_id = info.get("id") or str(uuid.uuid4())[:11]
+            c_name = info.get("uploader") or info.get("channel") or info.get("extractor_key") or "Creator"
+            c_id = info.get("channel_id") or info.get("uploader_id") or ""
+
+            return {
+                "id": vid_id,
+                "url": info.get("webpage_url") or target_url,
+                "source_url": target_url,
+                "platform": info.get("extractor_key") or "Web",
+                "title": info.get("title") or "Extracted Media",
+                "channel": c_name,
+                "channel_id": c_id,
+                "channel_avatar": resolve_channel_avatar(c_id, c_name) if is_yt else generate_channel_avatar_svg(c_name),
+                "duration": dur,
+                "duration_string": str(info.get("duration_string") or ""),
+                "thumbnail": thumb,
+                "direct_stream_url": direct_url,
+                "audio_url": audio_url,
+                "available_resolutions": [
+                    {"height": f.get("height") or 720, "ext": f.get("ext") or "mp4", "url": f.get("url"), "filesize": f.get("filesize") or f.get("filesize_approx")}
+                    for f in (progressive or any_video)[:6]
+                ],
+                "audio_presets": audio_presets,
+                "video_presets": video_presets,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Universal resolve error for {target_url}: {e}")
+        raise HTTPException(status_code=400, detail=f"Could not extract link: {str(e)[:180]}")
+
+@app.api_route("/api/resolve-url", methods=["GET", "POST"])
+async def resolve_universal_url(request: Request, url: Optional[str] = Query(None), device_id: Optional[str] = Query(None)):
+    """Resolves ANY platform URL (YouTube, Instagram, Facebook, TikTok, X, etc.) into playable streams + download formats."""
+    target_url = (url or "").strip()
+    if not target_url and request.method == "POST":
+        try:
+            body = await request.json()
+            target_url = (body.get("url") or "").strip()
+            device_id = device_id or body.get("device_id")
+        except Exception:
+            pass
+    if not target_url or not target_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Valid http/https URL required")
+
+    dev_id = extract_device_id(request, device_id)
+    return _extract_universal_info(target_url, dev_id)
+
+@app.get("/api/stream-proxy")
+def proxy_arbitrary_stream(request: Request, url: str = Query(...)):
+    """Proxies external CDN streams (with HTTP Range seeking) when mobile WebView blocks direct CDN playback."""
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Valid http/https URL required")
+    return _proxy_remote_stream(url, request)
+
+@app.get("/api/formats")
+def get_download_formats_by_query(
+    request: Request,
+    url: Optional[str] = Query(None),
+    id: Optional[str] = Query(None),
+    device_id: Optional[str] = Query(None)
+):
+    """Returns downloadable video/audio presets for either a YouTube video_id or any universal URL."""
+    if url and not _is_youtube_url(url):
+        dev_id = extract_device_id(request, device_id)
+        return _extract_universal_info(url, dev_id)
+    target_id = id or ""
+    if url:
+        m = re.search(r'(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})', url)
+        if m:
+            target_id = m.group(1)
+    if not target_id:
+        raise HTTPException(status_code=400, detail="Missing video id or url")
+    return get_download_formats(target_id, request=request, device_id=device_id)
+
 @app.get("/api/formats/{video_id}")
-def get_download_formats(video_id: str):
+def get_download_formats(video_id: str, request: Request, device_id: Optional[str] = None):
     """
     Returns available download presets (MP4: 1080p, 720p, 480p, 360p; MP3: 320k, 192k, 128k)
     with estimated size.
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
-    opts = get_base_ydl_opts()
+    dev_id = extract_device_id(request, device_id)
+    opts = get_base_ydl_opts(dev_id)
     
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1259,60 +1996,10 @@ def get_download_formats(video_id: str):
                 raise HTTPException(status_code=404, detail="Video not found")
             
             duration = info.get("duration") or 0
-            
-            # Audio presets
-            # Size estimate: duration (sec) * bitrate (kbps) / 8 / 1024 / 1024 MB
-            audio_presets = [
-                {
-                    "type": "mp3",
-                    "quality": "320k",
-                    "label": "MP3 High (320 kbps)",
-                    "est_size_mb": round((duration * 320 / 8) / 1024, 1) if duration else None
-                },
-                {
-                    "type": "mp3",
-                    "quality": "192k",
-                    "label": "MP3 Medium (192 kbps)",
-                    "est_size_mb": round((duration * 192 / 8) / 1024, 1) if duration else None
-                },
-                {
-                    "type": "mp3",
-                    "quality": "128k",
-                    "label": "MP3 Standard (128 kbps)",
-                    "est_size_mb": round((duration * 128 / 8) / 1024, 1) if duration else None
-                },
-            ]
-            
-            # Video presets
-            video_presets = [
-                {
-                    "type": "mp4",
-                    "quality": "1080p",
-                    "label": "1080p Full HD (MP4)",
-                    "est_size_mb": round((duration * 3500 / 8) / 1024, 1) if duration else None
-                },
-                {
-                    "type": "mp4",
-                    "quality": "720p",
-                    "label": "720p HD (MP4)",
-                    "est_size_mb": round((duration * 1800 / 8) / 1024, 1) if duration else None
-                },
-                {
-                    "type": "mp4",
-                    "quality": "480p",
-                    "label": "480p Standard (MP4)",
-                    "est_size_mb": round((duration * 900 / 8) / 1024, 1) if duration else None
-                },
-                {
-                    "type": "mp4",
-                    "quality": "360p",
-                    "label": "360p Data Saver (MP4)",
-                    "est_size_mb": round((duration * 500 / 8) / 1024, 1) if duration else None
-                },
-            ]
-            
+            audio_presets, video_presets = _build_format_presets(duration, info.get("formats"))
             return {
                 "id": video_id,
+                "url": url,
                 "title": info.get("title"),
                 "thumbnail": info.get("thumbnail"),
                 "duration": duration,
@@ -1323,19 +2010,10 @@ def get_download_formats(video_id: str):
         logger.warning(f"Error getting formats via yt-dlp: {e}. Trying fallback...")
         fb = resolve_stream_fallback(video_id)
         dur = fb.get("duration") or 0
-        audio_presets = [
-            {"type": "mp3", "quality": "320k", "label": "MP3 High (320 kbps)", "est_size_mb": round((dur * 320 / 8) / 1024, 1) if dur else None},
-            {"type": "mp3", "quality": "192k", "label": "MP3 Medium (192 kbps)", "est_size_mb": round((dur * 192 / 8) / 1024, 1) if dur else None},
-            {"type": "mp3", "quality": "128k", "label": "MP3 Standard (128 kbps)", "est_size_mb": round((dur * 128 / 8) / 1024, 1) if dur else None},
-        ]
-        video_presets = [
-            {"type": "mp4", "quality": "1080p", "label": "1080p Full HD (MP4)", "est_size_mb": round((dur * 3500 / 8) / 1024, 1) if dur else None},
-            {"type": "mp4", "quality": "720p", "label": "720p HD (MP4)", "est_size_mb": round((dur * 1800 / 8) / 1024, 1) if dur else None},
-            {"type": "mp4", "quality": "480p", "label": "480p Standard (MP4)", "est_size_mb": round((dur * 900 / 8) / 1024, 1) if dur else None},
-            {"type": "mp4", "quality": "360p", "label": "360p Data Saver (MP4)", "est_size_mb": round((dur * 500 / 8) / 1024, 1) if dur else None},
-        ]
+        audio_presets, video_presets = _build_format_presets(dur)
         return {
             "id": video_id,
+            "url": url,
             "title": fb.get("title", "Video"),
             "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
             "duration": dur,
@@ -1343,26 +2021,30 @@ def get_download_formats(video_id: str):
             "video_presets": video_presets,
         }
 
-def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str, safe_title: str):
-    logger.info(f"Starting download job {job_id} for {video_id} ({format_type} {quality})")
-    
+def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str, safe_title: str, source_url: Optional[str] = None, device_id: Optional[str] = None):
+    logger.info(f"Starting download job {job_id} for dev={device_id} ({format_type} {quality})")
+
     with jobs_lock:
-        download_jobs[job_id]["status"] = "downloading"
-    
+        if job_id in download_jobs:
+            download_jobs[job_id]["status"] = "downloading"
+            download_jobs[job_id]["percent"] = 2.0
+
     def progress_hook(d):
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
             percent = (downloaded / total * 100) if total else 0
-            
+
             speed = d.get("speed") or 0
-            speed_str = f"{speed / (1024 * 1024):.2f} MB/s" if speed else "Calculating..."
+            speed_str = f"{speed / (1024 * 1024):.2f} MB/s" if speed else "Downloading..."
             eta = d.get("eta")
             eta_str = f"{eta}s" if eta is not None else ""
-            
+
             with jobs_lock:
                 if job_id in download_jobs:
-                    download_jobs[job_id]["percent"] = round(percent, 1)
+                    # Keep monotonically progressing until 96% before merge/convert
+                    capped = min(96.0, max(float(download_jobs[job_id].get("percent", 0)), round(percent, 1)))
+                    download_jobs[job_id]["percent"] = capped
                     download_jobs[job_id]["speed"] = speed_str
                     download_jobs[job_id]["eta"] = eta_str
                     download_jobs[job_id]["downloaded_bytes"] = downloaded
@@ -1371,29 +2053,22 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
             with jobs_lock:
                 if job_id in download_jobs:
                     download_jobs[job_id]["status"] = "converting"
-                    download_jobs[job_id]["percent"] = 99.0
+                    download_jobs[job_id]["percent"] = 98.0
 
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    url = (source_url or "").strip() or f"https://www.youtube.com/watch?v={video_id}"
+    is_yt = _is_youtube_url(url)
     out_template = str(DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}.%(ext)s")
-    
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "ffmpeg_location": FFMPEG_EXE,
+
+    opts = get_base_ydl_opts(device_id, for_youtube=is_yt)
+    opts.update({
         "socket_timeout": 30,
         "outtmpl": out_template,
         "progress_hooks": [progress_hook],
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"]
-            }
-        },
-    }
-    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
-        opts["cookiefile"] = str(COOKIES_FILE)
-    
+    })
+    if not is_yt:
+        opts["http_headers"] = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
     if format_type.lower() == "mp3":
-        # Extract audio and convert to mp3
         bitrate = quality.replace("k", "") if "k" in quality else "192"
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [{
@@ -1402,9 +2077,8 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
             "preferredquality": bitrate,
         }]
     else:
-        # MP4 video with audio merge
         res_height = quality.replace("p", "") if "p" in quality else "720"
-        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/bestvideo+bestaudio/best"
+        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/best[height<={res_height}]/bestvideo+bestaudio/best"
         opts["merge_output_format"] = "mp4"
 
     try:
@@ -1412,13 +2086,15 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
         except Exception as ydl_err:
-            logger.warning(f"Server-side download hit YouTube bot protection ({ydl_err}). Enabling client direct download...")
+            logger.warning(f"Server-side download error ({ydl_err}). Trying direct client stream fallback...")
             is_audio = format_type.lower() == "mp3"
-            direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio)
-            fallback_stream = direct_stream or f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true"
+            direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio, device_id=device_id) if (is_yt and video_id) else None
+            fallback_stream = direct_stream or (f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true" if (is_yt and video_id) else "")
+            if not fallback_stream:
+                raise ydl_err
             expected_ext = "mp3" if is_audio else "mp4"
             expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
-            has_cookies = bool(COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 10)
+            has_cookies = bool(get_cookies_file(device_id))
 
             with jobs_lock:
                 if job_id in download_jobs:
@@ -1430,13 +2106,11 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
                     download_jobs[job_id]["requires_cookies"] = not has_cookies
                     download_jobs[job_id]["completed_at"] = time.time()
             return
-            
-        # Find the generated file
+
         expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
         expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
         filepath = DOWNLOADS_DIR / expected_filename
-        
-        # If filename differed slightly due to sanitize
+
         if not filepath.exists():
             matches = list(DOWNLOADS_DIR.glob(f"*{job_id[:8]}.*"))
             if matches:
@@ -1444,7 +2118,7 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
                 expected_filename = filepath.name
 
         file_size = filepath.stat().st_size if filepath.exists() else 0
-        
+
         with jobs_lock:
             if job_id in download_jobs:
                 download_jobs[job_id]["status"] = "completed"
@@ -1454,7 +2128,7 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
                 download_jobs[job_id]["file_size_str"] = f"{file_size / (1024 * 1024):.2f} MB"
                 download_jobs[job_id]["download_url"] = f"/api/download/file/{expected_filename}"
                 download_jobs[job_id]["completed_at"] = time.time()
-                
+
         logger.info(f"Download job {job_id} successfully finished: {expected_filename}")
     except Exception as e:
         logger.error(f"Download job {job_id} failed: {e}")
@@ -1464,14 +2138,20 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
                 download_jobs[job_id]["error"] = str(e)
 
 @app.post("/api/download/start")
-def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
+def start_download(req: DownloadRequest, request: Request, background_tasks: BackgroundTasks):
+    dev_id = extract_device_id(request, req.device_id)
     job_id = str(uuid.uuid4())
     safe_title = "".join(c for c in (req.title or "video") if c.isalnum() or c in (" ", "-", "_")).strip()
-    safe_title = safe_title.replace(" ", "_")[:40]
-    
+    safe_title = (safe_title.replace(" ", "_") or "media")[:40]
+    src_url = (req.url or "").strip() or (f"https://www.youtube.com/watch?v={req.video_id}" if req.video_id else "")
+    if not src_url:
+        raise HTTPException(status_code=400, detail="Either video_id or url is required")
+
     job_data = {
         "job_id": job_id,
-        "video_id": req.video_id,
+        "device_id": dev_id,
+        "video_id": req.video_id or job_id[:11],
+        "source_url": src_url,
         "title": req.title or "video",
         "format_type": req.format_type,
         "quality": req.quality,
@@ -1488,45 +2168,50 @@ def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
         "created_at": time.time(),
         "error": None,
     }
-    
+
     with jobs_lock:
         download_jobs[job_id] = job_data
-    
+
+    background_tasks.add_task(cleanup_old_downloads)
     background_tasks.add_task(
         _run_download_job,
         job_id=job_id,
-        video_id=req.video_id,
+        video_id=req.video_id or "",
         format_type=req.format_type,
         quality=req.quality,
-        safe_title=safe_title
+        safe_title=safe_title,
+        source_url=src_url,
+        device_id=dev_id
     )
-    
+
     return job_data
 
 @app.get("/api/download/status/{job_id}")
-def get_download_status(job_id: str):
+def get_download_status(job_id: str, request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
     with jobs_lock:
         job = download_jobs.get(job_id)
-        if not job:
+        if not job or (dev_id != "shared_default" and job.get("device_id") not in (dev_id, None, "shared_default")):
             raise HTTPException(status_code=404, detail="Job not found")
         return job
 
 @app.get("/api/download/list")
 @app.get("/api/downloads")
-def list_downloads():
+def list_downloads(request: Request, device_id: Optional[str] = None):
+    """Lists download jobs strictly isolated to the requesting device_id."""
+    dev_id = extract_device_id(request, device_id)
     with jobs_lock:
-        # Return sorted by created_at descending
-        sorted_jobs = sorted(list(download_jobs.values()), key=lambda x: x.get("created_at", 0), reverse=True)
-        return {"downloads": sorted_jobs}
+        scoped = [j for j in download_jobs.values() if j.get("device_id") == dev_id]
+        sorted_jobs = sorted(scoped, key=lambda x: x.get("created_at", 0), reverse=True)
+        return {"device_id": dev_id, "downloads": sorted_jobs}
 
 @app.get("/api/download/file/{filename}")
 def serve_downloaded_file(filename: str):
-    # Prevent directory traversal
     clean_filename = os.path.basename(filename)
     filepath = DOWNLOADS_DIR / clean_filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     media_type = "audio/mpeg" if clean_filename.endswith(".mp3") else "video/mp4"
     return FileResponse(
         path=str(filepath),
@@ -1536,13 +2221,14 @@ def serve_downloaded_file(filename: str):
     )
 
 @app.delete("/api/download/{job_id}")
-def delete_download(job_id: str):
+def delete_download(job_id: str, request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
     with jobs_lock:
-        job = download_jobs.pop(job_id, None)
-        if not job:
+        existing = download_jobs.get(job_id)
+        if not existing or (dev_id != "shared_default" and existing.get("device_id") not in (dev_id, None, "shared_default")):
             raise HTTPException(status_code=404, detail="Job not found")
-        
-        filename = job.get("filename")
+        job = download_jobs.pop(job_id, None)
+        filename = job.get("filename") if job else None
         if filename:
             filepath = DOWNLOADS_DIR / filename
             if filepath.exists():
