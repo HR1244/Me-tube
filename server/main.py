@@ -9,6 +9,7 @@ import tempfile
 import shutil
 import re
 import random
+import hashlib
 import urllib.request
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -49,6 +50,8 @@ COOKIES_DIR = BASE_DIR / "user_cookies"
 COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 USER_META_DIR = BASE_DIR / "user_meta"
 USER_META_DIR.mkdir(parents=True, exist_ok=True)
+OTA_DIR = BASE_DIR / "ota_releases"
+OTA_DIR.mkdir(parents=True, exist_ok=True)
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 logger.info(f"Using FFmpeg binary at: {FFMPEG_EXE}")
@@ -559,6 +562,61 @@ def health_check(request: Request, device_id: Optional[str] = None):
         "cookies_loaded": bool(dev_cookie),
         "device_id": dev_id,
     }
+
+
+def _compute_file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@app.get("/api/app/version")
+def get_app_version():
+    """Returns latest zero-APK OTA web bundle metadata and optional native version."""
+    manifest_path = OTA_DIR / "manifest.json"
+    bundle_path = OTA_DIR / "bundle.zip"
+    manifest: Dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+
+    has_bundle = bundle_path.exists() and bundle_path.stat().st_size > 0
+    bundle_size = bundle_path.stat().st_size if has_bundle else 0
+    sha256 = manifest.get("sha256") or (_compute_file_sha256(bundle_path) if has_bundle else "")
+
+    return JSONResponse(
+        content={
+            "ota_code": int(manifest.get("ota_code", 1)),
+            "ota_version": str(manifest.get("ota_version", "2.0.1")),
+            "native_version_code": int(manifest.get("native_version_code", 1)),
+            "title": str(manifest.get("title", "MeTube Update")),
+            "notes": str(manifest.get("notes", "Performance & playback improvements")),
+            "has_bundle": has_bundle,
+            "bundle_url": "/api/app/ota/bundle.zip" if has_bundle else "",
+            "bundle_size": bundle_size,
+            "sha256": sha256,
+            "updated_at": int(bundle_path.stat().st_mtime) if has_bundle else 0,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.api_route("/api/app/ota/bundle.zip", methods=["GET", "HEAD"])
+def download_ota_bundle():
+    """Serves the signed/hashed compiled web bundle archive for instant in-app OTA updates."""
+    bundle_path = OTA_DIR / "bundle.zip"
+    if not bundle_path.exists() or bundle_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="No OTA bundle published yet")
+    return FileResponse(
+        path=str(bundle_path),
+        media_type="application/zip",
+        filename="metube-ota.zip",
+        headers={"Cache-Control": "no-store"},
+    )
 
 @app.api_route("/api/channel/avatar", methods=["GET", "HEAD"])
 def get_channel_avatar_endpoint(

@@ -4069,6 +4069,146 @@ window.addEventListener('popstate', () => {
 });
 
 // =========================================================
+// IN-APP ZERO-APK OTA AUTO-UPDATER
+// =========================================================
+const APP_OTA_CODE = 1;
+const APP_OTA_VERSION = '2.0.1';
+let pendingOtaInfo = null;
+let otaPollTimer = null;
+
+function getLocalUpdateMeta() {
+  try {
+    if (window.AndroidUpdater?.getUpdateState) {
+      const parsed = JSON.parse(window.AndroidUpdater.getUpdateState() || '{}');
+      const otaCode = Math.max(APP_OTA_CODE, parsed.usingOta ? Number(parsed.otaCode || 0) : 0);
+      const otaVersion = (parsed.usingOta && parsed.otaVersion) ? parsed.otaVersion : APP_OTA_VERSION;
+      return {
+        otaCode,
+        otaVersion,
+        usingOta: Boolean(parsed.usingOta),
+        nativeVersionCode: Number(parsed.nativeVersionCode || 1)
+      };
+    }
+  } catch (_) {}
+  return { otaCode: APP_OTA_CODE, otaVersion: APP_OTA_VERSION, usingOta: false, nativeVersionCode: 1 };
+}
+
+function updateSettingsVersionLabel(statusMsg = '') {
+  const verEl = document.getElementById('settings-app-version');
+  const statusEl = document.getElementById('settings-update-status');
+  const resetBtn = document.getElementById('btn-reset-ota');
+  const meta = getLocalUpdateMeta();
+  if (verEl) {
+    verEl.textContent = `Version ${meta.otaVersion} (Build ${meta.otaCode}${meta.usingOta ? ' • OTA' : ''})`;
+  }
+  if (resetBtn) {
+    resetBtn.style.display = meta.usingOta ? 'inline-block' : 'none';
+  }
+  if (statusEl && statusMsg) {
+    statusEl.textContent = statusMsg;
+  }
+}
+
+async function checkForAppUpdate(manual = false) {
+  try {
+    updateSettingsVersionLabel();
+    const info = await api.getAppVersion();
+    const meta = getLocalUpdateMeta();
+    const updateBtn = document.getElementById('btn-header-update');
+    const checkBtn = document.getElementById('btn-check-updates');
+
+    const hasNewOta = Boolean(
+      info &&
+      Number(info.ota_code || 0) > meta.otaCode &&
+      info.has_bundle &&
+      info.bundle_url
+    );
+
+    if (hasNewOta) {
+      pendingOtaInfo = info;
+      if (updateBtn) {
+        updateBtn.style.display = 'inline-flex';
+        updateBtn.title = `Update v${info.ota_version} Ready — Tap to Install`;
+      }
+      if (checkBtn) {
+        checkBtn.textContent = `Install v${info.ota_version}`;
+      }
+      updateSettingsVersionLabel(`✨ New update v${info.ota_version} available: ${info.notes || 'Tap to auto-install'}`);
+      if (manual) {
+        startAutoOtaUpdate(info);
+      }
+    } else {
+      pendingOtaInfo = null;
+      if (updateBtn) updateBtn.style.display = 'none';
+      if (checkBtn) checkBtn.textContent = 'Check Update';
+      updateSettingsVersionLabel('✓ App is up to date (instant OTA updates active).');
+      if (manual) {
+        showToast(`✓ You are on the latest version (v${meta.otaVersion})`);
+      }
+    }
+  } catch (err) {
+    if (manual) {
+      updateSettingsVersionLabel(`Update check failed: ${err.message}`);
+      showToast('Could not check updates right now');
+    }
+  }
+}
+
+function startAutoOtaUpdate(info) {
+  if (!info || !info.bundle_url) return;
+  const serverBase = getServerUrl();
+  const absUrl = info.bundle_url.startsWith('http') ? info.bundle_url : `${serverBase}${info.bundle_url}`;
+
+  if (!window.AndroidUpdater?.installOtaUpdate) {
+    showToast('Reloading web app for latest update...');
+    setTimeout(() => window.location.reload(), 600);
+    return;
+  }
+
+  const updateBtn = document.getElementById('btn-header-update');
+  const banner = document.getElementById('ota-progress-banner');
+  const label = document.getElementById('ota-progress-label');
+  const pctEl = document.getElementById('ota-progress-pct');
+  const fill = document.getElementById('ota-progress-fill');
+
+  updateBtn?.classList.add('installing');
+  if (banner) banner.style.display = 'block';
+  if (label) label.textContent = `Updating to v${info.ota_version || info.ota_code}...`;
+  if (pctEl) pctEl.textContent = '5%';
+  if (fill) fill.style.width = '5%';
+
+  window.AndroidUpdater.installOtaUpdate(
+    absUrl,
+    Number(info.ota_code || 1),
+    String(info.ota_version || ''),
+    String(info.sha256 || '')
+  );
+
+  if (otaPollTimer) clearInterval(otaPollTimer);
+  otaPollTimer = setInterval(() => {
+    try {
+      const p = JSON.parse(window.AndroidUpdater.getOtaProgress() || '{}');
+      const pct = Math.max(0, Math.min(100, Number(p.percent || 0)));
+      if (label && p.message) label.textContent = p.message;
+      if (pctEl) pctEl.textContent = `${pct}%`;
+      if (fill) fill.style.width = `${pct}%`;
+
+      if (p.status === 'ready') {
+        clearInterval(otaPollTimer);
+        otaPollTimer = null;
+        if (label) label.textContent = 'Applying update...';
+      } else if (p.status === 'error') {
+        clearInterval(otaPollTimer);
+        otaPollTimer = null;
+        updateBtn?.classList.remove('installing');
+        if (banner) banner.style.display = 'none';
+        showToast(`Update failed: ${p.message || 'Retry later'}`);
+      }
+    } catch (_) {}
+  }, 250);
+}
+
+// =========================================================
 // INITIALIZATION ON PAGE LOAD
 // =========================================================
 window.addEventListener('DOMContentLoaded', () => {
@@ -4115,11 +4255,38 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   } catch (_) {}
 
-  // Periodically check server health and poll active downloads without creating request bursts
+  document.getElementById('btn-header-update')?.addEventListener('click', () => {
+    if (pendingOtaInfo) {
+      startAutoOtaUpdate(pendingOtaInfo);
+    } else {
+      checkForAppUpdate(true);
+    }
+  });
+
+  document.getElementById('btn-check-updates')?.addEventListener('click', () => {
+    if (pendingOtaInfo) {
+      startAutoOtaUpdate(pendingOtaInfo);
+    } else {
+      checkForAppUpdate(true);
+    }
+  });
+
+  document.getElementById('btn-reset-ota')?.addEventListener('click', () => {
+    window.AndroidUpdater?.resetToBundled?.();
+  });
+
+  updateSettingsVersionLabel();
+  try { window.AndroidUpdater?.notifyPageReady?.(); } catch (_) {}
+  setTimeout(() => checkForAppUpdate(false), 3000);
+
+  // Periodically check server health, OTA updates (every 10 min), and active downloads
   checkServerHealth();
+  let tickCount = 0;
   setInterval(() => {
     if (document.visibilityState === 'hidden') return;
     checkServerHealth();
     if (state.activeTab === 'downloads' && !downloadPollTimer) loadDownloadsList();
+    tickCount++;
+    if (tickCount % 20 === 0) checkForAppUpdate(false);
   }, 30000);
 });

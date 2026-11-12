@@ -7,7 +7,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
@@ -34,6 +36,7 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.content.pm.PackageInfoCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -45,8 +48,17 @@ import com.getcapacitor.BridgeWebChromeClient;
 
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class MainActivity extends BridgeActivity {
     private long lastBackPressTime = 0;
@@ -77,8 +89,15 @@ public class MainActivity extends BridgeActivity {
     private ActivityResultLauncher<Intent> ytAuthLauncher;
     private BroadcastReceiver mediaEventReceiver;
 
+    // In-app zero-APK OTA bundle updater state
+    private volatile String otaStatus = "idle";
+    private volatile int otaPercent = 0;
+    private volatile String otaMessage = "";
+    private volatile boolean otaBusy = false;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        validateSavedOtaPath();
         // Register ActivityResultLauncher before super.onStart
         ytAuthLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -449,6 +468,77 @@ public class MainActivity extends BridgeActivity {
                 }
             }, "AndroidDownloader");
 
+            // 5. In-App Zero-APK OTA Web Bundle Updater Bridge
+            webView.addJavascriptInterface(new Object() {
+                @JavascriptInterface
+                public String getUpdateState() {
+                    JSONObject obj = new JSONObject();
+                    try {
+                        PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+                        long nativeCode = PackageInfoCompat.getLongVersionCode(pInfo);
+                        String nativeName = pInfo.versionName != null ? pInfo.versionName : "1.0";
+
+                        SharedPreferences otaPrefs = getSharedPreferences("metube_ota", MODE_PRIVATE);
+                        SharedPreferences capPrefs = getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE);
+                        String serverPath = capPrefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
+                        boolean usingOta = serverPath != null && !serverPath.isEmpty() && new File(serverPath, "index.html").exists();
+
+                        obj.put("nativeVersionCode", nativeCode);
+                        obj.put("nativeVersionName", nativeName);
+                        obj.put("otaCode", usingOta ? otaPrefs.getInt("ota_code", 0) : 0);
+                        obj.put("otaVersion", usingOta ? otaPrefs.getString("ota_version", "") : "");
+                        obj.put("usingOta", usingOta);
+                        obj.put("status", otaStatus);
+                        obj.put("percent", otaPercent);
+                        obj.put("message", otaMessage);
+                    } catch (Exception ignored) {}
+                    return obj.toString();
+                }
+
+                @JavascriptInterface
+                public String getOtaProgress() {
+                    JSONObject obj = new JSONObject();
+                    try {
+                        obj.put("status", otaStatus);
+                        obj.put("percent", otaPercent);
+                        obj.put("message", otaMessage);
+                        obj.put("busy", otaBusy);
+                    } catch (Exception ignored) {}
+                    return obj.toString();
+                }
+
+                @JavascriptInterface
+                public void notifyPageReady() {
+                    runOnUiThread(() -> pushSafeInsetsToWebView());
+                }
+
+                @JavascriptInterface
+                public void installOtaUpdate(String bundleUrl, int targetCode, String targetVersion, String expectedSha256) {
+                    if (otaBusy || bundleUrl == null || bundleUrl.isEmpty()) return;
+                    otaBusy = true;
+                    otaStatus = "downloading";
+                    otaPercent = 2;
+                    otaMessage = "Downloading update...";
+                    new Thread(() -> performOtaUpdate(bundleUrl, targetCode, targetVersion, expectedSha256)).start();
+                }
+
+                @JavascriptInterface
+                public void resetToBundled() {
+                    getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE)
+                        .edit().putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "").apply();
+                    getSharedPreferences("metube_ota", MODE_PRIVATE).edit().clear().apply();
+                    otaStatus = "idle";
+                    otaPercent = 0;
+                    otaMessage = "";
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "Restored built-in app bundle", Toast.LENGTH_SHORT).show();
+                        if (getBridge() != null) {
+                            getBridge().setServerAssetPath("public");
+                        }
+                    });
+                }
+            }, "AndroidUpdater");
+
             webView.setDownloadListener(new DownloadListener() {
                 @Override
                 public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
@@ -678,6 +768,193 @@ public class MainActivity extends BridgeActivity {
                 120);
             }
         }
+    }
+
+    private void validateSavedOtaPath() {
+        try {
+            SharedPreferences capPrefs = getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE);
+            String path = capPrefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
+            if (path != null && !path.isEmpty()) {
+                File idx = new File(path, "index.html");
+                if (!idx.exists() || idx.length() == 0) {
+                    capPrefs.edit().putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "").apply();
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void performOtaUpdate(String bundleUrl, int targetCode, String targetVersion, String expectedSha256) {
+        File tmpZip = new File(getCacheDir(), "ota_bundle_tmp.zip");
+        File otaRoot = new File(getFilesDir(), "ota_web");
+        File stageDir = new File(otaRoot, "v_" + targetCode + "_stage");
+        File finalDir = new File(otaRoot, "v_" + targetCode);
+        HttpURLConnection conn = null;
+        try {
+            if (!otaRoot.exists()) otaRoot.mkdirs();
+            if (tmpZip.exists()) tmpZip.delete();
+            deleteRecursive(stageDir);
+
+            URL url = new URL(bundleUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("User-Agent", "MeTube-OTA/2.0");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new RuntimeException("HTTP " + code);
+            }
+
+            long total = conn.getContentLengthLong();
+            long downloaded = 0;
+            byte[] buf = new byte[16384];
+            try (InputStream in = new BufferedInputStream(conn.getInputStream());
+                 FileOutputStream fos = new FileOutputStream(tmpZip)) {
+                int read;
+                while ((read = in.read(buf)) != -1) {
+                    fos.write(buf, 0, read);
+                    downloaded += read;
+                    if (total > 0) {
+                        otaPercent = Math.min(80, Math.max(5, (int) ((downloaded * 80L) / total)));
+                    } else {
+                        otaPercent = Math.min(75, otaPercent + 2);
+                    }
+                }
+            }
+
+            if (expectedSha256 != null && !expectedSha256.trim().isEmpty()) {
+                otaStatus = "verifying";
+                otaPercent = 84;
+                otaMessage = "Verifying package...";
+                String actualSha = computeSha256Hex(tmpZip);
+                if (!expectedSha256.trim().equalsIgnoreCase(actualSha)) {
+                    throw new SecurityException("Update checksum mismatch");
+                }
+            }
+
+            otaStatus = "extracting";
+            otaPercent = 90;
+            otaMessage = "Installing update...";
+            extractZipSafe(tmpZip, stageDir);
+
+            File indexFile = new File(stageDir, "index.html");
+            if (!indexFile.exists() || indexFile.length() == 0) {
+                throw new IllegalStateException("Update missing index.html");
+            }
+
+            deleteRecursive(finalDir);
+            if (!stageDir.renameTo(finalDir)) {
+                throw new IllegalStateException("Could not finalize OTA directory");
+            }
+
+            // Persist for future cold launches via Capacitor's built-in CAP_SERVER_PATH
+            getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, finalDir.getAbsolutePath())
+                .apply();
+            getSharedPreferences("metube_ota", MODE_PRIVATE)
+                .edit()
+                .putInt("ota_code", targetCode)
+                .putString("ota_version", targetVersion != null ? targetVersion : "")
+                .apply();
+
+            // Clean up older OTA directories
+            File[] siblings = otaRoot.listFiles();
+            if (siblings != null) {
+                for (File f : siblings) {
+                    if (f.isDirectory() && !f.getName().equals(finalDir.getName())) {
+                        deleteRecursive(f);
+                    }
+                }
+            }
+            if (tmpZip.exists()) tmpZip.delete();
+
+            otaStatus = "ready";
+            otaPercent = 100;
+            otaMessage = "Updated to v" + (targetVersion != null ? targetVersion : targetCode);
+            otaBusy = false;
+
+            runOnUiThread(() -> {
+                Toast.makeText(
+                    MainActivity.this,
+                    "MeTube updated to v" + (targetVersion != null ? targetVersion : String.valueOf(targetCode)) + "!",
+                    Toast.LENGTH_SHORT
+                ).show();
+                if (getBridge() != null) {
+                    getBridge().setServerBasePath(finalDir.getAbsolutePath());
+                }
+            });
+        } catch (Exception e) {
+            otaStatus = "error";
+            otaMessage = e.getMessage() != null ? e.getMessage() : "Update failed";
+            otaBusy = false;
+            deleteRecursive(stageDir);
+            if (tmpZip.exists()) tmpZip.delete();
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static String computeSha256Hex(File file) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] buf = new byte[16384];
+        try (InputStream is = new FileInputStream(file)) {
+            int r;
+            while ((r = is.read(buf)) != -1) {
+                md.update(buf, 0, r);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (byte b : md.digest()) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private static void extractZipSafe(File zipFile, File destDir) throws Exception {
+        if (!destDir.exists()) destDir.mkdirs();
+        String destCanonical = destDir.getCanonicalPath() + File.separator;
+        byte[] buf = new byte[16384];
+        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                String name = entry.getName().replace("\\", "/");
+                while (name.startsWith("/")) name = name.substring(1);
+                if (name.startsWith("dist/")) name = name.substring(5);
+                else if (name.startsWith("public/")) name = name.substring(7);
+                if (name.isEmpty()) continue;
+
+                File outFile = new File(destDir, name);
+                String outCanonical = outFile.getCanonicalPath();
+                if (!outCanonical.startsWith(destCanonical)) {
+                    throw new SecurityException("Blocked invalid zip entry: " + name);
+                }
+
+                if (entry.isDirectory()) {
+                    outFile.mkdirs();
+                } else {
+                    File parent = outFile.getParentFile();
+                    if (parent != null && !parent.exists()) parent.mkdirs();
+                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                        int r;
+                        while ((r = zis.read(buf)) != -1) {
+                            fos.write(buf, 0, r);
+                        }
+                    }
+                }
+                zis.closeEntry();
+            }
+        }
+    }
+
+    private static void deleteRecursive(File target) {
+        if (target == null || !target.exists()) return;
+        if (target.isDirectory()) {
+            File[] children = target.listFiles();
+            if (children != null) {
+                for (File c : children) deleteRecursive(c);
+            }
+        }
+        target.delete();
     }
 
     @Override

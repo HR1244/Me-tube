@@ -210,5 +210,8 @@ export const api = {
     const p = new URLSearchParams({ device_id: getDeviceId() });
     if (channels) p.set('channels', channels);
     return request(`/api/user/feed?${p.toString()}`);
+  },
+  getAppVersion() {
+    return request('/api/app/version', { cache: 'no-store' });
   }
 };

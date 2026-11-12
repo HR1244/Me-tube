@@ -101,6 +101,10 @@
                   <button class="header-account-chip" id="btn-header-switch-ac" title="Switch or Sign in Account">
                     <span id="header-ac-label">Sign in</span>
                   </button>
+                  <button class="icon-button header-update-btn" id="btn-header-update" title="New Update Ready — Tap to Install Automatically" style="display:none; position:relative;">
+                    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/><path d="M12 7v6"/><polyline points="9 11 12 14 15 11"/></svg>
+                    <span class="update-badge-dot" id="header-update-dot"></span>
+                  </button>
                   <button class="icon-button" id="btn-header-downloads" title="Downloads">
                     <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                   </button>
@@ -122,6 +126,17 @@
                 <button type="submit" class="search-submit-btn" title="Search or Extract Link">Go</button>
               </form>
             </header>
+
+            <!-- Compact Auto-Update Progress Bar (shown only while downloading/applying OTA bundle) -->
+            <div id="ota-progress-banner" class="ota-progress-banner" style="display:none;">
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; font-weight:700; color:#FFF; margin-bottom:4px;">
+                <span id="ota-progress-label">Downloading update...</span>
+                <span id="ota-progress-pct" style="color:#4ADE80;">0%</span>
+              </div>
+              <div style="height:4px; background:#272727; border-radius:2px; overflow:hidden;">
+                <div id="ota-progress-fill" style="height:100%; width:0%; background:linear-gradient(90deg,#22C55E,#4ADE80); transition:width 0.25s ease;"></div>
+              </div>
+            </div>
 
             <!-- Category Pills Bar -->
             <nav class="category-bar-wrapper" id="category-bar">
@@ -263,9 +278,17 @@
                 </div>
 
                 <div style="background:#181818; padding:14px; border-radius:10px; border:1px solid var(--border); margin-top:12px; display:flex; flex-direction:column; gap:8px;">
-                  <span style="font-size:13px; font-weight:700;">MeTube Pure Engine</span>
-                  <span style="font-size:11px; color:var(--text-gray);">Version 2.0.0 Standalone</span>
-                  <span style="font-size:11px; color:var(--text-gray);">Fast stream extraction, background listening, and high-fidelity downloads.</span>
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div>
+                      <span style="font-size:13px; font-weight:700; color:#FFF;">MeTube Pure Engine</span>
+                      <div id="settings-app-version" style="font-size:11px; color:var(--text-gray); margin-top:2px;">Version 2.0.1 (Build 1)</div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                      <button id="btn-reset-ota" style="display:none; background:#272727; color:#FF8A80; border:1px solid #383838; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">Reset</button>
+                      <button id="btn-check-updates" style="background:#22C55E; color:#052e16; border:none; padding:6px 12px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">Check Update</button>
+                    </div>
+                  </div>
+                  <div id="settings-update-status" style="font-size:11px; color:var(--text-gray);">Over-the-air instant updates without re-downloading APK.</div>
                 </div>
               </section>
             </main>

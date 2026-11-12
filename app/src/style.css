@@ -654,6 +654,42 @@ body.is-mobile-device .phone-home-indicator {
   gap: 4px;
 }
 
+.header-update-btn {
+  color: #4ADE80 !important;
+}
+
+.update-badge-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22C55E;
+  box-shadow: 0 0 0 2px #0F0F0F;
+  animation: otaPulse 1.6s infinite;
+}
+
+.header-update-btn.installing svg {
+  animation: otaSpin 1s linear infinite;
+}
+
+@keyframes otaPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.75; }
+}
+
+@keyframes otaSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ota-progress-banner {
+  background: #142219;
+  border-bottom: 1px solid #1f4d2e;
+  padding: 8px 14px;
+}
+
 .btn-create-pill {
   display: flex;
   align-items: center;
