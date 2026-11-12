@@ -280,13 +280,15 @@ public class MainActivity extends BridgeActivity {
                     activeAudioUrl = audioUrl != null ? audioUrl : "";
                     activeThumbUrl = thumbUrl != null ? thumbUrl : "";
 
-                    if (bgEnabled && DirectYouTubeResolver.isValidYouTubeId(activeVideoId)) {
+                    if ((bgEnabled || isPlaying) && DirectYouTubeResolver.isValidYouTubeId(activeVideoId)) {
                         DirectYouTubeResolver.prewarmAsync(activeVideoId);
                     }
-                    if (bgEnabled && isPlaying) {
-                        startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
-                    } else if (!bgEnabled && !MediaPlaybackService.isNativeAudioActive) {
-                        stopMediaService();
+                    if (!MediaPlaybackService.isNativeAudioActive) {
+                        if (bgEnabled && isPlaying) {
+                            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+                        } else if (!bgEnabled) {
+                            stopMediaService();
+                        }
                     }
                 }
 
@@ -351,56 +353,32 @@ public class MainActivity extends BridgeActivity {
                 }
             }, "AndroidAuth");
 
-            // 4. Direct Native DownloadManager JS Bridge with real byte-level progress polling
+            // 4. Direct Native In-Process Downloader Bridge with MediaExtractor audio conversion + progress polling
             webView.addJavascriptInterface(new Object() {
                 @JavascriptInterface
                 public long startDownload(String url, String filename, String mimeType) {
-                    return startDownloadWithUa(url, filename, mimeType, null);
+                    return startDownloadFull(url, filename, mimeType, null, false);
                 }
 
                 @JavascriptInterface
                 public long startDownloadWithUa(String url, String filename, String mimeType, String customUa) {
+                    return startDownloadFull(url, filename, mimeType, customUa, false);
+                }
+
+                @JavascriptInterface
+                public long startDownloadFull(String url, String filename, String mimeType, String customUa, boolean extractAudio) {
                     try {
-                        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                        String lower = filename != null ? filename.toLowerCase() : "";
-                        String safeMime = (mimeType != null && !mimeType.isEmpty())
-                            ? mimeType
-                            : (lower.endsWith(".mp3") ? "audio/mpeg" : (lower.endsWith(".m4a") ? "audio/mp4" : "video/mp4"));
-                        request.setMimeType(safeMime);
-                        request.setDescription("Downloading to phone storage via MeTube");
-                        String effectiveUa = (customUa != null && !customUa.isEmpty())
-                            ? customUa
-                            : "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 MeTube/2.0";
-                        request.addRequestHeader("User-Agent", effectiveUa);
-                        String safeTitle = (filename != null && !filename.isEmpty())
-                            ? filename.replaceAll("[^a-zA-Z0-9._-]", "_")
-                            : "MeTube_Media.mp4";
-                        request.setTitle(safeTitle);
-                        request.setAllowedOverMetered(true);
-                        request.setAllowedOverRoaming(true);
-                        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                        try {
-                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "MeTube/" + safeTitle);
-                        } catch (Exception subEx) {
-                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeTitle);
-                        }
-                        DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                        if (dm != null) {
-                            return dm.enqueue(request);
-                        }
-                    } catch (Exception e) {
-                        runOnUiThread(() -> {
-                            try {
-                                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                                startActivity(intent);
-                            } catch (Exception ignored) {}
-                        });
-                    }
+                        long id = NativeDownloadEngine.enqueue(MainActivity.this, url, filename, mimeType, customUa, extractAudio);
+                        if (id > 0) return id;
+                    } catch (Exception ignored) {}
                     return -1L;
                 }
 
                 @JavascriptInterface
                 public String getDownloadProgress(long dmId) {
+                    if (NativeDownloadEngine.handlesId(dmId)) {
+                        return NativeDownloadEngine.getProgressJson(dmId);
+                    }
                     JSONObject res = new JSONObject();
                     try {
                         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
@@ -560,9 +538,12 @@ public class MainActivity extends BridgeActivity {
                             DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
                             boolean wantAudio = formatType != null && (formatType.equalsIgnoreCase("mp3") || formatType.equalsIgnoreCase("audio") || formatType.equalsIgnoreCase("m4a"));
                             if (res != null) {
-                                String targetUrl = wantAudio ? res.audioUrl : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : res.audioUrl);
-                                String ext = wantAudio ? res.audioExt : "mp4";
-                                String mime = wantAudio ? res.audioMime : "video/mp4";
+                                String targetUrl = wantAudio
+                                    ? (!res.audioUrl.isEmpty() ? res.audioUrl : res.videoUrl)
+                                    : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : res.audioUrl);
+                                boolean extractAudio = wantAudio && res.audioMime != null && res.audioMime.startsWith("video/");
+                                String ext = wantAudio ? (extractAudio ? "m4a" : res.audioExt) : "mp4";
+                                String mime = wantAudio ? (extractAudio ? "audio/mp4" : res.audioMime) : "video/mp4";
                                 if (targetUrl != null && !targetUrl.isEmpty() && !targetUrl.contains(".m3u8")) {
                                     out.put("ok", true);
                                     out.put("url", targetUrl);
@@ -570,6 +551,7 @@ public class MainActivity extends BridgeActivity {
                                     out.put("videoUrl", res.videoUrl);
                                     out.put("ext", ext);
                                     out.put("mimeType", mime);
+                                    out.put("extractAudio", extractAudio);
                                     out.put("userAgent", res.userAgent);
                                     out.put("title", res.title);
                                 } else {
@@ -797,9 +779,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
-        super.onPause();
         if (bgAudioEnabled && mediaIsPlaying && (!activeAudioUrl.isEmpty() || DirectYouTubeResolver.isValidYouTubeId(activeVideoId))) {
-            // Seamlessly hand audio playback over to OS-level MediaPlaybackService
+            // Hand audio playback to OS ForegroundService BEFORE super.onPause() pauses WebView
             startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().evaluateJavascript(
@@ -809,6 +790,7 @@ public class MainActivity extends BridgeActivity {
                 getBridge().getWebView().resumeTimers();
             }
         }
+        super.onPause();
     }
 
     @Override

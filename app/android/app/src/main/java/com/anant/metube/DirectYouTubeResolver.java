@@ -6,6 +6,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -234,13 +235,24 @@ public final class DirectYouTubeResolver {
                 }
             }
 
-            if (bestAudUrl.isEmpty() && !bestProgUrl.isEmpty()) {
+            // Verify candidates actually return 200 OK on a real GET (catches PoToken-gated 403 audio URLs)
+            boolean audOk = !bestAudUrl.isEmpty() && isStreamReadable(bestAudUrl, ua);
+            boolean progOk = !bestProgUrl.isEmpty() && isStreamReadable(bestProgUrl, ua);
+
+            if (!audOk && progOk) {
                 bestAudUrl = bestProgUrl;
                 bestAudExt = "mp4";
                 bestAudMime = "video/mp4";
+            } else if (!audOk) {
+                bestAudUrl = "";
             }
-            if (bestProgUrl.isEmpty() && !hlsUrl.isEmpty()) {
-                bestProgUrl = hlsUrl;
+
+            if (!progOk) {
+                bestProgUrl = !hlsUrl.isEmpty() ? hlsUrl : "";
+            }
+
+            if (bestAudUrl.isEmpty() && bestProgUrl.isEmpty() && hlsUrl.isEmpty()) {
+                return null;
             }
 
             return new ResolvedStream(
@@ -253,6 +265,42 @@ public final class DirectYouTubeResolver {
             return null;
         } finally {
             if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** Plain GET probe (without Range header) matching ExoPlayer initial read & standard HTTP downloaders. */
+    public static boolean isStreamReadable(String urlStr, String ua) {
+        if (urlStr == null || urlStr.isEmpty()) return false;
+        HttpURLConnection testConn = null;
+        try {
+            URL u = new URL(urlStr);
+            testConn = (HttpURLConnection) u.openConnection();
+            testConn.setRequestMethod("GET");
+            testConn.setInstanceFollowRedirects(true);
+            testConn.setConnectTimeout(4500);
+            testConn.setReadTimeout(4500);
+            if (ua != null && !ua.isEmpty()) {
+                testConn.setRequestProperty("User-Agent", ua);
+            }
+            int code = testConn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                Log.w(TAG, "Probe rejected (" + code + "): " + urlStr.substring(0, Math.min(64, urlStr.length())));
+                return false;
+            }
+            try (InputStream is = testConn.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int total = 0;
+                int r;
+                while (total < 1024 && (r = is.read(buf, 0, Math.min(buf.length, 4096 - total))) != -1) {
+                    total += r;
+                }
+                return total > 0;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Probe exception: " + e.getMessage());
+            return false;
+        } finally {
+            if (testConn != null) testConn.disconnect();
         }
     }
 }

@@ -26,6 +26,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -63,12 +64,16 @@ public class MediaPlaybackService extends Service {
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private boolean retriedFallback = false;
+    private int retryStage = 0;
     private int tickCounter = 0;
     private volatile int playSeq = 0;
 
     private String currentVideoId = "";
     private String currentFallbackUrl = "";
+    private String resolvedAudioUrl = "";
+    private String resolvedVideoUrl = "";
+    private String resolvedHlsUrl = "";
+    private String resolvedUa = DEFAULT_UA;
     private String currentUserAgent = DEFAULT_UA;
     private String currentTitle = "MeTube";
     private String currentArtist = "Background Audio";
@@ -180,6 +185,10 @@ public class MediaPlaybackService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ACTION_START_OR_UPDATE.equals(action) && isNativeAudioActive) {
+            return START_STICKY;
+        }
+
         // Update metadata from intent extras
         String videoId = intent.getStringExtra("videoId");
         String title = intent.getStringExtra("title");
@@ -207,31 +216,49 @@ public class MediaPlaybackService extends Service {
 
         if (ACTION_HANDOFF_PLAY.equals(action) && ((streamUrl != null && !streamUrl.isEmpty()) || DirectYouTubeResolver.isValidYouTubeId(videoId))) {
             acquireLocks();
-            retriedFallback = false;
+            retryStage = 0;
+            resolvedAudioUrl = "";
+            resolvedVideoUrl = "";
+            resolvedHlsUrl = "";
+            resolvedUa = DEFAULT_UA;
             currentFallbackUrl = streamUrl != null ? streamUrl : "";
             isNativeAudioActive = true;
             isNativePlaying = shouldPlay;
             final int mySeq = ++playSeq;
-            final boolean isOfflineFile = currentFallbackUrl.contains("/api/download/file/");
+            final boolean isOfflineFile = currentFallbackUrl.contains("/api/download/file/")
+                || currentFallbackUrl.startsWith("content://")
+                || currentFallbackUrl.startsWith("file://");
 
             if (!isOfflineFile && DirectYouTubeResolver.isValidYouTubeId(videoId)) {
                 DirectYouTubeResolver.ResolvedStream cached = DirectYouTubeResolver.getCached(videoId);
-                if (cached != null && cached.audioUrl != null && !cached.audioUrl.isEmpty()) {
-                    startNativePlayer(cached.audioUrl, cached.userAgent, posMs, shouldPlay);
+                String cachedTarget = pickBestNativePlayableUrl(cached);
+                if (cached != null && !cachedTarget.isEmpty()) {
+                    resolvedAudioUrl = cached.audioUrl != null ? cached.audioUrl : "";
+                    resolvedVideoUrl = cached.videoUrl != null ? cached.videoUrl : "";
+                    resolvedHlsUrl = cached.hlsUrl != null ? cached.hlsUrl : "";
+                    resolvedUa = cached.userAgent != null ? cached.userAgent : DEFAULT_UA;
+                    startNativePlayer(cachedTarget, resolvedUa, posMs, shouldPlay);
                 } else {
                     updateNotificationAndSession();
                     new Thread(() -> {
                         DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
                         if (mySeq != playSeq || !isNativeAudioActive) return;
-                        String targetUrl = (res != null && res.audioUrl != null && !res.audioUrl.isEmpty()) ? res.audioUrl : currentFallbackUrl;
-                        String targetUa = (res != null && res.audioUrl != null && !res.audioUrl.isEmpty()) ? res.userAgent : DEFAULT_UA;
-                        if (res != null && res.durationMs > 0 && currentDurationMs <= 0) {
-                            currentDurationMs = res.durationMs;
+                        String targetUrl = pickBestNativePlayableUrl(res);
+                        String targetUa = (res != null && !targetUrl.isEmpty()) ? res.userAgent : DEFAULT_UA;
+                        if (res != null) {
+                            resolvedAudioUrl = res.audioUrl != null ? res.audioUrl : "";
+                            resolvedVideoUrl = res.videoUrl != null ? res.videoUrl : "";
+                            resolvedHlsUrl = res.hlsUrl != null ? res.hlsUrl : "";
+                            resolvedUa = targetUa != null ? targetUa : DEFAULT_UA;
+                            if (res.durationMs > 0 && currentDurationMs <= 0) {
+                                currentDurationMs = res.durationMs;
+                            }
                         }
-                        if (targetUrl != null && !targetUrl.isEmpty()) {
+                        final String playUrl = !targetUrl.isEmpty() ? targetUrl : currentFallbackUrl;
+                        if (playUrl != null && !playUrl.isEmpty()) {
                             mainHandler.post(() -> {
                                 if (mySeq == playSeq && isNativeAudioActive) {
-                                    startNativePlayer(targetUrl, targetUa, posMs, shouldPlay);
+                                    startNativePlayer(playUrl, targetUa, posMs, shouldPlay);
                                 }
                             });
                         }
@@ -247,6 +274,14 @@ public class MediaPlaybackService extends Service {
         }
 
         return START_STICKY;
+    }
+
+    private static String pickBestNativePlayableUrl(DirectYouTubeResolver.ResolvedStream res) {
+        if (res == null) return "";
+        if (res.audioUrl != null && !res.audioUrl.isEmpty()) return res.audioUrl;
+        if (res.videoUrl != null && !res.videoUrl.isEmpty()) return res.videoUrl;
+        if (res.hlsUrl != null && !res.hlsUrl.isEmpty()) return res.hlsUrl;
+        return "";
     }
 
     private void startNativePlayer(String url, String userAgent, long seekMs, boolean playWhenReady) {
@@ -275,6 +310,7 @@ public class MediaPlaybackService extends Service {
                 .setAllowCrossProtocolRedirects(true)
                 .setConnectTimeoutMs(30000)
                 .setReadTimeoutMs(30000);
+            DefaultDataSource.Factory dataFactory = new DefaultDataSource.Factory(this, httpFactory);
 
             AudioAttributes attrs = new AudioAttributes.Builder()
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -282,7 +318,7 @@ public class MediaPlaybackService extends Service {
                 .build();
 
             exoPlayer = new ExoPlayer.Builder(this)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(httpFactory))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(dataFactory))
                 .setAudioAttributes(attrs, true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
@@ -314,19 +350,51 @@ public class MediaPlaybackService extends Service {
                 @Override
                 public void onPlayerError(PlaybackException error) {
                     Log.e(TAG, "ExoPlayer background error (" + error.getErrorCodeName() + "): " + error.getMessage());
-                    if (!retriedFallback) {
-                        retriedFallback = true;
-                        long posNow = Math.max(nativePositionMs, pendingSeekMs);
+                    final long posNow = Math.max(nativePositionMs, pendingSeekMs);
+                    if (retryStage < 1) {
+                        retryStage = 1;
+                        if (resolvedVideoUrl != null && !resolvedVideoUrl.isEmpty() && !resolvedVideoUrl.equals(currentStreamUrl)) {
+                            final String nextUrl = resolvedVideoUrl;
+                            final String nextUa = resolvedUa;
+                            currentStreamUrl = "";
+                            mainHandler.post(() -> startNativePlayer(nextUrl, nextUa, posNow, true));
+                            return;
+                        }
+                    }
+                    if (retryStage < 2) {
+                        retryStage = 2;
+                        if (resolvedHlsUrl != null && !resolvedHlsUrl.isEmpty() && !resolvedHlsUrl.equals(currentStreamUrl)) {
+                            final String nextUrl = resolvedHlsUrl;
+                            final String nextUa = resolvedUa;
+                            currentStreamUrl = "";
+                            mainHandler.post(() -> startNativePlayer(nextUrl, nextUa, posNow, true));
+                            return;
+                        }
+                    }
+                    if (retryStage < 3 && DirectYouTubeResolver.isValidYouTubeId(currentVideoId)) {
+                        retryStage = 3;
+                        final int mySeq = playSeq;
+                        final String vid = currentVideoId;
+                        new Thread(() -> {
+                            DirectYouTubeResolver.ResolvedStream fresh = DirectYouTubeResolver.resolve(vid, true);
+                            String freshUrl = pickBestNativePlayableUrl(fresh);
+                            if (mySeq == playSeq && isNativeAudioActive && !freshUrl.isEmpty()) {
+                                resolvedAudioUrl = fresh.audioUrl != null ? fresh.audioUrl : "";
+                                resolvedVideoUrl = fresh.videoUrl != null ? fresh.videoUrl : "";
+                                resolvedHlsUrl = fresh.hlsUrl != null ? fresh.hlsUrl : "";
+                                resolvedUa = fresh.userAgent != null ? fresh.userAgent : DEFAULT_UA;
+                                currentStreamUrl = "";
+                                mainHandler.post(() -> startNativePlayer(freshUrl, resolvedUa, posNow, true));
+                            }
+                        }).start();
+                        return;
+                    }
+                    if (retryStage < 4) {
+                        retryStage = 4;
                         if (currentFallbackUrl != null && !currentFallbackUrl.isEmpty() && !currentFallbackUrl.equals(currentStreamUrl)) {
                             String nextUrl = currentFallbackUrl;
                             currentStreamUrl = "";
                             mainHandler.post(() -> startNativePlayer(nextUrl, DEFAULT_UA, posNow, true));
-                            return;
-                        }
-                        if (currentStreamUrl != null && currentStreamUrl.contains("audio=true")) {
-                            String fallbackUrl = currentStreamUrl.replace("audio=true", "audio=false");
-                            currentStreamUrl = "";
-                            mainHandler.post(() -> startNativePlayer(fallbackUrl, DEFAULT_UA, posNow, true));
                             return;
                         }
                     }

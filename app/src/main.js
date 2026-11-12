@@ -1371,24 +1371,39 @@ if (typeof window !== 'undefined') {
           ytDurationSec = msg.info.duration;
         }
         if (typeof msg.info.playerState === 'number') {
-          ytIsPlaying = (msg.info.playerState === 1 || msg.info.playerState === 3);
+          const st = msg.info.playerState;
+          if (st === 1 || st === 3) ytIsPlaying = true;
+          else if (st === 0 || st === 2) ytIsPlaying = false;
         }
         syncNativeMediaService(null, false);
       } else if (msg.event === 'onStateChange') {
         const st = Number(msg.info);
-        ytIsPlaying = (st === 1 || st === 3);
-        syncNativeMediaService(ytIsPlaying, true);
+        if (st === 1 || st === 3) {
+          ytIsPlaying = true;
+          syncNativeMediaService(true, true);
+        } else if (st === 0 || st === 2) {
+          ytIsPlaying = false;
+          syncNativeMediaService(false, true);
+        }
       }
     } catch (_) {}
   });
 }
 
-// Keep YT iframe timeline & BG audio readiness synced even when iframe postMessage pauses
+// Keep YT iframe handshake, timeline & BG audio readiness synced reliably
 setInterval(() => {
-  if (state.playbackEngine === 'youtube' && ytIsPlaying && state.activeVideo && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
-    ytCurrentTimeSec += 1;
-    if (ytDurationSec > 0 && ytCurrentTimeSec > ytDurationSec) ytCurrentTimeSec = ytDurationSec;
-    syncNativeMediaService(true, false);
+  if (state.playbackEngine === 'youtube' && state.activeVideo && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
+    const iframe = document.getElementById('youtube-embed-player');
+    if (iframe && iframe.contentWindow) {
+      try {
+        iframe.contentWindow.postMessage('{"event":"listening","id":1,"channel":"widget"}', '*');
+      } catch (_) {}
+    }
+    if (ytIsPlaying) {
+      ytCurrentTimeSec += 1;
+      if (ytDurationSec > 0 && ytCurrentTimeSec > ytDurationSec) ytCurrentTimeSec = ytDurationSec;
+      syncNativeMediaService(true, false);
+    }
   }
 }, 1000);
 
@@ -1908,7 +1923,26 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         : `${serverBase}/api/stream/${video.id}?proxy=true&device_id=${devId}&quality=360p`;
 
       let triedFallback = false;
-      videoElem.src = primaryStreamUrl;
+      const startVideoSource = (srcUrl) => {
+        if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
+        videoElem.src = srcUrl;
+        videoElem.play().catch((err) => {
+          console.log(`[Player] Autoplay note: ${err}`);
+        });
+      };
+
+      if (!video.isExternal && window.AndroidInnerTube?.resolveForDownloadAsync) {
+        resolveViaNativeInnerTube(video.id, 'video').then((nativeRes) => {
+          if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
+          if (nativeRes?.ok && nativeRes.url) {
+            startVideoSource(nativeRes.url);
+          } else {
+            startVideoSource(primaryStreamUrl);
+          }
+        });
+      } else {
+        videoElem.src = primaryStreamUrl;
+      }
 
       const curTimeLbl = document.getElementById('st-time-current');
       const durTimeLbl = document.getElementById('st-time-duration');
@@ -2428,13 +2462,14 @@ function initDownloadModal() {
     confirmText.textContent = 'Starting Download...';
 
     try {
+      const isAudioFmt = (t) => ['audio', 'mp3', 'm4a'].includes(String(t || '').toLowerCase());
       const canUseNativeDirect = !state.activeVideo.isExternal
         && Boolean(state.activeVideo.id)
         && Boolean(window.AndroidInnerTube?.resolveForDownloadAsync)
-        && Boolean(window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload);
+        && Boolean(window.AndroidDownloader?.startDownloadFull || window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload);
 
       if (canUseNativeDirect) {
-        const fmtType = state.selectedFormat.type === 'audio' ? 'audio' : 'video';
+        const fmtType = isAudioFmt(state.selectedFormat.type) ? 'audio' : 'video';
         const nativeRes = await resolveViaNativeInnerTube(state.activeVideo.id, fmtType);
         if (nativeRes?.ok && nativeRes.url) {
           const rawTitle = state.activeVideo.title || nativeRes.title || state.activeVideo.id;
@@ -2453,6 +2488,7 @@ function initDownloadModal() {
             client_direct_url: nativeRes.url,
             userAgent: nativeRes.userAgent || '',
             mimeType: nativeRes.mimeType || (fmtType === 'audio' ? 'audio/mp4' : 'video/mp4'),
+            extractAudio: Boolean(nativeRes.extractAudio),
             isLocalDirect: true,
             created_at: Date.now()
           };
@@ -2460,7 +2496,7 @@ function initDownloadModal() {
           saveLocalDownloads(state.localDownloads);
           autoSavedJobIds.add(jobId);
           saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-          triggerSaveToDevice(nativeRes.url, filename, jobId, nativeRes.userAgent || '', localJob.mimeType);
+          triggerSaveToDevice(nativeRes.url, filename, jobId, nativeRes.userAgent || '', localJob.mimeType, Boolean(nativeRes.extractAudio));
 
           modal.classList.remove('open');
           confirmBtn.disabled = false;
@@ -2552,18 +2588,20 @@ let downloadPollTimer = null;
 let downloadsInFlight = null;
 let lastDownloadsSyncAt = 0;
 
-export function triggerSaveToDevice(url, filename, jobId = null, customUa = null, explicitMime = null) {
+export function triggerSaveToDevice(url, filename, jobId = null, customUa = null, explicitMime = null, extractAudio = false) {
   console.log(`[Download] Triggering device download for ${filename}: ${url}`);
   const absoluteUrl = url.startsWith('http') ? url : `${getServerUrl()}${url}`;
 
-  // 1. Native Android APK Downloader Bridge (Enqueues directly in Android DownloadManager + tracks byte progress)
-  if (typeof window !== 'undefined' && (window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload)) {
+  // 1. Native Android APK Downloader Bridge (in-process stream + scoped storage writer + MediaExtractor audio convert)
+  if (typeof window !== 'undefined' && (window.AndroidDownloader?.startDownloadFull || window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload)) {
     console.log('[Download] Using native AndroidDownloader bridge for:', absoluteUrl);
     const lowerName = (filename || '').toLowerCase();
     const mime = explicitMime || (lowerName.endsWith('.mp3') ? 'audio/mpeg' : (lowerName.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4'));
-    const dmId = window.AndroidDownloader.startDownloadWithUa
-      ? Number(window.AndroidDownloader.startDownloadWithUa(absoluteUrl, filename, mime, customUa || '') || -1)
-      : Number(window.AndroidDownloader.startDownload(absoluteUrl, filename, mime) || -1);
+    const dmId = window.AndroidDownloader.startDownloadFull
+      ? Number(window.AndroidDownloader.startDownloadFull(absoluteUrl, filename, mime, customUa || '', Boolean(extractAudio)) || -1)
+      : (window.AndroidDownloader.startDownloadWithUa
+        ? Number(window.AndroidDownloader.startDownloadWithUa(absoluteUrl, filename, mime, customUa || '') || -1)
+        : Number(window.AndroidDownloader.startDownload(absoluteUrl, filename, mime) || -1));
     if (jobId && dmId > 0) {
       state.nativeDmProgress[jobId] = {
         dmId,
@@ -2574,7 +2612,8 @@ export function triggerSaveToDevice(url, filename, jobId = null, customUa = null
         localUri: '',
         mimeType: mime,
         filename,
-        customUa: customUa || ''
+        customUa: customUa || '',
+        extractAudio: Boolean(extractAudio)
       };
       saveNativeDmMap(state.nativeDmProgress);
     }
@@ -2612,14 +2651,18 @@ function getMergedDownloadsList() {
   return [...local, ...remote];
 }
 
+function isAudioFmtType(t) {
+  return ['audio', 'mp3', 'm4a'].includes(String(t || '').toLowerCase());
+}
+
 async function recoverJobViaNativeInnerTube(item) {
   if (!item?.video_id || !window.AndroidInnerTube?.resolveForDownloadAsync) return false;
-  const fmtType = item.format_type === 'audio' ? 'audio' : 'video';
+  const fmtType = isAudioFmtType(item.format_type) ? 'audio' : 'video';
   const res = await resolveViaNativeInnerTube(item.video_id, fmtType);
   if (!res?.ok || !res.url) return false;
   const safeBase = (item.title || res.title || item.video_id).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 60) || item.video_id;
   const ext = res.ext || (fmtType === 'audio' ? 'm4a' : 'mp4');
-  const filename = item.filename || `${safeBase}.${ext}`;
+  const filename = `${safeBase}.${ext}`;
   const recoveredJob = {
     job_id: item.job_id,
     video_id: item.video_id,
@@ -2631,6 +2674,7 @@ async function recoverJobViaNativeInnerTube(item) {
     client_direct_url: res.url,
     userAgent: res.userAgent || '',
     mimeType: res.mimeType || (fmtType === 'audio' ? 'audio/mp4' : 'video/mp4'),
+    extractAudio: Boolean(res.extractAudio),
     isLocalDirect: true,
     created_at: item.created_at || Date.now()
   };
@@ -2638,7 +2682,7 @@ async function recoverJobViaNativeInnerTube(item) {
   saveLocalDownloads(state.localDownloads);
   autoSavedJobIds.add(item.job_id);
   saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-  triggerSaveToDevice(res.url, filename, item.job_id, res.userAgent || '', recoveredJob.mimeType);
+  triggerSaveToDevice(res.url, filename, item.job_id, res.userAgent || '', recoveredJob.mimeType, Boolean(res.extractAudio));
   return true;
 }
 
@@ -2893,17 +2937,17 @@ function renderDownloadsDOM(container, counter, downloadsList) {
       const vId = btn.dataset.videoId || '';
       const fmtType = btn.dataset.type || 'video';
       const dm = jobId ? state.nativeDmProgress[jobId] : null;
-      if (vId && window.AndroidInnerTube?.resolveForDownloadAsync && (dm?.status === 16 || String(btn.dataset.url).includes('/api/stream/'))) {
+      if (vId && window.AndroidInnerTube?.resolveForDownloadAsync && (dm?.status === 16 || dm?.status === 0 || !dm || String(btn.dataset.url).includes('/api/stream/'))) {
         btn.disabled = true;
-        const fresh = await resolveViaNativeInnerTube(vId, fmtType === 'audio' ? 'audio' : 'video');
+        const fresh = await resolveViaNativeInnerTube(vId, isAudioFmtType(fmtType) ? 'audio' : 'video');
         btn.disabled = false;
         if (fresh?.ok && fresh.url) {
-          triggerSaveToDevice(fresh.url, btn.dataset.filename, jobId, fresh.userAgent || '', fresh.mimeType || btn.dataset.mime || null);
+          triggerSaveToDevice(fresh.url, btn.dataset.filename, jobId, fresh.userAgent || '', fresh.mimeType || btn.dataset.mime || null, Boolean(fresh.extractAudio));
           setTimeout(() => loadDownloadsList(true), 600);
           return;
         }
       }
-      triggerSaveToDevice(btn.dataset.url, btn.dataset.filename, jobId, btn.dataset.ua || null, btn.dataset.mime || null);
+      triggerSaveToDevice(btn.dataset.url, btn.dataset.filename, jobId, btn.dataset.ua || null, btn.dataset.mime || null, Boolean(dm?.extractAudio));
       setTimeout(() => loadDownloadsList(true), 600);
     });
   });
@@ -3608,7 +3652,11 @@ function openShortsModal(short) {
     videoElem.loop = true;
 
     const streamUrl = `${getServerUrl()}/api/stream/${currentShort.id}?proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
-    videoElem.src = streamUrl;
+    const startShortSource = (srcUrl) => {
+      if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
+      videoElem.src = srcUrl;
+      videoElem.play().catch(() => {});
+    };
 
     const onShortPlaying = () => {
       if (spinner) spinner.style.display = 'none';
@@ -3632,7 +3680,15 @@ function openShortsModal(short) {
         launchShortsEmbedFallback();
       }
     }, 5500);
-    videoElem.play().catch(() => {});
+
+    if (window.AndroidInnerTube?.resolveForDownloadAsync) {
+      resolveViaNativeInnerTube(currentShort.id, 'video').then((nativeRes) => {
+        if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
+        startShortSource(nativeRes?.ok && nativeRes.url ? nativeRes.url : streamUrl);
+      });
+    } else {
+      startShortSource(streamUrl);
+    }
   } else {
     launchShortsEmbedFallback();
   }
