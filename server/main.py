@@ -5,6 +5,8 @@ import time
 import json
 import logging
 import threading
+import tempfile
+import shutil
 import re
 import random
 import urllib.request
@@ -12,6 +14,11 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+
+# Ensure JS challenge runtimes (Deno / QuickJS) are discoverable even if service PATH is minimal
+for _bin_dir in ("/home/opc/.deno/bin", "/usr/local/bin", os.path.expanduser("~/.deno/bin")):
+    if os.path.isdir(_bin_dir) and _bin_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{_bin_dir}:{os.environ.get('PATH', '')}"
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,30 +139,167 @@ avatar_cache: Dict[str, str] = {
 }
 stream_cache: Dict[str, Dict[str, Any]] = {}
 
-FALLBACK_STREAM_INSTANCES = [
-    "https://api.piped.private.coffee",
-    "https://pipedapi.ducks.party",
-    "https://piped.video"
-]
+FALLBACK_STREAM_INSTANCES: List[str] = []
+_dead_fallback_until: Dict[str, float] = {}
+video_extract_locks: Dict[str, threading.Lock] = {}
+video_extract_locks_guard = threading.Lock()
 
-def get_base_ydl_opts(device_id: Optional[str] = None, for_youtube: bool = True) -> dict:
-    opts = {
+
+def _get_extract_lock(key: str) -> threading.Lock:
+    with video_extract_locks_guard:
+        if key not in video_extract_locks:
+            if len(video_extract_locks) > 500:
+                video_extract_locks.clear()
+            video_extract_locks[key] = threading.Lock()
+        return video_extract_locks[key]
+
+
+class SafeYoutubeDL(yt_dlp.YoutubeDL):
+    """Thread-safe YoutubeDL wrapper that isolates cookiefile writes to an ephemeral copy."""
+
+    def __init__(self, params=None, auto_init=True):
+        self._tmp_cookie_path = None
+        p = dict(params or {})
+        cf = p.get("cookiefile")
+        if cf and os.path.exists(cf):
+            try:
+                fd, tmp_path = tempfile.mkstemp(prefix="ytck_", suffix=".txt")
+                os.close(fd)
+                shutil.copy2(cf, tmp_path)
+                p["cookiefile"] = tmp_path
+                self._tmp_cookie_path = tmp_path
+            except Exception:
+                pass
+        super().__init__(p, auto_init=auto_init)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            if self._tmp_cookie_path and os.path.exists(self._tmp_cookie_path):
+                try:
+                    os.unlink(self._tmp_cookie_path)
+                except Exception:
+                    pass
+                self._tmp_cookie_path = None
+
+
+def get_base_ydl_opts(device_id: Optional[str] = None, for_youtube: bool = True, allow_android: bool = False) -> dict:
+    opts: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
         "socket_timeout": 12,
+        "nocheckcertificate": True,
     }
-    if for_youtube:
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["android"]
-            }
-        }
     cookie_path = get_cookies_file(device_id)
-    if cookie_path:
+    if for_youtube:
+        opts["remote_components"] = ["ejs:github"]
+        if cookie_path:
+            # Never force player_client=android alongside cookies: yt-dlp skips android when cookies are passed.
+            opts["cookiefile"] = str(cookie_path)
+            logger.info(f"Using isolated device cookies from: {cookie_path.name}")
+        elif allow_android:
+            opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "android", "tv"]}}
+        else:
+            opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "tv", "web_safari"]}}
+    elif cookie_path:
         opts["cookiefile"] = str(cookie_path)
-        logger.info(f"Using isolated device cookies from: {cookie_path.name}")
     return opts
+
+
+def _select_best_progressive_and_audio(info: Dict[str, Any]):
+    formats = info.get("formats") or []
+    progressive_https = [
+        f for f in formats
+        if f.get("vcodec") != "none"
+        and f.get("acodec") != "none"
+        and f.get("url")
+        and f.get("protocol") in ("https", "http")
+        and "manifest.googlevideo.com" not in (f.get("url") or "")
+    ]
+    progressive_https.sort(key=lambda x: (x.get("height") or 0, x.get("tbr") or 0), reverse=True)
+
+    progressive_any = [
+        f for f in formats
+        if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url")
+    ]
+    progressive_any.sort(key=lambda x: (x.get("protocol") in ("https", "http"), x.get("height") or 0), reverse=True)
+
+    audio_only = [
+        f for f in formats
+        if f.get("vcodec") == "none"
+        and f.get("acodec") != "none"
+        and f.get("url")
+        and f.get("protocol") in ("https", "http")
+    ]
+    audio_only.sort(key=lambda x: x.get("abr") or 0, reverse=True)
+
+    progressive = progressive_https or progressive_any
+    return progressive, audio_only
+
+
+def extract_youtube_info_cached(video_id: str, device_id: Optional[str] = None, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+    """Single-flight cached YouTube extraction scoped per device so /video, /stream, and /formats reuse one run."""
+    dev_id = extract_device_id(explicit_id=device_id)
+    cache_key = f"ytinfo:{dev_id}:{video_id}"
+    if not force_refresh:
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
+
+    lock = _get_extract_lock(f"{dev_id}:{video_id}")
+    with lock:
+        if not force_refresh:
+            cached = get_cached(cache_key)
+            if cached:
+                return cached
+
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        info = None
+        last_err = None
+
+        # Strategy 1: device's isolated cookie session (default web/tv/safari clients + EJS runtime) or public clients
+        try:
+            opts = get_base_ydl_opts(dev_id, for_youtube=True)
+            with SafeYoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            last_err = e
+
+        # Strategy 2: explicit cookie-less fallback if Strategy 1 failed cleanly
+        if not info and get_cookies_file(dev_id):
+            try:
+                opts_anon = get_base_ydl_opts(None, for_youtube=True, allow_android=True)
+                with SafeYoutubeDL(opts_anon) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as e2:
+                last_err = last_err or e2
+
+        if not info:
+            if last_err:
+                raise last_err
+            return None
+
+        progressive, audio_only = _select_best_progressive_and_audio(info)
+        best_vid_url = progressive[0]["url"] if progressive else (info.get("url") or "")
+        best_aud_url = audio_only[0]["url"] if audio_only else best_vid_url
+        common_headers = info.get("http_headers") or (progressive[0].get("http_headers") if progressive else {}) or {}
+
+        if best_vid_url:
+            entry = {
+                "url": best_vid_url,
+                "audio_url": best_aud_url,
+                "headers": common_headers,
+                "resolutions": progressive,
+                "expires": time.time() + 1800,
+                "title": info.get("title", ""),
+            }
+            stream_cache[f"{dev_id}:{video_id}"] = entry
+            stream_cache[video_id] = entry
+
+        set_cached(cache_key, info, ttl=1200)
+        return info
 
 banner_cache: Dict[str, str] = {}
 
@@ -362,21 +506,6 @@ def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str
     if channel_id and channel_id in banner_cache:
         return banner_cache[channel_id]
         
-    if not channel_id or not channel_id.startswith("UC"):
-        return fallback_banner
-        
-    try:
-        url = f"https://api.piped.private.coffee/channel/{channel_id}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=3) as res:
-            data = json.loads(res.read().decode("utf-8", errors="ignore"))
-            banner = data.get("bannerUrl")
-            if banner:
-                banner_cache[channel_id] = banner
-                return banner
-    except Exception:
-        pass
-        
     banner_cache[channel_id] = fallback_banner
     return fallback_banner
 
@@ -388,7 +517,15 @@ class DownloadRequest(BaseModel):
     title: Optional[str] = "video"
     device_id: Optional[str] = None
 
-@app.get("/api/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+def root_status():
+    return {"status": "online", "service": "metube"}
+
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+def root_favicon():
+    return Response(status_code=204)
+
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health_check(request: Request, device_id: Optional[str] = None):
     dev_id = extract_device_id(request, device_id)
     dev_cookie = get_cookies_file(dev_id)
@@ -474,8 +611,12 @@ def save_user_cookies(payload: CookiePayload, request: Request):
         "updated_at": time.time(),
     }
     save_user_meta(dev_id, meta)
+    # Invalidate cached extractions for this device so new session cookies apply immediately
+    with query_cache_lock:
+        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:")]:
+            query_cache.pop(k, None)
     logger.info(f"Updated isolated YouTube cookies for device {dev_id} ({meta['account_name']})")
-    return {"status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
+    return {"success": True, "status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
 
 @app.get("/api/auth/status")
 def get_auth_status(request: Request, device_id: Optional[str] = None):
@@ -500,7 +641,10 @@ def logout_auth(request: Request, device_id: Optional[str] = None):
     meta_file = USER_META_DIR / f"{dev_id}.json"
     if meta_file.exists():
         meta_file.unlink()
-    return {"status": "success", "authenticated": False, "device_id": dev_id}
+    with query_cache_lock:
+        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:")]:
+            query_cache.pop(k, None)
+    return {"success": True, "status": "success", "authenticated": False, "device_id": dev_id}
 
 @app.get("/api/user/feed")
 def get_user_personalized_feed(
@@ -518,7 +662,7 @@ def get_user_personalized_feed(
         opts["extract_flat"] = True
         opts["playlist_items"] = "1-30"
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with SafeYoutubeDL(opts) as ydl:
                 res = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
                 entries = res.get("entries", []) if res else []
                 if entries:
@@ -560,7 +704,7 @@ def get_user_personalized_feed(
             opts = get_base_ydl_opts(dev_id)
             opts["extract_flat"] = True
             opts["playlist_items"] = "1-4"
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with SafeYoutubeDL(opts) as ydl:
                 for c in ch_list:
                     try:
                         clean_c = c if c.startswith("@") or c.startswith("UC") else f"@{c.replace(' ', '')}"
@@ -1121,6 +1265,20 @@ def _proxy_remote_stream(direct_url: str, request: Request):
 
     return StreamingResponse(_iter_chunks(), status_code=upstream.status, headers=resp_headers)
 
+def _pick_cached_stream_url(entry: Dict[str, Any], audio: bool, quality: Optional[int]) -> Optional[str]:
+    if not entry:
+        return None
+    if audio:
+        return entry.get("audio_url") or entry.get("url")
+    res_list = entry.get("resolutions") or []
+    if quality and res_list:
+        fitting = [f for f in res_list if (f.get("height") or 0) <= quality and f.get("url")]
+        if fitting:
+            fitting.sort(key=lambda x: (x.get("protocol") in ("https", "http"), x.get("height") or 0), reverse=True)
+            return fitting[0]["url"]
+    return entry.get("url")
+
+
 @app.get("/api/stream/{video_id}")
 def stream_video_proxy(
     video_id: str,
@@ -1133,14 +1291,42 @@ def stream_video_proxy(
 ):
     """High-speed stream redirector or HTTP Range proxy for hardware-accelerated native playback."""
     dev_id = extract_device_id(request, device_id)
-    direct_url = extract_direct_stream_url(video_id, audio_only=audio, device_id=dev_id, max_height=quality)
+    sc_key = f"{dev_id}:{video_id}"
+    direct_url = None
+
+    cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
+    if cached_entry and time.time() < cached_entry.get("expires", 0):
+        direct_url = _pick_cached_stream_url(cached_entry, audio, quality)
+
+    if not direct_url:
+        try:
+            extract_youtube_info_cached(video_id, device_id=dev_id)
+            cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
+            direct_url = _pick_cached_stream_url(cached_entry, audio, quality)
+        except Exception as exc:
+            logger.warning(f"Cached stream resolution failed for {video_id}: {exc}")
+
+    if not direct_url:
+        direct_url = extract_direct_stream_url(video_id, audio_only=audio, device_id=dev_id, max_height=quality)
     if not direct_url:
         raise HTTPException(status_code=404, detail="Stream not available")
 
-    if proxy:
+    is_hls_manifest = ".m3u8" in direct_url or "manifest.googlevideo.com" in direct_url
+    if proxy and not is_hls_manifest:
         try:
             return _proxy_remote_stream(direct_url, request)
         except Exception as pe:
+            # Refresh once in case an upstream Googlevideo signed URL expired or returned 403
+            if "403" in str(pe) or "410" in str(pe):
+                stream_cache.pop(sc_key, None)
+                stream_cache.pop(video_id, None)
+                try:
+                    extract_youtube_info_cached(video_id, device_id=dev_id, force_refresh=True)
+                    refreshed = _pick_cached_stream_url(stream_cache.get(sc_key) or stream_cache.get(video_id), audio, quality)
+                    if refreshed and ".m3u8" not in refreshed:
+                        return _proxy_remote_stream(refreshed, request)
+                except Exception:
+                    pass
             logger.warning(f"Stream range proxy failed for {video_id}, falling back to redirect: {pe}")
 
     return RedirectResponse(url=direct_url, status_code=307)
@@ -1307,73 +1493,52 @@ def get_video_stream_info(video_id: str, request: Request, device_id: Optional[s
     Extracts ad-free direct stream playback URLs for native player (video and audio only).
     """
     dev_id = extract_device_id(request, device_id)
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    opts = get_base_ydl_opts(dev_id)
-    
+
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                raise HTTPException(status_code=404, detail="Video not found")
-            
-            formats = info.get("formats", [])
-            progressive = [
-                f for f in formats 
-                if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
-            ]
-            progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
-            
-            audio_only = [
-                f for f in formats 
-                if f.get("vcodec") == "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
-            ]
-            audio_only.sort(key=lambda x: x.get("abr") or 0, reverse=True)
-            
-            raw_stream_url = progressive[0]["url"] if progressive else (formats[0]["url"] if formats else "")
-            audio_url = audio_only[0]["url"] if audio_only else raw_stream_url
-            
-            thumbs = info.get("thumbnails") or []
-            thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-            c_name = info.get("uploader") or info.get("channel") or "Creator"
-            c_id = info.get("channel_id") or info.get("uploader_id") or ""
-            
-            # Cache stream URL for proxy
-            if raw_stream_url:
-                stream_cache[video_id] = {
-                    "url": raw_stream_url,
-                    "expires": time.time() + 7200,
-                    "title": info.get("title", "")
+        info = extract_youtube_info_cached(video_id, device_id=dev_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        formats = info.get("formats", [])
+        progressive, audio_only = _select_best_progressive_and_audio(info)
+
+        raw_stream_url = progressive[0]["url"] if progressive else (formats[0].get("url") if formats else "")
+        audio_url = audio_only[0]["url"] if audio_only else raw_stream_url
+
+        thumbs = info.get("thumbnails") or []
+        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+        c_name = info.get("uploader") or info.get("channel") or "Creator"
+        c_id = info.get("channel_id") or info.get("uploader_id") or ""
+
+        return {
+            "id": video_id,
+            "title": info.get("title"),
+            "channel": c_name,
+            "channel_id": c_id,
+            "channel_url": info.get("channel_url") or info.get("uploader_url") or "",
+            "channel_avatar": resolve_channel_avatar(c_id, c_name),
+            "channel_follower_count": info.get("channel_follower_count"),
+            "description": info.get("description") or "",
+            "duration": info.get("duration"),
+            "duration_string": info.get("duration_string"),
+            "view_count": info.get("view_count"),
+            "like_count": info.get("like_count"),
+            "thumbnail": thumbnail,
+            "stream_url": f"/api/stream/{video_id}",
+            "direct_stream_url": raw_stream_url,
+            "audio_url": audio_url,
+            "is_short": bool((info.get("duration") and info.get("duration") <= 60) or (info.get("height", 0) > info.get("width", 0))),
+            "is_age_restricted": False,
+            "available_resolutions": [
+                {
+                    "height": f.get("height"),
+                    "ext": f.get("ext"),
+                    "url": f.get("url"),
+                    "filesize": f.get("filesize") or f.get("filesize_approx")
                 }
-            
-            return {
-                "id": video_id,
-                "title": info.get("title"),
-                "channel": c_name,
-                "channel_id": c_id,
-                "channel_url": info.get("channel_url") or info.get("uploader_url") or "",
-                "channel_avatar": resolve_channel_avatar(c_id, c_name),
-                "channel_follower_count": info.get("channel_follower_count"),
-                "description": info.get("description") or "",
-                "duration": info.get("duration"),
-                "duration_string": info.get("duration_string"),
-                "view_count": info.get("view_count"),
-                "like_count": info.get("like_count"),
-                "thumbnail": thumbnail,
-                "stream_url": f"/api/stream/{video_id}",
-                "direct_stream_url": raw_stream_url,
-                "audio_url": audio_url,
-                "is_short": bool((info.get("duration") and info.get("duration") <= 60) or (info.get("height", 0) > info.get("width", 0))),
-                "is_age_restricted": False,
-                "available_resolutions": [
-                    {
-                        "height": f.get("height"),
-                        "ext": f.get("ext"),
-                        "url": f.get("url"),
-                        "filesize": f.get("filesize") or f.get("filesize_approx")
-                    }
-                    for f in progressive
-                ]
-            }
+                for f in progressive
+            ]
+        }
     except Exception as e:
         err_msg = str(e)
         logger.warning(f"Native yt-dlp extraction failed for {video_id} ({err_msg}). Activating datacenter fallback...")
@@ -1751,10 +1916,14 @@ def get_channel_content(
     opts["playlist_items"] = f"1-{limit}"
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with SafeYoutubeDL(opts) as ydl:
             res = ydl.extract_info(target_url, download=False)
             if not res:
-                raise HTTPException(status_code=404, detail="Channel not found")
+                return {
+                    "channel_id": raw_id, "title": raw_id, "handle": "", "description": "",
+                    "subscribers": None, "avatar": resolve_channel_avatar(raw_id, raw_id),
+                    "banner": resolve_channel_banner(raw_id, raw_id), "tab": tab_norm, "items": []
+                }
 
             entries = res.get("entries", []) or []
             c_id = res.get("channel_id") or res.get("id") or raw_id
@@ -1798,6 +1967,16 @@ def get_channel_content(
             set_cached(cache_key, res_obj, ttl=300)
             return res_obj
     except Exception as e:
+        err_low = str(e).lower()
+        if "does not have a" in err_low or "this channel does not" in err_low:
+            logger.info(f"Channel {raw_id} has no {tab_norm} tab; returning empty list")
+            res_obj = {
+                "channel_id": raw_id, "title": raw_id, "handle": "", "description": "",
+                "subscribers": None, "avatar": resolve_channel_avatar(raw_id, raw_id),
+                "banner": resolve_channel_banner(raw_id, raw_id), "tab": tab_norm, "items": []
+            }
+            set_cached(cache_key, res_obj, ttl=300)
+            return res_obj
         logger.error(f"Error fetching channel content: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1880,7 +2059,7 @@ def _extract_universal_info(target_url: str, dev_id: str) -> Dict[str, Any]:
         opts["http_headers"] = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with SafeYoutubeDL(opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
             if isinstance(info, dict) and info.get("entries"):
                 info = next((e for e in info["entries"] if e), info)
@@ -1987,25 +2166,23 @@ def get_download_formats(video_id: str, request: Request, device_id: Optional[st
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
     dev_id = extract_device_id(request, device_id)
-    opts = get_base_ydl_opts(dev_id)
-    
+
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                raise HTTPException(status_code=404, detail="Video not found")
-            
-            duration = info.get("duration") or 0
-            audio_presets, video_presets = _build_format_presets(duration, info.get("formats"))
-            return {
-                "id": video_id,
-                "url": url,
-                "title": info.get("title"),
-                "thumbnail": info.get("thumbnail"),
-                "duration": duration,
-                "audio_presets": audio_presets,
-                "video_presets": video_presets,
-            }
+        info = extract_youtube_info_cached(video_id, device_id=dev_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        duration = info.get("duration") or 0
+        audio_presets, video_presets = _build_format_presets(duration, info.get("formats"))
+        return {
+            "id": video_id,
+            "url": url,
+            "title": info.get("title"),
+            "thumbnail": info.get("thumbnail"),
+            "duration": duration,
+            "audio_presets": audio_presets,
+            "video_presets": video_presets,
+        }
     except Exception as e:
         logger.warning(f"Error getting formats via yt-dlp: {e}. Trying fallback...")
         fb = resolve_stream_fallback(video_id)
@@ -2078,34 +2255,52 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
         }]
     else:
         res_height = quality.replace("p", "") if "p" in quality else "720"
-        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/best[height<={res_height}]/bestvideo+bestaudio/best"
+        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/best[height<={res_height}]/bestvideo*+bestaudio/best"
         opts["merge_output_format"] = "mp4"
 
     try:
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with SafeYoutubeDL(opts) as ydl:
                 ydl.download([url])
-        except Exception as ydl_err:
-            logger.warning(f"Server-side download error ({ydl_err}). Trying direct client stream fallback...")
-            is_audio = format_type.lower() == "mp3"
-            direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio, device_id=device_id) if (is_yt and video_id) else None
-            fallback_stream = direct_stream or (f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true" if (is_yt and video_id) else "")
-            if not fallback_stream:
-                raise ydl_err
-            expected_ext = "mp3" if is_audio else "mp4"
-            expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
-            has_cookies = bool(get_cookies_file(device_id))
+        except Exception as primary_err:
+            # Retry once with relaxed format selector before falling back to direct stream
+            try:
+                logger.warning(f"Primary format download failed for {video_id} ({primary_err}); retrying with format='best'")
+                retry_opts = dict(opts)
+                retry_opts["format"] = "best"
+                with SafeYoutubeDL(retry_opts) as ydl:
+                    ydl.download([url])
+            except Exception as ydl_err:
+                logger.warning(f"Server-side download error ({ydl_err}). Trying direct client stream fallback...")
+                is_audio = format_type.lower() == "mp3"
+                sc_key = f"{extract_device_id(explicit_id=device_id)}:{video_id}"
+                cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
+                direct_stream = _pick_cached_stream_url(cached_entry, is_audio, None) if cached_entry else None
+                if not direct_stream and is_yt and video_id:
+                    try:
+                        extract_youtube_info_cached(video_id, device_id=device_id)
+                        direct_stream = _pick_cached_stream_url(stream_cache.get(sc_key) or stream_cache.get(video_id), is_audio, None)
+                    except Exception:
+                        pass
+                if not direct_stream and is_yt and video_id:
+                    direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio, device_id=device_id)
+                fallback_stream = direct_stream or (f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true" if (is_yt and video_id) else "")
+                if not fallback_stream:
+                    raise ydl_err
+                expected_ext = "mp3" if is_audio else "mp4"
+                expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
+                has_cookies = bool(get_cookies_file(device_id))
 
-            with jobs_lock:
-                if job_id in download_jobs:
-                    download_jobs[job_id]["status"] = "client_ready"
-                    download_jobs[job_id]["percent"] = 100.0
-                    download_jobs[job_id]["filename"] = expected_filename
-                    download_jobs[job_id]["download_url"] = fallback_stream
-                    download_jobs[job_id]["client_direct_url"] = fallback_stream
-                    download_jobs[job_id]["requires_cookies"] = not has_cookies
-                    download_jobs[job_id]["completed_at"] = time.time()
-            return
+                with jobs_lock:
+                    if job_id in download_jobs:
+                        download_jobs[job_id]["status"] = "client_ready"
+                        download_jobs[job_id]["percent"] = 100.0
+                        download_jobs[job_id]["filename"] = expected_filename
+                        download_jobs[job_id]["download_url"] = fallback_stream
+                        download_jobs[job_id]["client_direct_url"] = fallback_stream
+                        download_jobs[job_id]["requires_cookies"] = not has_cookies
+                        download_jobs[job_id]["completed_at"] = time.time()
+                return
 
         expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
         expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
@@ -2225,7 +2420,15 @@ def delete_download(job_id: str, request: Request, device_id: Optional[str] = No
     dev_id = extract_device_id(request, device_id)
     with jobs_lock:
         existing = download_jobs.get(job_id)
-        if not existing or (dev_id != "shared_default" and existing.get("device_id") not in (dev_id, None, "shared_default")):
+        if not existing:
+            # Idempotent delete for stale cached jobs after a server restart
+            for left in DOWNLOADS_DIR.glob(f"*_{job_id[:8]}.*"):
+                try:
+                    left.unlink()
+                except Exception:
+                    pass
+            return {"message": "Already removed", "job_id": job_id}
+        if dev_id != "shared_default" and existing.get("device_id") not in (dev_id, None, "shared_default"):
             raise HTTPException(status_code=404, detail="Job not found")
         job = download_jobs.pop(job_id, None)
         filename = job.get("filename") if job else None

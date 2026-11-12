@@ -2332,6 +2332,8 @@ function saveNativeDmMap(map) {
 const autoSavedJobIds = loadSetFromStorage(AUTOSAVED_JOBS_KEY);
 state.nativeDmProgress = loadNativeDmMap();
 let downloadPollTimer = null;
+let downloadsInFlight = null;
+let lastDownloadsSyncAt = 0;
 
 export function triggerSaveToDevice(url, filename, jobId = null) {
   console.log(`[Download] Triggering device download for ${filename}: ${url}`);
@@ -2382,10 +2384,14 @@ export function triggerSaveToDevice(url, filename, jobId = null) {
   }
 }
 
-async function loadDownloadsList() {
+async function loadDownloadsList(force = false) {
   const container = document.getElementById('downloads-list');
   const counter = document.getElementById('nav-download-counter');
   if (!container) return;
+
+  if (downloadsInFlight) return downloadsInFlight;
+  const now = Date.now();
+  if (!force && (now - lastDownloadsSyncAt) < 550) return;
 
   // 1. Instant Cache-First (0ms Render)
   let hadCache = false;
@@ -2409,66 +2415,80 @@ async function loadDownloadsList() {
     `;
   }
 
-  // 2. Background Sync (device-isolated via X-Device-Id / device_id)
-  try {
-    const res = await api.listDownloads();
-    state.downloads = res.downloads || [];
-    localStorage.setItem('metube_downloads_cache', JSON.stringify(state.downloads));
-
-    // Auto-save completed downloads to Android device storage once & track DownloadManager progress
-    let hasActiveNative = false;
-    state.downloads.forEach((item) => {
-      const isReady = item.status === 'completed' || item.status === 'client_ready';
-      if (isReady && item.filename && !autoSavedJobIds.has(item.job_id)) {
-        autoSavedJobIds.add(item.job_id);
-        saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-        const rawUrl = item.status === 'completed'
-          ? api.getFileDownloadUrl(item.filename)
-          : (item.client_direct_url || item.download_url || '');
-        if (rawUrl) {
-          const fileUrl = rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`;
-          triggerSaveToDevice(fileUrl, item.filename, item.job_id);
-        }
-      }
-
-      const dmEntry = state.nativeDmProgress[item.job_id];
-      if (dmEntry && dmEntry.dmId > 0 && window.AndroidDownloader?.getDownloadProgress) {
-        try {
-          const rawProg = window.AndroidDownloader.getDownloadProgress(dmEntry.dmId);
-          const parsedProg = JSON.parse(rawProg || '{}');
-          if (parsedProg && typeof parsedProg.status === 'number') {
-            state.nativeDmProgress[item.job_id] = {
-              ...dmEntry,
-              ...parsedProg
-            };
-            if (parsedProg.status === 1 || parsedProg.status === 2 || parsedProg.status === 4) {
-              hasActiveNative = true;
-            }
-          }
-        } catch (_) {}
-      }
-    });
-    saveNativeDmMap(state.nativeDmProgress);
-
-    renderDownloadsDOM(container, counter, state.downloads);
-
-    // Active polling if server OR phone DownloadManager is still working
-    const hasActiveServer = state.downloads.some(
-      (d) => d.status === 'downloading' || d.status === 'queued' || d.status === 'converting'
-    );
-    if (downloadPollTimer) clearTimeout(downloadPollTimer);
-    if (hasActiveServer || hasActiveNative) {
-      downloadPollTimer = setTimeout(loadDownloadsList, 750);
-    }
-  } catch (err) {
-    if (!hadCache) {
-      container.innerHTML = `
-        <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:13px;">
-          No downloads found.
-        </div>
-      `;
-    }
+  lastDownloadsSyncAt = now;
+  if (downloadPollTimer) {
+    clearTimeout(downloadPollTimer);
+    downloadPollTimer = null;
   }
+
+  // 2. Background Sync (device-isolated via X-Device-Id / device_id)
+  downloadsInFlight = (async () => {
+    try {
+      const res = await api.listDownloads();
+      state.downloads = res.downloads || [];
+      localStorage.setItem('metube_downloads_cache', JSON.stringify(state.downloads));
+
+      // Auto-save completed downloads to Android device storage once & track DownloadManager progress
+      let hasActiveNative = false;
+      state.downloads.forEach((item) => {
+        const isReady = item.status === 'completed' || item.status === 'client_ready';
+        if (isReady && item.filename && !autoSavedJobIds.has(item.job_id)) {
+          autoSavedJobIds.add(item.job_id);
+          saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
+          const rawUrl = item.status === 'completed'
+            ? api.getFileDownloadUrl(item.filename)
+            : (item.client_direct_url || item.download_url || '');
+          if (rawUrl) {
+            const fileUrl = rawUrl.startsWith('http') ? rawUrl : `${getServerUrl()}${rawUrl}`;
+            triggerSaveToDevice(fileUrl, item.filename, item.job_id);
+          }
+        }
+
+        const dmEntry = state.nativeDmProgress[item.job_id];
+        if (dmEntry && dmEntry.dmId > 0 && window.AndroidDownloader?.getDownloadProgress) {
+          try {
+            const rawProg = window.AndroidDownloader.getDownloadProgress(dmEntry.dmId);
+            const parsedProg = JSON.parse(rawProg || '{}');
+            if (parsedProg && typeof parsedProg.status === 'number') {
+              state.nativeDmProgress[item.job_id] = {
+                ...dmEntry,
+                ...parsedProg
+              };
+              if (parsedProg.status === 1 || parsedProg.status === 2 || parsedProg.status === 4) {
+                hasActiveNative = true;
+              }
+            }
+          } catch (_) {}
+        }
+      });
+      saveNativeDmMap(state.nativeDmProgress);
+
+      renderDownloadsDOM(container, counter, state.downloads);
+
+      // Active polling if server OR phone DownloadManager is still working
+      const hasActiveServer = state.downloads.some(
+        (d) => d.status === 'downloading' || d.status === 'queued' || d.status === 'converting'
+      );
+      if (downloadPollTimer) {
+        clearTimeout(downloadPollTimer);
+        downloadPollTimer = null;
+      }
+      if (hasActiveServer || hasActiveNative) {
+        downloadPollTimer = setTimeout(() => loadDownloadsList(true), 1200);
+      }
+    } catch (err) {
+      if (!hadCache) {
+        container.innerHTML = `
+          <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:13px;">
+            No downloads found.
+          </div>
+        `;
+      }
+    } finally {
+      downloadsInFlight = null;
+    }
+  })();
+  return downloadsInFlight;
 }
 
 function renderDownloadsDOM(container, counter, downloadsList) {
@@ -2586,7 +2606,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       triggerSaveToDevice(btn.dataset.url, btn.dataset.filename, btn.dataset.job || null);
-      setTimeout(loadDownloadsList, 600);
+      setTimeout(() => loadDownloadsList(true), 600);
     });
   });
 
@@ -2624,8 +2644,10 @@ function renderDownloadsDOM(container, counter, downloadsList) {
       autoSavedJobIds.delete(jobId);
       saveNativeDmMap(state.nativeDmProgress);
       saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-      await api.deleteDownload(jobId);
-      loadDownloadsList();
+      try {
+        await api.deleteDownload(jobId);
+      } catch (_) {}
+      loadDownloadsList(true);
     });
   });
 
@@ -2947,7 +2969,7 @@ function initSettingsView() {
       await api.logout();
       localStorage.removeItem('metube_account_name');
       window.AndroidAuth?.clearYouTubeCookies?.();
-      updateAuthStatusUI();
+      updateAuthStatusUI(true);
       showToast('Signed out on this device');
       if (state.activeTab === 'home') loadFeed(state.activeCategory);
     } catch (err) {
@@ -3417,7 +3439,14 @@ function openAuthModal() {
   updateAuthStatusUI();
 }
 
-async function updateAuthStatusUI() {
+let authStatusInFlight = null;
+let lastAuthStatusAt = 0;
+
+async function updateAuthStatusUI(force = false) {
+  if (authStatusInFlight) return authStatusInFlight;
+  const now = Date.now();
+  if (!force && (now - lastAuthStatusAt) < 4000) return;
+
   const badge = document.getElementById('auth-status-badge');
   const desc = document.getElementById('auth-status-desc');
   const logoutBtn = document.getElementById('btn-logout-cookies');
@@ -3426,47 +3455,53 @@ async function updateAuthStatusUI() {
   const settingsAcLabel = document.getElementById('settings-account-label');
   const settingsSignoutBtn = document.getElementById('btn-settings-signout');
 
-  try {
-    const res = await api.getAuthStatus();
-    if (res.authenticated) {
-      const acctName = res.account_name || localStorage.getItem('metube_account_name') || 'YouTube';
-      localStorage.setItem('metube_account_name', acctName);
-      if (badge) {
-        badge.textContent = 'Connected';
-        badge.style.background = '#00C853';
-        badge.style.color = '#FFF';
+  lastAuthStatusAt = now;
+  authStatusInFlight = (async () => {
+    try {
+      const res = await api.getAuthStatus();
+      if (res.authenticated) {
+        const acctName = res.account_name || localStorage.getItem('metube_account_name') || 'YouTube';
+        localStorage.setItem('metube_account_name', acctName);
+        if (badge) {
+          badge.textContent = 'Connected';
+          badge.style.background = '#00C853';
+          badge.style.color = '#FFF';
+        }
+        if (desc) desc.textContent = `Signed in as ${acctName} (device isolated)`;
+        if (logoutBtn) logoutBtn.style.display = 'block';
+        if (headerAcLabel) headerAcLabel.textContent = `${acctName.split(/\s+/)[0].slice(0, 10)} ▾`;
+        if (settingsAcLabel) settingsAcLabel.textContent = `Connected: ${acctName} (isolated to this device)`;
+        if (settingsSignoutBtn) settingsSignoutBtn.style.display = 'inline-block';
+        if (headerAvatar) {
+          headerAvatar.textContent = acctName[0]?.toUpperCase() || 'Y';
+          headerAvatar.style.background = '#00C853';
+          headerAvatar.style.borderColor = '#00E676';
+        }
+      } else {
+        localStorage.removeItem('metube_account_name');
+        if (badge) {
+          badge.textContent = 'Disconnected';
+          badge.style.background = '#333';
+          badge.style.color = '#aaa';
+        }
+        if (desc) desc.textContent = 'Sign in to sync your personal YouTube feed';
+        if (logoutBtn) logoutBtn.style.display = 'none';
+        if (headerAcLabel) headerAcLabel.textContent = 'Sign in';
+        if (settingsAcLabel) settingsAcLabel.textContent = 'Not connected (isolated per device)';
+        if (settingsSignoutBtn) settingsSignoutBtn.style.display = 'none';
+        if (headerAvatar) {
+          headerAvatar.textContent = 'M';
+          headerAvatar.style.background = 'var(--metube-red, #FF0000)';
+          headerAvatar.style.borderColor = 'transparent';
+        }
       }
-      if (desc) desc.textContent = `Signed in as ${acctName} (device isolated)`;
-      if (logoutBtn) logoutBtn.style.display = 'block';
-      if (headerAcLabel) headerAcLabel.textContent = `${acctName.split(/\s+/)[0].slice(0, 10)} ▾`;
-      if (settingsAcLabel) settingsAcLabel.textContent = `Connected: ${acctName} (isolated to this device)`;
-      if (settingsSignoutBtn) settingsSignoutBtn.style.display = 'inline-block';
-      if (headerAvatar) {
-        headerAvatar.textContent = acctName[0]?.toUpperCase() || 'Y';
-        headerAvatar.style.background = '#00C853';
-        headerAvatar.style.borderColor = '#00E676';
-      }
-    } else {
-      localStorage.removeItem('metube_account_name');
-      if (badge) {
-        badge.textContent = 'Disconnected';
-        badge.style.background = '#333';
-        badge.style.color = '#aaa';
-      }
-      if (desc) desc.textContent = 'Sign in to sync your personal YouTube feed';
-      if (logoutBtn) logoutBtn.style.display = 'none';
-      if (headerAcLabel) headerAcLabel.textContent = 'Sign in';
-      if (settingsAcLabel) settingsAcLabel.textContent = 'Not connected (isolated per device)';
-      if (settingsSignoutBtn) settingsSignoutBtn.style.display = 'none';
-      if (headerAvatar) {
-        headerAvatar.textContent = 'M';
-        headerAvatar.style.background = 'var(--metube-red, #FF0000)';
-        headerAvatar.style.borderColor = 'transparent';
-      }
+    } catch (err) {
+      if (badge) badge.textContent = 'Unknown';
+    } finally {
+      authStatusInFlight = null;
     }
-  } catch (err) {
-    if (badge) badge.textContent = 'Unknown';
-  }
+  })();
+  return authStatusInFlight;
 }
 
 // Global Bridge Handler for Android 1-Tap Google / YouTube Login & Account Switcher
@@ -3489,10 +3524,10 @@ window.handleNativeYouTubeLogin = async function(payloadOrCookies) {
   showToast('Connecting YouTube account to this device...');
   try {
     const res = await api.saveCookies(cookieString, { account_name: accountName });
-    if (res && res.success) {
+    if (res && (res.authenticated || res.success || res.status === 'success')) {
       if (accountName) localStorage.setItem('metube_account_name', accountName);
       showToast(`Connected${accountName ? ` (${accountName})` : ''}! 🎉`);
-      updateAuthStatusUI();
+      updateAuthStatusUI(true);
       const modal = document.getElementById('auth-modal');
       if (modal) {
         modal.classList.remove('open');
@@ -3604,7 +3639,7 @@ function initAuthModal() {
       }
       if (input) input.value = '';
       syncNativeOverlayFlag();
-      updateAuthStatusUI();
+      updateAuthStatusUI(true);
       if (state.activeTab === 'subscriptions') {
         loadSubscriptionsView();
       }
@@ -3622,7 +3657,7 @@ function initAuthModal() {
       await api.logout();
       localStorage.removeItem('metube_account_name');
       window.AndroidAuth?.clearYouTubeCookies?.();
-      updateAuthStatusUI();
+      updateAuthStatusUI(true);
       if (modal) {
         modal.classList.remove('open');
         modal.style.display = 'none';
@@ -3937,9 +3972,11 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   } catch (_) {}
 
-  // Periodically check server health and poll active downloads
+  // Periodically check server health and poll active downloads without creating request bursts
+  checkServerHealth();
   setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
     checkServerHealth();
-    if (state.activeTab === 'downloads') loadDownloadsList();
-  }, 4000);
+    if (state.activeTab === 'downloads' && !downloadPollTimer) loadDownloadsList();
+  }, 30000);
 });
