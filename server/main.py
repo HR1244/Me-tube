@@ -184,25 +184,25 @@ class SafeYoutubeDL(yt_dlp.YoutubeDL):
                 self._tmp_cookie_path = None
 
 
-def get_base_ydl_opts(device_id: Optional[str] = None, for_youtube: bool = True, allow_android: bool = False) -> dict:
+_yt_heavy_sem = threading.Semaphore(2)
+
+
+def get_base_ydl_opts(device_id: Optional[str] = None, for_youtube: bool = True, allow_android: bool = False, client_override: Optional[List[str]] = None) -> dict:
     opts: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "ffmpeg_location": FFMPEG_EXE,
-        "socket_timeout": 12,
+        "socket_timeout": 15,
         "nocheckcertificate": True,
     }
     cookie_path = get_cookies_file(device_id)
     if for_youtube:
         opts["remote_components"] = ["ejs:github"]
+        clients = client_override or (["web_safari", "mweb"] if allow_android else ["mweb"])
+        opts["extractor_args"] = {"youtube": {"player_client": clients, "formats": ["missing_pot"]}}
         if cookie_path:
-            # Never force player_client=android alongside cookies: yt-dlp skips android when cookies are passed.
             opts["cookiefile"] = str(cookie_path)
             logger.info(f"Using isolated device cookies from: {cookie_path.name}")
-        elif allow_android:
-            opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "android", "tv"]}}
-        else:
-            opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "tv", "web_safari"]}}
     elif cookie_path:
         opts["cookiefile"] = str(cookie_path)
     return opts
@@ -232,8 +232,10 @@ def _select_best_progressive_and_audio(info: Dict[str, Any]):
         and f.get("acodec") != "none"
         and f.get("url")
         and f.get("protocol") in ("https", "http")
+        and "manifest.googlevideo.com" not in (f.get("url") or "")
     ]
-    audio_only.sort(key=lambda x: x.get("abr") or 0, reverse=True)
+    # Prefer AAC/M4A (ext=m4a) for universal native Android & WebView hardware audio decoding
+    audio_only.sort(key=lambda x: (x.get("ext") == "m4a", x.get("abr") or 0), reverse=True)
 
     progressive = progressive_https or progressive_any
     return progressive, audio_only
@@ -259,22 +261,37 @@ def extract_youtube_info_cached(video_id: str, device_id: Optional[str] = None, 
         info = None
         last_err = None
 
-        # Strategy 1: device's isolated cookie session (default web/tv/safari clients + EJS runtime) or public clients
-        try:
-            opts = get_base_ydl_opts(dev_id, for_youtube=True)
-            with SafeYoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception as e:
-            last_err = e
-
-        # Strategy 2: explicit cookie-less fallback if Strategy 1 failed cleanly
-        if not info and get_cookies_file(dev_id):
+        # Serialize heavy Deno/QuickJS yt-dlp extractions (max 2) to prevent 498MB VM swap thrashing
+        with _yt_heavy_sem:
+            # Strategy 1: mweb client with missing_pot unlocks fast non-403 HTTP 206 audio (140) + mp4 (18/135)
             try:
-                opts_anon = get_base_ydl_opts(None, for_youtube=True, allow_android=True)
-                with SafeYoutubeDL(opts_anon) as ydl:
+                opts = get_base_ydl_opts(dev_id, for_youtube=True, client_override=["mweb"])
+                with SafeYoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-            except Exception as e2:
-                last_err = last_err or e2
+            except Exception as e:
+                last_err = e
+
+            # Strategy 2: fallback to web_safari if mweb failed or returned zero direct https formats
+            if info:
+                p_check, a_check = _select_best_progressive_and_audio(info)
+                if not p_check and not a_check:
+                    info = None
+            if not info:
+                try:
+                    opts_saf = get_base_ydl_opts(dev_id, for_youtube=True, client_override=["web_safari"])
+                    with SafeYoutubeDL(opts_saf) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                except Exception as e_saf:
+                    last_err = last_err or e_saf
+
+            # Strategy 3: explicit cookie-less mweb fallback if device cookie extraction failed
+            if not info and get_cookies_file(dev_id):
+                try:
+                    opts_anon = get_base_ydl_opts(None, for_youtube=True, client_override=["mweb"])
+                    with SafeYoutubeDL(opts_anon) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                except Exception as e2:
+                    last_err = last_err or e2
 
         if not info:
             if last_err:
@@ -282,15 +299,19 @@ def extract_youtube_info_cached(video_id: str, device_id: Optional[str] = None, 
             return None
 
         progressive, audio_only = _select_best_progressive_and_audio(info)
-        best_vid_url = progressive[0]["url"] if progressive else (info.get("url") or "")
-        best_aud_url = audio_only[0]["url"] if audio_only else best_vid_url
-        common_headers = info.get("http_headers") or (progressive[0].get("http_headers") if progressive else {}) or {}
+        best_vid_fmt = progressive[0] if progressive else None
+        best_aud_fmt = audio_only[0] if audio_only else best_vid_fmt
+        best_vid_url = best_vid_fmt["url"] if best_vid_fmt else (info.get("url") or "")
+        best_aud_url = best_aud_fmt["url"] if best_aud_fmt else best_vid_url
+        vid_headers = (best_vid_fmt.get("http_headers") if best_vid_fmt else None) or info.get("http_headers") or {}
+        aud_headers = (best_aud_fmt.get("http_headers") if best_aud_fmt else None) or vid_headers
 
-        if best_vid_url:
+        if best_vid_url or best_aud_url:
             entry = {
                 "url": best_vid_url,
                 "audio_url": best_aud_url,
-                "headers": common_headers,
+                "headers": vid_headers,
+                "audio_headers": aud_headers,
                 "resolutions": progressive,
                 "expires": time.time() + 1800,
                 "title": info.get("title", ""),
@@ -1235,35 +1256,137 @@ def extract_direct_stream_url(
 
     return None
 
-def _proxy_remote_stream(direct_url: str, request: Request):
-    """Streams remote video/audio with HTTP Range support when direct client access fails."""
-    req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+def _proxy_remote_stream(direct_url: str, request: Request, upstream_headers: Optional[Dict[str, str]] = None):
+    """Streams remote video/audio using bounded upstream Range chunks to prevent YouTube 30 KB/s throttling."""
+    base_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    if upstream_headers:
+        for k, v in upstream_headers.items():
+            if k.lower() not in ("range", "host", "content-length", "connection") and v:
+                base_headers[k] = v
+
     rng_header = request.headers.get("range")
+    req_start = 0
+    req_end: Optional[int] = None
+    has_client_range = False
     if rng_header:
-        req_headers["Range"] = rng_header
-    req = urllib.request.Request(direct_url, headers=req_headers)
-    upstream = urllib.request.urlopen(req, timeout=15)
-    resp_headers = {}
-    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
-        val = upstream.headers.get(h)
-        if val:
-            resp_headers[h] = val
-    resp_headers.setdefault("Accept-Ranges", "bytes")
+        m = re.match(r"bytes=(\d+)-(\d*)", rng_header.strip())
+        if m:
+            has_client_range = True
+            req_start = int(m.group(1))
+            if m.group(2):
+                req_end = int(m.group(2))
 
-    def _iter_chunks():
-        try:
-            while True:
-                chunk = upstream.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
+    CHUNK_WINDOW = 1048576  # 1 MB per upstream Range fetch bypasses Googlevideo progressive throttling
+    is_small_bounded_range = has_client_range and req_end is not None and (req_end - req_start + 1) <= (2 * CHUNK_WINDOW)
+
+    if is_small_bounded_range:
+        hdrs = dict(base_headers)
+        hdrs["Range"] = f"bytes={req_start}-{req_end}"
+        upstream = urllib.request.urlopen(urllib.request.Request(direct_url, headers=hdrs), timeout=15)
+        resp_headers = {}
+        for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+            val = upstream.headers.get(h)
+            if val:
+                resp_headers[h] = val
+        resp_headers.setdefault("Accept-Ranges", "bytes")
+
+        def _iter_small():
             try:
-                upstream.close()
-            except Exception:
-                pass
+                while True:
+                    chunk = upstream.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
 
-    return StreamingResponse(_iter_chunks(), status_code=upstream.status, headers=resp_headers)
+        return StreamingResponse(_iter_small(), status_code=upstream.status, headers=resp_headers)
+
+    # Probe first 1 MB chunk via Range (gets instant full transfer rate + exact total byte length)
+    first_end = req_start + CHUNK_WINDOW - 1
+    if req_end is not None and req_end < first_end:
+        first_end = req_end
+    probe_headers = dict(base_headers)
+    probe_headers["Range"] = f"bytes={req_start}-{first_end}"
+    first_upstream = urllib.request.urlopen(urllib.request.Request(direct_url, headers=probe_headers), timeout=15)
+
+    cr = first_upstream.headers.get("Content-Range", "")
+    cr_match = re.match(r"bytes\s+(\d+)-(\d+)/(\d+)", cr)
+    if first_upstream.status != 206 or not cr_match:
+        # Upstream server ignored Range; stream single response cleanly
+        resp_headers = {}
+        for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+            val = first_upstream.headers.get(h)
+            if val:
+                resp_headers[h] = val
+        resp_headers.setdefault("Accept-Ranges", "bytes")
+
+        def _iter_plain():
+            try:
+                while True:
+                    chunk = first_upstream.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try:
+                    first_upstream.close()
+                except Exception:
+                    pass
+
+        return StreamingResponse(_iter_plain(), status_code=first_upstream.status, headers=resp_headers)
+
+    first_chunk_end = int(cr_match.group(2))
+    total_bytes = int(cr_match.group(3))
+    target_end = min(req_end, total_bytes - 1) if req_end is not None else (total_bytes - 1)
+    content_len = max(0, target_end - req_start + 1)
+
+    resp_headers = {
+        "Content-Type": first_upstream.headers.get("Content-Type") or "audio/mp4",
+        "Content-Length": str(content_len),
+        "Accept-Ranges": "bytes",
+    }
+    status_out = 206 if has_client_range else 200
+    if has_client_range:
+        resp_headers["Content-Range"] = f"bytes {req_start}-{target_end}/{total_bytes}"
+
+    def _iter_chunked_range():
+        cur_pos = first_chunk_end + 1
+        try:
+            try:
+                while True:
+                    chunk = first_upstream.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try:
+                    first_upstream.close()
+                except Exception:
+                    pass
+
+            while cur_pos <= target_end:
+                nxt_end = min(cur_pos + CHUNK_WINDOW - 1, target_end)
+                h = dict(base_headers)
+                h["Range"] = f"bytes={cur_pos}-{nxt_end}"
+                with urllib.request.urlopen(urllib.request.Request(direct_url, headers=h), timeout=15) as r:
+                    read_in_chunk = 0
+                    while True:
+                        buf = r.read(65536)
+                        if not buf:
+                            break
+                        read_in_chunk += len(buf)
+                        yield buf
+                    if read_in_chunk == 0:
+                        break
+                    cur_pos += read_in_chunk
+        except Exception as stream_err:
+            logger.debug(f"Chunked stream stopped at {cur_pos}: {stream_err}")
+
+    return StreamingResponse(_iter_chunked_range(), status_code=status_out, headers=resp_headers)
 
 def _pick_cached_stream_url(entry: Dict[str, Any], audio: bool, quality: Optional[int]) -> Optional[str]:
     if not entry:
@@ -1289,7 +1412,7 @@ def stream_video_proxy(
     quality: Optional[int] = None,
     device_id: Optional[str] = None
 ):
-    """High-speed stream redirector or HTTP Range proxy for hardware-accelerated native playback."""
+    """High-speed stream proxy (default for Googlevideo IP-bound URLs) with HTTP Range seeking."""
     dev_id = extract_device_id(request, device_id)
     sc_key = f"{dev_id}:{video_id}"
     direct_url = None
@@ -1312,9 +1435,13 @@ def stream_video_proxy(
         raise HTTPException(status_code=404, detail="Stream not available")
 
     is_hls_manifest = ".m3u8" in direct_url or "manifest.googlevideo.com" in direct_url
-    if proxy and not is_hls_manifest:
+    is_vm_ip_bound = "googlevideo.com" in direct_url
+    should_proxy = (proxy or not direct or is_vm_ip_bound) and not is_hls_manifest
+    upstream_hdrs = (cached_entry.get("audio_headers") if audio else cached_entry.get("headers")) if cached_entry else None
+
+    if should_proxy:
         try:
-            return _proxy_remote_stream(direct_url, request)
+            return _proxy_remote_stream(direct_url, request, upstream_headers=upstream_hdrs)
         except Exception as pe:
             # Refresh once in case an upstream Googlevideo signed URL expired or returned 403
             if "403" in str(pe) or "410" in str(pe):
@@ -1322,12 +1449,14 @@ def stream_video_proxy(
                 stream_cache.pop(video_id, None)
                 try:
                     extract_youtube_info_cached(video_id, device_id=dev_id, force_refresh=True)
-                    refreshed = _pick_cached_stream_url(stream_cache.get(sc_key) or stream_cache.get(video_id), audio, quality)
+                    new_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
+                    refreshed = _pick_cached_stream_url(new_entry, audio, quality)
+                    new_hdrs = (new_entry.get("audio_headers") if audio else new_entry.get("headers")) if new_entry else None
                     if refreshed and ".m3u8" not in refreshed:
-                        return _proxy_remote_stream(refreshed, request)
+                        return _proxy_remote_stream(refreshed, request, upstream_headers=new_hdrs)
                 except Exception:
                     pass
-            logger.warning(f"Stream range proxy failed for {video_id}, falling back to redirect: {pe}")
+            logger.warning(f"Stream range proxy failed for {video_id}: {pe}")
 
     return RedirectResponse(url=direct_url, status_code=307)
 
@@ -2236,9 +2365,11 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
     is_yt = _is_youtube_url(url)
     out_template = str(DOWNLOADS_DIR / f"{safe_title}_{job_id[:8]}.%(ext)s")
 
-    opts = get_base_ydl_opts(device_id, for_youtube=is_yt)
+    # Prefer mweb + web_safari for fast non-403 formats & HD HLS without android_vr failures
+    opts = get_base_ydl_opts(device_id, for_youtube=is_yt, client_override=["mweb", "web_safari"] if is_yt else None)
     opts.update({
-        "socket_timeout": 30,
+        "socket_timeout": 25,
+        "concurrent_fragments": 4,
         "outtmpl": out_template,
         "progress_hooks": [progress_hook],
     })
@@ -2247,7 +2378,7 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
 
     if format_type.lower() == "mp3":
         bitrate = quality.replace("k", "") if "k" in quality else "192"
-        opts["format"] = "bestaudio/best"
+        opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
@@ -2255,52 +2386,63 @@ def _run_download_job(job_id: str, video_id: str, format_type: str, quality: str
         }]
     else:
         res_height = quality.replace("p", "") if "p" in quality else "720"
-        opts["format"] = f"bestvideo[height<={res_height}]+bestaudio/best[height<={res_height}]/bestvideo*+bestaudio/best"
+        opts["format"] = (
+            f"bestvideo[vcodec^=avc1][height<={res_height}]+bestaudio[ext=m4a]/"
+            f"best[ext=mp4][height<={res_height}]/"
+            f"bestvideo[height<={res_height}]+bestaudio/"
+            f"best[height<={res_height}]/best"
+        )
         opts["merge_output_format"] = "mp4"
 
     try:
-        try:
-            with SafeYoutubeDL(opts) as ydl:
-                ydl.download([url])
-        except Exception as primary_err:
-            # Retry once with relaxed format selector before falling back to direct stream
+        with _yt_heavy_sem:
             try:
-                logger.warning(f"Primary format download failed for {video_id} ({primary_err}); retrying with format='best'")
-                retry_opts = dict(opts)
-                retry_opts["format"] = "best"
-                with SafeYoutubeDL(retry_opts) as ydl:
+                with SafeYoutubeDL(opts) as ydl:
                     ydl.download([url])
-            except Exception as ydl_err:
-                logger.warning(f"Server-side download error ({ydl_err}). Trying direct client stream fallback...")
-                is_audio = format_type.lower() == "mp3"
-                sc_key = f"{extract_device_id(explicit_id=device_id)}:{video_id}"
-                cached_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
-                direct_stream = _pick_cached_stream_url(cached_entry, is_audio, None) if cached_entry else None
-                if not direct_stream and is_yt and video_id:
-                    try:
-                        extract_youtube_info_cached(video_id, device_id=device_id)
-                        direct_stream = _pick_cached_stream_url(stream_cache.get(sc_key) or stream_cache.get(video_id), is_audio, None)
-                    except Exception:
-                        pass
-                if not direct_stream and is_yt and video_id:
-                    direct_stream = extract_direct_stream_url(video_id, audio_only=is_audio, device_id=device_id)
-                fallback_stream = direct_stream or (f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&direct=true" if (is_yt and video_id) else "")
-                if not fallback_stream:
-                    raise ydl_err
-                expected_ext = "mp3" if is_audio else "mp4"
-                expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
-                has_cookies = bool(get_cookies_file(device_id))
+            except Exception as primary_err:
+                # Retry once with relaxed format selector + single mweb client before fallback
+                try:
+                    logger.warning(f"Primary format download failed for {video_id} ({primary_err}); retrying relaxed format")
+                    retry_opts = get_base_ydl_opts(device_id, for_youtube=is_yt, client_override=["mweb"] if is_yt else None)
+                    retry_opts.update({
+                        "socket_timeout": 25,
+                        "concurrent_fragments": 4,
+                        "outtmpl": out_template,
+                        "progress_hooks": [progress_hook],
+                        "format": "bestaudio/best" if format_type.lower() == "mp3" else "best[ext=mp4]/best",
+                    })
+                    if format_type.lower() == "mp3":
+                        bitrate = quality.replace("k", "") if "k" in quality else "192"
+                        retry_opts["postprocessors"] = [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": bitrate,
+                        }]
+                    else:
+                        retry_opts["merge_output_format"] = "mp4"
+                    with SafeYoutubeDL(retry_opts) as ydl:
+                        ydl.download([url])
+                except Exception as ydl_err:
+                    logger.warning(f"Server-side download error ({ydl_err}). Falling back to proxied client stream...")
+                    if not (is_yt and video_id):
+                        raise ydl_err
+                    is_audio = format_type.lower() == "mp3"
+                    expected_ext = "m4a" if is_audio else "mp4"
+                    expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"
+                    dev_q = urllib.parse.quote(extract_device_id(explicit_id=device_id))
+                    fallback_stream = f"/api/stream/{video_id}?audio={'true' if is_audio else 'false'}&proxy=true&device_id={dev_q}"
+                    has_cookies = bool(get_cookies_file(device_id))
 
-                with jobs_lock:
-                    if job_id in download_jobs:
-                        download_jobs[job_id]["status"] = "client_ready"
-                        download_jobs[job_id]["percent"] = 100.0
-                        download_jobs[job_id]["filename"] = expected_filename
-                        download_jobs[job_id]["download_url"] = fallback_stream
-                        download_jobs[job_id]["client_direct_url"] = fallback_stream
-                        download_jobs[job_id]["requires_cookies"] = not has_cookies
-                        download_jobs[job_id]["completed_at"] = time.time()
-                return
+                    with jobs_lock:
+                        if job_id in download_jobs:
+                            download_jobs[job_id]["status"] = "client_ready"
+                            download_jobs[job_id]["percent"] = 100.0
+                            download_jobs[job_id]["filename"] = expected_filename
+                            download_jobs[job_id]["download_url"] = fallback_stream
+                            download_jobs[job_id]["client_direct_url"] = fallback_stream
+                            download_jobs[job_id]["requires_cookies"] = not has_cookies
+                            download_jobs[job_id]["completed_at"] = time.time()
+                    return
 
         expected_ext = "mp3" if format_type.lower() == "mp3" else "mp4"
         expected_filename = f"{safe_title}_{job_id[:8]}.{expected_ext}"

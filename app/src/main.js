@@ -1352,32 +1352,80 @@ export function syncNativeOverlayFlag() {
 }
 
 let _lastNativeSyncAt = 0;
+let ytIsPlaying = false;
+let ytCurrentTimeSec = 0;
+let ytDurationSec = 0;
+let _nativeHandoffLockUntil = 0;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', (event) => {
+    try {
+      if (!event?.data || typeof event.data !== 'string') return;
+      if (!event.origin || !event.origin.includes('youtube')) return;
+      const msg = JSON.parse(event.data);
+      if (msg.event === 'infoDelivery' && msg.info) {
+        if (typeof msg.info.currentTime === 'number' && Number.isFinite(msg.info.currentTime)) {
+          ytCurrentTimeSec = msg.info.currentTime;
+        }
+        if (typeof msg.info.duration === 'number' && Number.isFinite(msg.info.duration) && msg.info.duration > 0) {
+          ytDurationSec = msg.info.duration;
+        }
+        if (typeof msg.info.playerState === 'number') {
+          ytIsPlaying = (msg.info.playerState === 1 || msg.info.playerState === 3);
+        }
+        syncNativeMediaService(null, false);
+      } else if (msg.event === 'onStateChange') {
+        const st = Number(msg.info);
+        ytIsPlaying = (st === 1 || st === 3);
+        syncNativeMediaService(ytIsPlaying, true);
+      }
+    } catch (_) {}
+  });
+}
+
 export function syncNativeMediaService(playingOverride = null, force = false) {
   try {
     if (!window.AndroidMediaService?.syncState) return;
+    if (playingOverride === false && Date.now() < _nativeHandoffLockUntil && !force) return;
     const now = Date.now();
     if (!force && now - _lastNativeSyncAt < 800) return;
     _lastNativeSyncAt = now;
 
-    const video = state.activeVideo;
+    const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
+    const video = shortsOpen ? (state.shortsList?.[state.currentShortIndex] || state.activeVideo) : state.activeVideo;
     if (!video) {
       window.AndroidMediaService.syncState(false, Boolean(state.isAudioMode), 0, 0, '', '', '', '', '');
       return;
     }
 
-    const videoElem = document.getElementById('html5-video-element');
-    const isNativePlaying = state.playbackEngine === 'native' && videoElem
-      ? (!videoElem.paused && !videoElem.ended && videoElem.readyState >= 2)
-      : false;
-    const isPlaying = playingOverride !== null ? Boolean(playingOverride) : isNativePlaying;
+    const videoElem = shortsOpen
+      ? document.getElementById('shorts-video-element')
+      : document.getElementById('html5-video-element');
+    const isYtIframe = !shortsOpen && state.playbackEngine === 'youtube' && !video.isExternal && !video.isOffline;
+    const isElemPlaying = videoElem ? (!videoElem.paused && !videoElem.ended) : false;
+    const isPlaying = playingOverride !== null
+      ? Boolean(playingOverride)
+      : (isYtIframe ? ytIsPlaying : isElemPlaying);
 
-    const posMs = videoElem && Number.isFinite(videoElem.currentTime) ? Math.floor(videoElem.currentTime * 1000) : 0;
-    const durMs = videoElem && Number.isFinite(videoElem.duration) ? Math.floor(videoElem.duration * 1000) : Math.floor((video.duration || 0) * 1000);
+    let posMs = 0;
+    let durMs = Math.floor((video.duration || 0) * 1000);
+    if (isYtIframe) {
+      posMs = Math.floor((ytCurrentTimeSec || 0) * 1000);
+      if (ytDurationSec > 0) durMs = Math.floor(ytDurationSec * 1000);
+    } else if (videoElem) {
+      posMs = Number.isFinite(videoElem.currentTime) ? Math.floor(videoElem.currentTime * 1000) : 0;
+      durMs = Number.isFinite(videoElem.duration) ? Math.floor(videoElem.duration * 1000) : durMs;
+    }
 
     const serverBase = getServerUrl();
-    const audioUrl = video.isExternal
-      ? api.getStreamProxyUrl(video.direct_audio_url || video.direct_stream_url || '')
-      : `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
+    let audioUrl = '';
+    if (video.isOffline && video.direct_stream_url) {
+      audioUrl = video.direct_stream_url.startsWith('http') ? video.direct_stream_url : `${serverBase}${video.direct_stream_url}`;
+    } else if (video.isExternal) {
+      audioUrl = api.getStreamProxyUrl(video.direct_audio_url || video.direct_stream_url || '');
+    } else {
+      audioUrl = `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
+    }
 
     const thumbUrl = video.thumbnail || (video.isExternal ? '' : `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`);
     window.AndroidMediaService.syncState(
@@ -1396,6 +1444,7 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
 
 window.pauseWebMediaForNativeHandoff = function() {
   try {
+    _nativeHandoffLockUntil = Date.now() + 2500;
     const videoElem = document.getElementById('html5-video-element');
     if (videoElem && !videoElem.paused) videoElem.pause();
     const iframe = document.getElementById('youtube-embed-player');
@@ -1409,8 +1458,37 @@ window.pauseWebMediaForNativeHandoff = function() {
 
 window.resumeWebMediaFromNative = function(posMs, playing) {
   try {
+    _nativeHandoffLockUntil = 0;
+    const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
+    if (shortsOpen) {
+      const shortsVideo = document.getElementById('shorts-video-element');
+      if (shortsVideo) {
+        if (typeof posMs === 'number' && posMs > 0) {
+          const t = posMs / 1000;
+          if (Math.abs((shortsVideo.currentTime || 0) - t) > 1.5) shortsVideo.currentTime = t;
+        }
+        if (playing) shortsVideo.play().catch(() => {});
+        else shortsVideo.pause();
+      }
+      return;
+    }
+
+    if (!state.activeVideo) return;
+    if (state.playbackEngine === 'youtube' && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
+      const iframe = document.getElementById('youtube-embed-player');
+      if (iframe && iframe.contentWindow) {
+        if (typeof posMs === 'number' && posMs > 0) {
+          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [posMs / 1000, true] }), '*');
+        }
+        iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: playing ? 'playVideo' : 'pauseVideo', args: '' }), '*');
+        ytIsPlaying = Boolean(playing);
+      }
+      updatePlayPauseIcons(Boolean(playing));
+      return;
+    }
+
     const videoElem = document.getElementById('html5-video-element');
-    if (!videoElem || !state.activeVideo) return;
+    if (!videoElem) return;
     if (typeof posMs === 'number' && posMs > 0) {
       const targetSec = posMs / 1000;
       if (Math.abs((videoElem.currentTime || 0) - targetSec) > 1.5) {
@@ -1474,10 +1552,13 @@ function updatePlayPauseIcons(isPlaying) {
 }
 
 export function stopAllPlayback(preserve = null) {
-  // If not preserving main playback, hide floating mini-player and stop native BG audio service
+  // If preserving nothing, hide floating mini-player and stop native BG audio service
   if (!preserve || preserve.startsWith('shorts')) {
     hideMiniPlayer();
     if (!preserve) {
+      ytIsPlaying = false;
+      ytCurrentTimeSec = 0;
+      ytDurationSec = 0;
       try { window.AndroidMediaService?.stopService?.(); } catch (_) {}
       setFullscreenLandscape(false);
     }
@@ -1572,7 +1653,10 @@ async function openVideoPlayer(video) {
   channelNameElem.textContent = cName;
   channelSubsElem.textContent = video.isExternal ? 'Extracted Stream' : 'Creator';
 
-  if (bgBtn) bgBtn.classList.toggle('active', Boolean(state.isAudioMode));
+  if (bgBtn) {
+    bgBtn.classList.toggle('active', Boolean(state.isAudioMode));
+    bgBtn.innerHTML = state.isAudioMode ? '<span>🎧 Bg Play: ON</span>' : '<span>🎧 Bg Play</span>';
+  }
   state.availableResolutions = Array.isArray(video.available_resolutions) && video.available_resolutions.length
     ? video.available_resolutions
     : [360, 480, 720];
@@ -1713,12 +1797,17 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     if (customOverlay) customOverlay.style.display = 'none';
     if (legacyTopbar) legacyTopbar.style.display = 'flex';
 
+    ytIsPlaying = true;
+    ytCurrentTimeSec = seekSeconds || 0;
+    ytDurationSec = video.duration || 0;
     if (iframeContainer) {
+      const originParam = typeof window !== 'undefined' && window.location?.origin ? `&origin=${encodeURIComponent(window.location.origin)}` : '';
+      const startParam = seekSeconds > 0 ? `&start=${Math.floor(seekSeconds)}` : '';
       iframeContainer.style.display = 'block';
       iframeContainer.innerHTML = `
         <iframe 
           id="youtube-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1&controls=1"
+          src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1&controls=1${startParam}${originParam}"
           title="${(video.title || 'Video').replace(/"/g, '&quot;')}"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -1726,6 +1815,15 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           style="width:100%; height:100%; border:none; display:block;"
         ></iframe>
       `;
+      const ytFrame = document.getElementById('youtube-embed-player');
+      if (ytFrame) {
+        ytFrame.addEventListener('load', () => {
+          try {
+            ytFrame.contentWindow?.postMessage('{"event":"listening","id":1,"channel":"widget"}', '*');
+            ytFrame.contentWindow?.postMessage('{"event":"command","func":"addEventListener","args":["onStateChange"]}', '*');
+          } catch (_) {}
+        });
+      }
     }
     syncNativeMediaService(true, true);
     console.log(`[Player] YouTube Engine activated for ${video.id}`);
@@ -1755,7 +1853,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
 
       const fallbackStreamUrl = video.isExternal
         ? api.getStreamProxyUrl(video.direct_stream_url || video.url)
-        : `${serverBase}/api/stream/${video.id}?direct=true&device_id=${devId}${qParam}`;
+        : `${serverBase}/api/stream/${video.id}?proxy=true&device_id=${devId}&quality=360p`;
 
       let triedFallback = false;
       videoElem.src = primaryStreamUrl;
@@ -1797,7 +1895,10 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
         updatePlayPauseIcons(false);
-        syncNativeMediaService(false, true);
+        // Do not overwrite native foreground playback state when paused by our own OS background handoff
+        if (Date.now() >= _nativeHandoffLockUntil) {
+          syncNativeMediaService(false, true);
+        }
         customOverlay?.classList.remove('controls-hidden');
       };
       videoElem.ontimeupdate = () => {
@@ -1834,14 +1935,14 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         }
       };
 
-      // Watchdog: if still stuck at readyState 0 after 12s on a YouTube video, fallback cleanly
+      // Watchdog: if still stuck at readyState 0 after 25s on a YouTube video, fallback cleanly
       nativeBufferWatchdog = setTimeout(() => {
         if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && videoElem.readyState === 0 && !videoElem.paused && !video.isExternal) {
           console.warn('[Player] Native stream watchdog timeout -> switching to YouTube fallback');
           state.playbackEngine = 'youtube';
           setupPlayerPlayback(video, seekSeconds);
         }
-      }, 12000);
+      }, 25000);
 
       videoElem.play().catch((err) => {
         console.log(`[Player] Autoplay note: ${err}`);
@@ -2134,6 +2235,7 @@ function initPlayerControls() {
     state.isAudioMode = !state.isAudioMode;
     try { localStorage.setItem('metube_bg_play', state.isAudioMode ? '1' : '0'); } catch (_) {}
     bgAudioBtn.classList.toggle('active', state.isAudioMode);
+    bgAudioBtn.innerHTML = state.isAudioMode ? '<span>🎧 Bg Play: ON</span>' : '<span>🎧 Bg Play</span>';
     syncNativeMediaService(null, true);
     if (state.isAudioMode) {
       showToast('🎧 Background Play ON: Keeps playing in Recents, app switch & lockscreen!');
@@ -2287,6 +2389,8 @@ function initDownloadModal() {
       confirmText.textContent = `Download ${state.selectedFormat.label}`;
       syncNativeOverlayFlag();
 
+      lastDownloadsSyncAt = 0;
+      loadDownloadsList(true);
       switchTab('downloads');
     } catch (err) {
       alert(`Could not start download: ${err.message}`);
@@ -2342,7 +2446,8 @@ export function triggerSaveToDevice(url, filename, jobId = null) {
   // 1. Native Android APK Downloader Bridge (Enqueues directly in Android DownloadManager + tracks byte progress)
   if (typeof window !== 'undefined' && window.AndroidDownloader && window.AndroidDownloader.startDownload) {
     console.log('[Download] Using native AndroidDownloader bridge for:', absoluteUrl);
-    const mime = filename && filename.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4';
+    const lowerName = (filename || '').toLowerCase();
+    const mime = lowerName.endsWith('.mp3') ? 'audio/mpeg' : (lowerName.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
     const dmId = Number(window.AndroidDownloader.startDownload(absoluteUrl, filename, mime) || -1);
     if (jobId && dmId > 0) {
       state.nativeDmProgress[jobId] = {
@@ -2449,12 +2554,17 @@ async function loadDownloadsList(force = false) {
           try {
             const rawProg = window.AndroidDownloader.getDownloadProgress(dmEntry.dmId);
             const parsedProg = JSON.parse(rawProg || '{}');
-            if (parsedProg && typeof parsedProg.status === 'number') {
+            const rawSt = parsedProg?.status;
+            const normSt = typeof rawSt === 'number'
+              ? rawSt
+              : (rawSt === 'pending' ? 1 : (rawSt === 'running' ? 2 : (rawSt === 'paused' ? 4 : (rawSt === 'successful' ? 8 : (rawSt === 'failed' ? 16 : 0)))));
+            if (parsedProg && normSt > 0) {
+              parsedProg.status = normSt;
               state.nativeDmProgress[item.job_id] = {
                 ...dmEntry,
                 ...parsedProg
               };
-              if (parsedProg.status === 1 || parsedProg.status === 2 || parsedProg.status === 4) {
+              if (normSt === 1 || normSt === 2 || normSt === 4) {
                 hasActiveNative = true;
               }
             }
@@ -2526,6 +2636,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
     const dm = state.nativeDmProgress[item.job_id];
     const dmActive = isCompleted && dm && (dm.status === 1 || dm.status === 2 || dm.status === 4);
     const dmSuccess = isCompleted && dm && dm.status === 8;
+    const dmFailed = isCompleted && dm && dm.status === 16;
 
     const rawServerPct = Math.round(item.percent ?? item.progress_percent ?? 0);
     const serverPct = isProgressing ? Math.max(item.status === 'queued' ? 6 : 8, Math.min(99, rawServerPct)) : 100;
@@ -2589,7 +2700,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
               </button>
             ` : `
               <button class="btn-save-device" data-job="${item.job_id}" data-url="${fileUrl}" data-filename="${item.filename}" style="flex:1; background:#FF0000; color:#FFF; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
-                <span>💾 Save to Device</span>
+                <span>${dmFailed ? '🔄 Retry Save to Phone' : '💾 Save to Device'}</span>
               </button>
               <button class="btn-play-offline" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
                 ▶ Play
@@ -2665,9 +2776,26 @@ function openOfflinePlayer(fileUrl, filename, formatType) {
   const videoElem = document.getElementById('html5-video-element');
   const iframeContainer = document.getElementById('embed-iframe-container');
   const titleElem = document.getElementById('player-video-title');
+  const channelElem = document.getElementById('player-channel-name');
+  const bgAudioBtn = document.getElementById('btn-bg-audio');
+
+  stopAllPlayback('main-native');
+  state.playbackEngine = 'native';
+  state.activeVideo = {
+    id: `offline_${filename || Date.now()}`,
+    title: filename || 'Downloaded Media',
+    channel: 'Offline Downloads',
+    isExternal: true,
+    isOffline: true,
+    direct_stream_url: fileUrl,
+    direct_audio_url: fileUrl
+  };
 
   modal.classList.add('open');
-  titleElem.textContent = filename;
+  syncNativeOverlayFlag();
+  titleElem.textContent = filename || 'Downloaded Media';
+  if (channelElem) channelElem.textContent = 'Offline Downloads';
+  if (bgAudioBtn) bgAudioBtn.classList.toggle('active', Boolean(state.isAudioMode));
   if (iframeContainer) {
     iframeContainer.style.display = 'none';
     iframeContainer.innerHTML = '';
@@ -2675,7 +2803,17 @@ function openOfflinePlayer(fileUrl, filename, formatType) {
   if (videoElem) {
     videoElem.style.display = 'block';
     videoElem.src = fileUrl;
+    videoElem.onplay = () => {
+      updatePlayPauseIcons(true);
+      syncNativeMediaService(true, true);
+    };
+    videoElem.onpause = () => {
+      updatePlayPauseIcons(false);
+      if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
+    };
+    videoElem.ontimeupdate = () => syncNativeMediaService(null, false);
     videoElem.play().catch(() => {});
+    syncNativeMediaService(true, true);
   }
 }
 
@@ -3264,9 +3402,14 @@ function openShortsModal(short) {
         clearTimeout(shortsFallbackWatchdog);
         shortsFallbackWatchdog = null;
       }
+      syncNativeMediaService(true, true);
     };
     videoElem.onloadeddata = onShortPlaying;
     videoElem.onplaying = onShortPlaying;
+    videoElem.onplay = () => syncNativeMediaService(true, true);
+    videoElem.onpause = () => {
+      if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
+    };
     videoElem.onerror = () => {
       launchShortsEmbedFallback();
     };

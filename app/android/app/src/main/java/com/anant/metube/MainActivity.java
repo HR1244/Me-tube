@@ -33,6 +33,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -44,6 +45,7 @@ import com.getcapacitor.BridgeWebChromeClient;
 
 import org.json.JSONObject;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends BridgeActivity {
@@ -333,17 +335,25 @@ public class MainActivity extends BridgeActivity {
                 public long startDownload(String url, String filename, String mimeType) {
                     try {
                         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                        String lower = filename != null ? filename.toLowerCase() : "";
                         String safeMime = (mimeType != null && !mimeType.isEmpty())
                             ? mimeType
-                            : (filename != null && filename.endsWith(".mp3") ? "audio/mpeg" : "video/mp4");
+                            : (lower.endsWith(".mp3") ? "audio/mpeg" : (lower.endsWith(".m4a") ? "audio/mp4" : "video/mp4"));
                         request.setMimeType(safeMime);
                         request.setDescription("Downloading to phone storage via MeTube");
+                        request.addRequestHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 MeTube/2.0");
                         String safeTitle = (filename != null && !filename.isEmpty())
                             ? filename.replaceAll("[^a-zA-Z0-9._-]", "_")
                             : "MeTube_Media.mp4";
                         request.setTitle(safeTitle);
+                        request.setAllowedOverMetered(true);
+                        request.setAllowedOverRoaming(true);
                         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "MeTube/" + safeTitle);
+                        try {
+                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "MeTube/" + safeTitle);
+                        } catch (Exception subEx) {
+                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeTitle);
+                        }
                         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                         if (dm != null) {
                             return dm.enqueue(request);
@@ -365,29 +375,42 @@ public class MainActivity extends BridgeActivity {
                     try {
                         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                         if (dm == null || dmId <= 0) {
-                            res.put("status", "unknown");
+                            res.put("status", 0);
+                            res.put("statusText", "unknown");
                             return res.toString();
                         }
                         DownloadManager.Query q = new DownloadManager.Query().setFilterById(dmId);
                         try (Cursor c = dm.query(q)) {
                             if (c != null && c.moveToFirst()) {
                                 int statusIdx = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                                int reasonIdx = c.getColumnIndex(DownloadManager.COLUMN_REASON);
                                 int dlIdx = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
                                 int totIdx = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
                                 int uriIdx = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
 
                                 int st = statusIdx >= 0 ? c.getInt(statusIdx) : 0;
+                                int reason = reasonIdx >= 0 ? c.getInt(reasonIdx) : 0;
                                 long dl = dlIdx >= 0 ? c.getLong(dlIdx) : 0;
                                 long tot = totIdx >= 0 ? c.getLong(totIdx) : 0;
                                 String localUri = uriIdx >= 0 ? c.getString(uriIdx) : "";
 
+                                if (st == DownloadManager.STATUS_SUCCESSFUL && (localUri == null || localUri.isEmpty() || localUri.startsWith("file://"))) {
+                                    try {
+                                        Uri dmContentUri = dm.getUriForDownloadedFile(dmId);
+                                        if (dmContentUri != null) localUri = dmContentUri.toString();
+                                    } catch (Exception ignored) {}
+                                }
+
                                 String statusStr = "running";
-                                if (st == DownloadManager.STATUS_SUCCESSFUL) statusStr = "successful";
+                                if (st == DownloadManager.STATUS_PENDING) statusStr = "pending";
+                                else if (st == DownloadManager.STATUS_SUCCESSFUL) statusStr = "successful";
                                 else if (st == DownloadManager.STATUS_FAILED) statusStr = "failed";
                                 else if (st == DownloadManager.STATUS_PAUSED) statusStr = "paused";
 
                                 double pct = tot > 0 ? Math.min(100.0, (dl * 100.0 / tot)) : (st == DownloadManager.STATUS_SUCCESSFUL ? 100.0 : 0.0);
-                                res.put("status", statusStr);
+                                res.put("status", st);
+                                res.put("statusText", statusStr);
+                                res.put("reason", reason);
                                 res.put("downloadedBytes", dl);
                                 res.put("totalBytes", tot);
                                 res.put("percent", Math.round(pct * 10.0) / 10.0);
@@ -396,7 +419,10 @@ public class MainActivity extends BridgeActivity {
                             }
                         }
                     } catch (Exception ignored) {}
-                    try { res.put("status", "unknown"); } catch (Exception ignored) {}
+                    try {
+                        res.put("status", 0);
+                        res.put("statusText", "unknown");
+                    } catch (Exception ignored) {}
                     return res.toString();
                 }
 
@@ -405,8 +431,15 @@ public class MainActivity extends BridgeActivity {
                     runOnUiThread(() -> {
                         try {
                             if (localUri == null || localUri.isEmpty()) return;
+                            Uri targetUri = Uri.parse(localUri);
+                            if ("file".equalsIgnoreCase(targetUri.getScheme()) && targetUri.getPath() != null) {
+                                File file = new File(targetUri.getPath());
+                                if (file.exists()) {
+                                    targetUri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", file);
+                                }
+                            }
                             Intent intent = new Intent(Intent.ACTION_VIEW);
-                            intent.setDataAndType(Uri.parse(localUri), mimeType != null && !mimeType.isEmpty() ? mimeType : "*/*");
+                            intent.setDataAndType(targetUri, mimeType != null && !mimeType.isEmpty() ? mimeType : "*/*");
                             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                             startActivity(intent);
                         } catch (Exception e) {
@@ -591,10 +624,14 @@ public class MainActivity extends BridgeActivity {
         svc.putExtra("positionMs", lastPositionMs);
         svc.putExtra("durationMs", mediaDurationMs);
         svc.putExtra("isPlaying", isHandoff || mediaIsPlaying);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(svc);
-        } else {
-            startService(svc);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svc);
+            } else {
+                startService(svc);
+            }
+        } catch (Exception ignored) {
+            try { startService(svc); } catch (Exception ignored2) {}
         }
     }
 
