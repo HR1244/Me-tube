@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Standalone APK
@@ -42,19 +45,63 @@ jobs:
         working-directory: app/android
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        working-directory: app/android
+      - name: Build Signed APK & Prepare OTA Release Assets
+        env:
+          METUBE_VERSION_CODE: ${{ 100 + github.run_number }}
+          METUBE_VERSION_NAME: 2.0.${{ github.run_number }}
         run: |
+          cd app/android
           ./gradlew assembleDebug --no-daemon --stacktrace
-          # Ensure MeTube.apk is present
-          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/MeTube.apk
+          cd ../..
+          APK_OUT="app/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "app/android/app/build/outputs/apk/debug/MeTube.apk" ]; then
+            APK_OUT="app/android/app/build/outputs/apk/debug/MeTube.apk"
           fi
+          mkdir -p release_assets
+          cp "$APK_OUT" release_assets/MeTube.apk
+          (cd app/dist && zip -qr ../../release_assets/ota-bundle.zip .)
+          BUNDLE_SHA=$(sha256sum release_assets/ota-bundle.zip | awk '{print $1}')
+          BUNDLE_SIZE=$(stat -c%s release_assets/ota-bundle.zip)
+          APK_SIZE=$(stat -c%s release_assets/MeTube.apk)
+          COMMIT_MSG=$(git log -1 --pretty=%s | tr '"' "'" | head -c 120)
+          VER_CODE=$((100 + ${{ github.run_number }}))
+          VER_NAME="2.0.${{ github.run_number }}"
+          cat > release_assets/ota-manifest.json <<EOF
+          {
+            "ota_code": ${VER_CODE},
+            "ota_version": "${VER_NAME}",
+            "native_version_code": ${VER_CODE},
+            "title": "MeTube Update v${VER_NAME}",
+            "notes": "${COMMIT_MSG}",
+            "has_bundle": true,
+            "bundle_url": "https://github.com/${{ github.repository }}/releases/download/latest/ota-bundle.zip",
+            "bundle_size": ${BUNDLE_SIZE},
+            "sha256": "${BUNDLE_SHA}",
+            "has_apk": true,
+            "apk_url": "https://github.com/${{ github.repository }}/releases/download/latest/MeTube.apk",
+            "apk_size": ${APK_SIZE},
+            "updated_at": $(date +%s)
+          }
+          EOF
 
-      - name: Upload MeTube APK
+      - name: Upload MeTube APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MeTube-APK
-          path: app/android/app/build/outputs/apk/debug/MeTube.apk
+          path: release_assets/MeTube.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish Public Auto-Update Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest release_assets/MeTube.apk release_assets/ota-bundle.zip release_assets/ota-manifest.json --clobber
+            gh release edit latest --title "MeTube Latest Auto-Update (v2.0.${{ github.run_number }})" --notes "Automatic latest build for in-app 1-click self-update."
+          else
+            gh release create latest release_assets/MeTube.apk release_assets/ota-bundle.zip release_assets/ota-manifest.json \
+              --title "MeTube Latest Auto-Update (v2.0.${{ github.run_number }})" \
+              --notes "Automatic latest build for in-app 1-click self-update." \
+              --target main
+          fi

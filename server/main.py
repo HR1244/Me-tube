@@ -572,37 +572,85 @@ def _compute_file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+GITHUB_LATEST_MANIFEST_URL = "https://github.com/HR1244/Me-tube/releases/download/latest/ota-manifest.json"
+_github_manifest_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def _fetch_github_latest_manifest() -> Dict[str, Any]:
+    now = time.time()
+    cached = _github_manifest_cache.get("data")
+    if cached is not None and (now - _github_manifest_cache.get("ts", 0.0)) < 45.0:
+        return cached
+    try:
+        req = urllib.request.Request(
+            GITHUB_LATEST_MANIFEST_URL,
+            headers={"User-Agent": "MeTube-Server/2.0", "Cache-Control": "no-cache"},
+        )
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
+            if 200 <= resp.status < 300:
+                parsed = json.loads(resp.read().decode("utf-8"))
+                if isinstance(parsed, dict):
+                    _github_manifest_cache["ts"] = now
+                    _github_manifest_cache["data"] = parsed
+                    return parsed
+    except Exception:
+        pass
+    return cached if isinstance(cached, dict) else {}
+
+
 @app.get("/api/app/version")
 def get_app_version():
-    """Returns latest zero-APK OTA web bundle metadata and optional native version."""
+    """Returns latest zero-APK OTA web bundle + GitHub Release APK update metadata."""
     manifest_path = OTA_DIR / "manifest.json"
     bundle_path = OTA_DIR / "bundle.zip"
-    manifest: Dict[str, Any] = {}
+    local_manifest: Dict[str, Any] = {}
     if manifest_path.exists():
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            local_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
-            manifest = {}
+            local_manifest = {}
 
-    has_bundle = bundle_path.exists() and bundle_path.stat().st_size > 0
-    bundle_size = bundle_path.stat().st_size if has_bundle else 0
-    sha256 = manifest.get("sha256") or (_compute_file_sha256(bundle_path) if has_bundle else "")
+    has_local_bundle = bundle_path.exists() and bundle_path.stat().st_size > 0
+    local_code = int(local_manifest.get("ota_code", 1))
+    gh_manifest = _fetch_github_latest_manifest()
+    gh_code = int(gh_manifest.get("ota_code", 0)) if gh_manifest else 0
 
-    return JSONResponse(
-        content={
-            "ota_code": int(manifest.get("ota_code", 1)),
-            "ota_version": str(manifest.get("ota_version", "2.0.1")),
-            "native_version_code": int(manifest.get("native_version_code", 1)),
-            "title": str(manifest.get("title", "MeTube Update")),
-            "notes": str(manifest.get("notes", "Performance & playback improvements")),
-            "has_bundle": has_bundle,
-            "bundle_url": "/api/app/ota/bundle.zip" if has_bundle else "",
+    if gh_manifest and (gh_code > local_code or not has_local_bundle):
+        payload = {
+            "ota_code": int(gh_manifest.get("ota_code", 1)),
+            "ota_version": str(gh_manifest.get("ota_version", "2.0.1")),
+            "native_version_code": int(gh_manifest.get("native_version_code", 1)),
+            "title": str(gh_manifest.get("title", "MeTube Update")),
+            "notes": str(gh_manifest.get("notes", "Latest release from GitHub")),
+            "has_bundle": bool(gh_manifest.get("has_bundle") and gh_manifest.get("bundle_url")),
+            "bundle_url": str(gh_manifest.get("bundle_url", "")),
+            "bundle_size": int(gh_manifest.get("bundle_size", 0)),
+            "sha256": str(gh_manifest.get("sha256", "")),
+            "has_apk": bool(gh_manifest.get("has_apk") and gh_manifest.get("apk_url")),
+            "apk_url": str(gh_manifest.get("apk_url", "")),
+            "apk_size": int(gh_manifest.get("apk_size", 0)),
+            "updated_at": int(gh_manifest.get("updated_at", 0)),
+        }
+    else:
+        bundle_size = bundle_path.stat().st_size if has_local_bundle else 0
+        sha256 = local_manifest.get("sha256") or (_compute_file_sha256(bundle_path) if has_local_bundle else "")
+        payload = {
+            "ota_code": local_code,
+            "ota_version": str(local_manifest.get("ota_version", "2.0.1")),
+            "native_version_code": int(local_manifest.get("native_version_code", 1)),
+            "title": str(local_manifest.get("title", "MeTube Update")),
+            "notes": str(local_manifest.get("notes", "Performance & playback improvements")),
+            "has_bundle": has_local_bundle,
+            "bundle_url": "/api/app/ota/bundle.zip" if has_local_bundle else "",
             "bundle_size": bundle_size,
             "sha256": sha256,
-            "updated_at": int(bundle_path.stat().st_mtime) if has_bundle else 0,
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+            "has_apk": bool(gh_manifest.get("has_apk") and gh_manifest.get("apk_url")) if gh_manifest else False,
+            "apk_url": str(gh_manifest.get("apk_url", "")) if gh_manifest else "",
+            "apk_size": int(gh_manifest.get("apk_size", 0)) if gh_manifest else 0,
+            "updated_at": int(bundle_path.stat().st_mtime) if has_local_bundle else 0,
+        }
+
+    return JSONResponse(content=payload, headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/api/app/ota/bundle.zip", methods=["GET", "HEAD"])

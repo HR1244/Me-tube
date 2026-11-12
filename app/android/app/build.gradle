@@ -1,14 +1,28 @@
 apply plugin: 'com.android.application'
 
+def metubeVerCode = (System.getenv("METUBE_VERSION_CODE") ?: project.findProperty("METUBE_VERSION_CODE") ?: "1").toInteger()
+def metubeVerName = (System.getenv("METUBE_VERSION_NAME") ?: project.findProperty("METUBE_VERSION_NAME") ?: "2.0.1")
+def metubeKeystoreFile = file("metube-signing.jks")
+
 android {
     namespace = "com.anant.metube"
     compileSdk = rootProject.ext.compileSdkVersion
+    if (metubeKeystoreFile.exists()) {
+        signingConfigs {
+            metube {
+                storeFile metubeKeystoreFile
+                storePassword "metube2026key"
+                keyAlias "metube"
+                keyPassword "metube2026key"
+            }
+        }
+    }
     defaultConfig {
         applicationId "com.anant.metube"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode metubeVerCode
+        versionName metubeVerName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -17,9 +31,17 @@ android {
         }
     }
     buildTypes {
+        debug {
+            if (metubeKeystoreFile.exists()) {
+                signingConfig signingConfigs.metube
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (metubeKeystoreFile.exists()) {
+                signingConfig signingConfigs.metube
+            }
         }
     }
     applicationVariants.all { variant ->

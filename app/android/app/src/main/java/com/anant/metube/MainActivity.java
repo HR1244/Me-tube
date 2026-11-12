@@ -17,6 +17,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
@@ -89,11 +90,12 @@ public class MainActivity extends BridgeActivity {
     private ActivityResultLauncher<Intent> ytAuthLauncher;
     private BroadcastReceiver mediaEventReceiver;
 
-    // In-app zero-APK OTA bundle updater state
+    // In-app zero-APK OTA bundle + 1-click APK self-updater state
     private volatile String otaStatus = "idle";
     private volatile int otaPercent = 0;
     private volatile String otaMessage = "";
     private volatile boolean otaBusy = false;
+    private volatile File pendingApkInstallFile = null;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -512,6 +514,16 @@ public class MainActivity extends BridgeActivity {
                 }
 
                 @JavascriptInterface
+                public void installApkUpdate(String apkUrl, String targetVersion) {
+                    if (otaBusy || apkUrl == null || apkUrl.isEmpty()) return;
+                    otaBusy = true;
+                    otaStatus = "downloading_apk";
+                    otaPercent = 2;
+                    otaMessage = "Downloading APK v" + (targetVersion != null ? targetVersion : "") + "...";
+                    new Thread(() -> performApkUpdate(apkUrl, targetVersion)).start();
+                }
+
+                @JavascriptInterface
                 public void resetToBundled() {
                     getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE)
                         .edit().putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "").apply();
@@ -797,6 +809,14 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         pushSafeInsetsToWebView();
+        if (pendingApkInstallFile != null && pendingApkInstallFile.exists()) {
+            boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls();
+            if (canInstall) {
+                File f = pendingApkInstallFile;
+                pendingApkInstallFile = null;
+                launchApkInstaller(f);
+            }
+        }
         if (MediaPlaybackService.isNativeAudioActive) {
             long nativePos = MediaPlaybackService.nativePositionMs;
             boolean nativePlaying = MediaPlaybackService.isNativePlaying;
@@ -816,15 +836,118 @@ public class MainActivity extends BridgeActivity {
 
     private void validateSavedOtaPath() {
         try {
+            PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+            long nativeCode = PackageInfoCompat.getLongVersionCode(pInfo);
+            SharedPreferences otaPrefs = getSharedPreferences("metube_ota", MODE_PRIVATE);
+            long savedNativeCode = otaPrefs.getLong("ota_native_code", -1L);
             SharedPreferences capPrefs = getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, MODE_PRIVATE);
             String path = capPrefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
             if (path != null && !path.isEmpty()) {
                 File idx = new File(path, "index.html");
-                if (!idx.exists() || idx.length() == 0) {
+                // If a newer native APK was installed, clear older OTA override so the APK's bundled UI loads
+                if (!idx.exists() || idx.length() == 0 || (savedNativeCode >= 0 && nativeCode > savedNativeCode)) {
                     capPrefs.edit().putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "").apply();
+                    if (savedNativeCode >= 0 && nativeCode > savedNativeCode) {
+                        otaPrefs.edit().clear().apply();
+                    }
                 }
             }
         } catch (Exception ignored) {}
+    }
+
+    private HttpURLConnection openUpdaterUrlWithRedirects(String urlStr) throws Exception {
+        String curr = urlStr;
+        for (int hop = 0; hop <= 6; hop++) {
+            HttpURLConnection c = (HttpURLConnection) new URL(curr).openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(45000);
+            c.setRequestProperty("User-Agent", "MeTube-Updater/2.0");
+            int code = c.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String loc = c.getHeaderField("Location");
+                c.disconnect();
+                if (loc == null || loc.isEmpty()) throw new RuntimeException("Empty redirect");
+                curr = new URL(new URL(curr), loc).toString();
+                continue;
+            }
+            return c;
+        }
+        throw new RuntimeException("Too many redirects");
+    }
+
+    private void performApkUpdate(String apkUrl, String targetVersion) {
+        File updatesDir = new File(getCacheDir(), "updates");
+        File apkFile = new File(updatesDir, "MeTube-update.apk");
+        HttpURLConnection conn = null;
+        try {
+            if (!updatesDir.exists()) updatesDir.mkdirs();
+            if (apkFile.exists()) apkFile.delete();
+
+            conn = openUpdaterUrlWithRedirects(apkUrl);
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new RuntimeException("HTTP " + code);
+            }
+
+            long total = conn.getContentLengthLong();
+            long downloaded = 0L;
+            byte[] buf = new byte[32768];
+            try (InputStream in = new BufferedInputStream(conn.getInputStream());
+                 FileOutputStream fos = new FileOutputStream(apkFile)) {
+                int read;
+                while ((read = in.read(buf)) != -1) {
+                    fos.write(buf, 0, read);
+                    downloaded += read;
+                    if (total > 0) {
+                        otaPercent = Math.min(99, Math.max(4, (int) ((downloaded * 95L) / total)));
+                    } else {
+                        otaPercent = Math.min(92, otaPercent + 1);
+                    }
+                    otaMessage = String.format(java.util.Locale.US, "Downloading APK... %.1f MB", downloaded / (1024.0 * 1024.0));
+                }
+            }
+
+            if (!apkFile.exists() || apkFile.length() < 100_000) {
+                throw new IllegalStateException("Downloaded APK is incomplete");
+            }
+
+            otaPercent = 100;
+            otaBusy = false;
+            runOnUiThread(() -> launchApkInstaller(apkFile));
+        } catch (Exception e) {
+            otaStatus = "error";
+            otaMessage = e.getMessage() != null ? e.getMessage() : "APK download failed";
+            otaBusy = false;
+            if (apkFile.exists()) apkFile.delete();
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private void launchApkInstaller(File apkFile) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+                pendingApkInstallFile = apkFile;
+                otaStatus = "permission";
+                otaMessage = "Allow 'Install unknown apps' to finish updating";
+                Toast.makeText(this, "Enable 'Allow from this source' for MeTube to install the update", Toast.LENGTH_LONG).show();
+                Intent permIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                permIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(permIntent);
+                return;
+            }
+            otaStatus = "apk_ready";
+            otaMessage = "Opening Android installer...";
+            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apkFile);
+            Intent installIntent = new Intent(Intent.ACTION_VIEW);
+            installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(installIntent);
+        } catch (Exception e) {
+            otaStatus = "error";
+            otaMessage = e.getMessage() != null ? e.getMessage() : "Could not launch installer";
+        }
     }
 
     private void performOtaUpdate(String bundleUrl, int targetCode, String targetVersion, String expectedSha256) {
@@ -838,11 +961,7 @@ public class MainActivity extends BridgeActivity {
             if (tmpZip.exists()) tmpZip.delete();
             deleteRecursive(stageDir);
 
-            URL url = new URL(bundleUrl);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
-            conn.setRequestProperty("User-Agent", "MeTube-OTA/2.0");
+            conn = openUpdaterUrlWithRedirects(bundleUrl);
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) {
                 throw new RuntimeException("HTTP " + code);
@@ -895,9 +1014,14 @@ public class MainActivity extends BridgeActivity {
                 .edit()
                 .putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, finalDir.getAbsolutePath())
                 .apply();
+            long curNativeCode = 1L;
+            try {
+                curNativeCode = PackageInfoCompat.getLongVersionCode(getPackageManager().getPackageInfo(getPackageName(), 0));
+            } catch (Exception ignored) {}
             getSharedPreferences("metube_ota", MODE_PRIVATE)
                 .edit()
                 .putInt("ota_code", targetCode)
+                .putLong("ota_native_code", curNativeCode)
                 .putString("ota_version", targetVersion != null ? targetVersion : "")
                 .apply();
 

@@ -4346,17 +4346,23 @@ const APP_OTA_VERSION = '2.0.1';
 let pendingOtaInfo = null;
 let otaPollTimer = null;
 
+const GITHUB_MANIFEST_URL = 'https://github.com/HR1244/Me-tube/releases/download/latest/ota-manifest.json';
+
 function getLocalUpdateMeta() {
   try {
     if (window.AndroidUpdater?.getUpdateState) {
       const parsed = JSON.parse(window.AndroidUpdater.getUpdateState() || '{}');
-      const otaCode = Math.max(APP_OTA_CODE, parsed.usingOta ? Number(parsed.otaCode || 0) : 0);
-      const otaVersion = (parsed.usingOta && parsed.otaVersion) ? parsed.otaVersion : APP_OTA_VERSION;
+      const nativeCode = Number(parsed.nativeVersionCode || 1);
+      const nativeVer = parsed.nativeVersionName || APP_OTA_VERSION;
+      const otaCode = parsed.usingOta
+        ? Math.max(APP_OTA_CODE, nativeCode, Number(parsed.otaCode || 0))
+        : Math.max(APP_OTA_CODE, nativeCode);
+      const otaVersion = (parsed.usingOta && parsed.otaVersion) ? parsed.otaVersion : nativeVer;
       return {
         otaCode,
         otaVersion,
         usingOta: Boolean(parsed.usingOta),
-        nativeVersionCode: Number(parsed.nativeVersionCode || 1)
+        nativeVersionCode: nativeCode
       };
     }
   } catch (_) {}
@@ -4379,14 +4385,42 @@ function updateSettingsVersionLabel(statusMsg = '') {
   }
 }
 
+async function fetchLatestManifestWithFallback() {
+  let srvInfo = null;
+  try {
+    srvInfo = await api.getAppVersion();
+  } catch (_) {}
+
+  // Also check GitHub Releases directly if server lacked APK/update metadata or failed
+  const srvCode = Math.max(Number(srvInfo?.native_version_code || 0), Number(srvInfo?.ota_code || 0));
+  if (!srvInfo || srvCode <= 1) {
+    try {
+      const ghRes = await fetch(`${GITHUB_MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
+      if (ghRes.ok) {
+        const ghInfo = await ghRes.json();
+        const ghCode = Math.max(Number(ghInfo?.native_version_code || 0), Number(ghInfo?.ota_code || 0));
+        if (ghCode >= srvCode) return ghInfo;
+      }
+    } catch (_) {}
+  }
+  return srvInfo;
+}
+
 async function checkForAppUpdate(manual = false) {
   try {
     updateSettingsVersionLabel();
-    const info = await api.getAppVersion();
+    const info = await fetchLatestManifestWithFallback();
     const meta = getLocalUpdateMeta();
     const updateBtn = document.getElementById('btn-header-update');
     const checkBtn = document.getElementById('btn-check-updates');
 
+    const hasNewApk = Boolean(
+      info &&
+      Number(info.native_version_code || 0) > meta.nativeVersionCode &&
+      info.has_apk &&
+      info.apk_url &&
+      window.AndroidUpdater?.installApkUpdate
+    );
     const hasNewOta = Boolean(
       info &&
       Number(info.ota_code || 0) > meta.otaCode &&
@@ -4394,24 +4428,28 @@ async function checkForAppUpdate(manual = false) {
       info.bundle_url
     );
 
-    if (hasNewOta) {
-      pendingOtaInfo = info;
+    if (hasNewApk || hasNewOta) {
+      pendingOtaInfo = { ...info, _preferApk: hasNewApk };
       if (updateBtn) {
         updateBtn.style.display = 'inline-flex';
         updateBtn.title = `Update v${info.ota_version} Ready — Tap to Install`;
       }
       if (checkBtn) {
-        checkBtn.textContent = `Install v${info.ota_version}`;
+        checkBtn.textContent = hasNewApk ? `Install APK v${info.ota_version}` : `Install v${info.ota_version}`;
       }
-      updateSettingsVersionLabel(`✨ New update v${info.ota_version} available: ${info.notes || 'Tap to auto-install'}`);
+      updateSettingsVersionLabel(
+        hasNewApk
+          ? `🚀 New app version v${info.ota_version} ready: ${info.notes || '1-tap in-app update (no uninstall)'}`
+          : `✨ New update v${info.ota_version} available: ${info.notes || 'Tap to auto-install'}`
+      );
       if (manual) {
-        startAutoOtaUpdate(info);
+        startAutoOtaUpdate(pendingOtaInfo);
       }
     } else {
       pendingOtaInfo = null;
       if (updateBtn) updateBtn.style.display = 'none';
       if (checkBtn) checkBtn.textContent = 'Check Update';
-      updateSettingsVersionLabel('✓ App is up to date (instant OTA updates active).');
+      updateSettingsVersionLabel('✓ App is up to date (GitHub & OTA auto-updates active).');
       if (manual) {
         showToast(`✓ You are on the latest version (v${meta.otaVersion})`);
       }
@@ -4425,8 +4463,54 @@ async function checkForAppUpdate(manual = false) {
 }
 
 function startAutoOtaUpdate(info) {
-  if (!info || !info.bundle_url) return;
+  if (!info || (!info.bundle_url && !info.apk_url)) return;
   const serverBase = getServerUrl();
+
+  if (info._preferApk && info.apk_url && window.AndroidUpdater?.installApkUpdate) {
+    const updateBtn = document.getElementById('btn-header-update');
+    const banner = document.getElementById('ota-progress-banner');
+    const label = document.getElementById('ota-progress-label');
+    const pctEl = document.getElementById('ota-progress-pct');
+    const fill = document.getElementById('ota-progress-fill');
+
+    updateBtn?.classList.add('installing');
+    if (banner) banner.style.display = 'block';
+    if (label) label.textContent = `Downloading v${info.ota_version || info.native_version_code}...`;
+    if (pctEl) pctEl.textContent = '2%';
+    if (fill) fill.style.width = '2%';
+
+    window.AndroidUpdater.installApkUpdate(String(info.apk_url), String(info.ota_version || ''));
+    if (otaPollTimer) clearInterval(otaPollTimer);
+    otaPollTimer = setInterval(() => {
+      try {
+        const p = JSON.parse(window.AndroidUpdater.getOtaProgress() || '{}');
+        const pct = Math.max(0, Math.min(100, Number(p.percent || 0)));
+        if (label && p.message) label.textContent = p.message;
+        if (pctEl) pctEl.textContent = `${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+
+        if (p.status === 'apk_ready') {
+          clearInterval(otaPollTimer);
+          otaPollTimer = null;
+          updateBtn?.classList.remove('installing');
+          if (banner) banner.style.display = 'none';
+        } else if (p.status === 'permission') {
+          clearInterval(otaPollTimer);
+          otaPollTimer = null;
+          updateBtn?.classList.remove('installing');
+          if (label) label.textContent = p.message || 'Allow Unknown Apps permission';
+        } else if (p.status === 'error') {
+          clearInterval(otaPollTimer);
+          otaPollTimer = null;
+          updateBtn?.classList.remove('installing');
+          if (banner) banner.style.display = 'none';
+          showToast(`APK update failed: ${p.message || 'Retry later'}`);
+        }
+      } catch (_) {}
+    }, 250);
+    return;
+  }
+
   const absUrl = info.bundle_url.startsWith('http') ? info.bundle_url : `${serverBase}${info.bundle_url}`;
 
   if (!window.AndroidUpdater?.installOtaUpdate) {
