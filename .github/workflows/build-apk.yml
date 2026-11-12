@@ -47,11 +47,15 @@ jobs:
 
       - name: Build Signed APK & Prepare OTA Release Assets
         env:
-          METUBE_VERSION_CODE: ${{ 100 + github.run_number }}
-          METUBE_VERSION_NAME: 2.0.${{ github.run_number }}
+          RUN_NUM: ${{ github.run_number }}
+          REPO_SLUG: ${{ github.repository }}
         run: |
+          VER_CODE=$((100 + RUN_NUM))
+          VER_NAME="2.0.${RUN_NUM}"
+          export METUBE_VERSION_CODE="$VER_CODE"
+          export METUBE_VERSION_NAME="$VER_NAME"
           cd app/android
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace -PMETUBE_VERSION_CODE="$VER_CODE" -PMETUBE_VERSION_NAME="$VER_NAME"
           cd ../..
           APK_OUT="app/android/app/build/outputs/apk/debug/app-debug.apk"
           if [ -f "app/android/app/build/outputs/apk/debug/MeTube.apk" ]; then
@@ -59,30 +63,44 @@ jobs:
           fi
           mkdir -p release_assets
           cp "$APK_OUT" release_assets/MeTube.apk
-          (cd app/dist && zip -qr ../../release_assets/ota-bundle.zip .)
-          BUNDLE_SHA=$(sha256sum release_assets/ota-bundle.zip | awk '{print $1}')
-          BUNDLE_SIZE=$(stat -c%s release_assets/ota-bundle.zip)
-          APK_SIZE=$(stat -c%s release_assets/MeTube.apk)
-          COMMIT_MSG=$(git log -1 --pretty=%s | tr '"' "'" | head -c 120)
-          VER_CODE=$((100 + ${{ github.run_number }}))
-          VER_NAME="2.0.${{ github.run_number }}"
-          cat > release_assets/ota-manifest.json <<EOF
-          {
-            "ota_code": ${VER_CODE},
-            "ota_version": "${VER_NAME}",
-            "native_version_code": ${VER_CODE},
-            "title": "MeTube Update v${VER_NAME}",
-            "notes": "${COMMIT_MSG}",
-            "has_bundle": true,
-            "bundle_url": "https://github.com/${{ github.repository }}/releases/download/latest/ota-bundle.zip",
-            "bundle_size": ${BUNDLE_SIZE},
-            "sha256": "${BUNDLE_SHA}",
-            "has_apk": true,
-            "apk_url": "https://github.com/${{ github.repository }}/releases/download/latest/MeTube.apk",
-            "apk_size": ${APK_SIZE},
-            "updated_at": $(date +%s)
+          python3 - <<PY
+          import hashlib, json, os, subprocess, time, zipfile
+          ver_code = int(os.environ["METUBE_VERSION_CODE"])
+          ver_name = os.environ["METUBE_VERSION_NAME"]
+          repo = os.environ["REPO_SLUG"]
+          bundle_path = "release_assets/ota-bundle.zip"
+          dist_dir = os.path.abspath("app/dist")
+          with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for root, _, files in os.walk(dist_dir):
+                  for fn in sorted(files):
+                      full = os.path.join(root, fn)
+                      arc = os.path.relpath(full, dist_dir).replace(os.sep, "/")
+                      zf.write(full, arc)
+          with open(bundle_path, "rb") as f:
+              bundle_bytes = f.read()
+          bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
+          bundle_size = len(bundle_bytes)
+          apk_size = os.path.getsize("release_assets/MeTube.apk")
+          notes = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], text=True).strip()[:160]
+          manifest = {
+              "ota_code": ver_code,
+              "ota_version": ver_name,
+              "native_version_code": ver_code,
+              "title": f"MeTube Update v{ver_name}",
+              "notes": notes,
+              "has_bundle": True,
+              "bundle_url": f"https://github.com/{repo}/releases/download/latest/ota-bundle.zip",
+              "bundle_size": bundle_size,
+              "sha256": bundle_sha,
+              "has_apk": True,
+              "apk_url": f"https://github.com/{repo}/releases/download/latest/MeTube.apk",
+              "apk_size": apk_size,
+              "updated_at": int(time.time()),
           }
-          EOF
+          with open("release_assets/ota-manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          PY
 
       - name: Upload MeTube APK Artifact
         uses: actions/upload-artifact@v4
