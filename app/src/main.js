@@ -280,6 +280,7 @@ export function resolveBannerUrl(banner, channelName, channelId) {
 export function attachBannerHandlers(imgEl, channelName, channelId) {
   if (!imgEl) return;
   imgEl.referrerPolicy = 'no-referrer';
+  imgEl.alt = '';
   imgEl.onerror = () => {
     if (!imgEl.dataset.bannerRetried) {
       imgEl.dataset.bannerRetried = '1';
@@ -1149,8 +1150,18 @@ function createVideoCardElement(video) {
 
   // Click card thumbnail / title -> Watch Video
   attachAvatarHandlers(card.querySelector('.channel-avatar-img'), channelName, video.channel_id);
-  card.querySelector('.video-thumb-container').addEventListener('click', () => openVideoPlayer(video));
-  card.querySelector('.video-title').addEventListener('click', () => openVideoPlayer(video));
+  card.querySelector('.video-thumb-container').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openVideoPlayer(video);
+  });
+  card.querySelector('.video-title').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openVideoPlayer(video);
+  });
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('button') || e.target.closest('.channel-avatar-box') || e.target.closest('.channel-name-link')) return;
+    openVideoPlayer(video);
+  });
 
   // Click channel -> Open Channel Explorer
   card.querySelector('.channel-avatar-box').addEventListener('click', (e) => {
@@ -1487,6 +1498,7 @@ if (typeof window !== 'undefined') {
 }
 
 // Keep YT iframe handshake, timeline & BG audio readiness synced reliably
+let _lastYtSyncTime = 0;
 setInterval(() => {
   if (state.playbackEngine === 'youtube' && state.activeVideo && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
     const iframe = document.getElementById('youtube-embed-player');
@@ -1498,7 +1510,11 @@ setInterval(() => {
     if (ytIsPlaying) {
       ytCurrentTimeSec += 1;
       if (ytDurationSec > 0 && ytCurrentTimeSec > ytDurationSec) ytCurrentTimeSec = ytDurationSec;
-      syncNativeMediaService(true, false);
+      const now = Date.now();
+      if (now - _lastYtSyncTime >= 4000) {
+        _lastYtSyncTime = now;
+        syncNativeMediaService(true, false);
+      }
     }
   }
 }, 1000);
@@ -1551,7 +1567,7 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
     if (!window.AndroidMediaService?.syncState) return;
     if (playingOverride === false && Date.now() < _nativeHandoffLockUntil && !force) return;
     const now = Date.now();
-    if (!force && now - _lastNativeSyncAt < 800) return;
+    if (!force && now - _lastNativeSyncAt < 1600) return;
     _lastNativeSyncAt = now;
 
     const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
@@ -1862,6 +1878,7 @@ async function openVideoPlayer(video) {
   const bgBtn = document.getElementById('btn-bg-audio');
 
   if (modal) {
+    modal.style.display = 'flex';
     modal.classList.add('open');
   }
   const safeTitle = video.title || 'Playing Video';
@@ -2030,6 +2047,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
 
   if (state.playbackEngine === 'youtube' && !video.isExternal) {
     stopAllPlayback('main-youtube');
+    if (videoElem) videoElem.style.display = 'none';
     if (engineLabel) engineLabel.textContent = '⚡ YouTube';
     if (spinner) spinner.style.display = 'none';
     if (customOverlay) customOverlay.style.display = 'none';
@@ -2221,14 +2239,14 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         }
       };
 
-      // Watchdog: if native stream hasn't buffered within 2.8s on a YouTube video, seamlessly switch to YouTube engine
+      // Watchdog: if native stream hasn't buffered within 9s on a YouTube video, seamlessly switch to YouTube engine
       nativeBufferWatchdog = setTimeout(() => {
         if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && (videoElem.readyState < 2 || videoElem.paused) && !video.isExternal) {
           console.warn('[Player] Native stream watchdog -> activating YouTube player');
           state.playbackEngine = 'youtube';
           setupPlayerPlayback(video, seekSeconds);
         }
-      }, 2800);
+      }, 9000);
     }
   }
 }
@@ -3908,7 +3926,7 @@ function openShortsModal(short) {
       if (videoElem.readyState === 0 && (modal.classList.contains('open') || modal.style.display === 'block')) {
         launchShortsEmbedFallback();
       }
-    }, 1800);
+    }, 4500);
 
     if (window.AndroidInnerTube?.resolveForDownloadAsync) {
       resolveViaNativeInnerTube(currentShort.id, 'video').then((nativeRes) => {

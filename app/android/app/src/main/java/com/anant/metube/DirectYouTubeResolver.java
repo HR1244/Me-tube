@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -67,7 +68,8 @@ public final class DirectYouTubeResolver {
     }
 
     private static final ConcurrentHashMap<String, ResolvedStream> CACHE = new ConcurrentHashMap<>();
-    private static final ExecutorService PREWARM_EXEC = Executors.newCachedThreadPool();
+    private static final Set<String> IN_FLIGHT = ConcurrentHashMap.newKeySet();
+    private static final ExecutorService PREWARM_EXEC = Executors.newFixedThreadPool(2);
 
     private DirectYouTubeResolver() {}
 
@@ -85,7 +87,14 @@ public final class DirectYouTubeResolver {
 
     public static void prewarmAsync(String videoId) {
         if (!isValidYouTubeId(videoId) || getCached(videoId) != null) return;
-        PREWARM_EXEC.submit(() -> resolve(videoId));
+        if (!IN_FLIGHT.add(videoId)) return;
+        PREWARM_EXEC.submit(() -> {
+            try {
+                resolve(videoId);
+            } finally {
+                IN_FLIGHT.remove(videoId);
+            }
+        });
     }
 
     public static ResolvedStream resolve(String videoId) {
@@ -99,20 +108,25 @@ public final class DirectYouTubeResolver {
             if (cached != null) return cached;
         }
 
-        // Strategy 1: ANDROID client (fast progressive itag 18 MP4 + itag 140/139 M4A audio)
-        ResolvedStream res = callInnerTube(videoId, false);
-        if (res != null && ((res.audioUrl != null && !res.audioUrl.isEmpty()) || (res.videoUrl != null && !res.videoUrl.isEmpty()))) {
-            CACHE.put(videoId, res);
-            return res;
-        }
+        IN_FLIGHT.add(videoId);
+        try {
+            // Strategy 1: ANDROID client (fast progressive itag 18 MP4 + itag 140/139 M4A audio)
+            ResolvedStream res = callInnerTube(videoId, false);
+            if (res != null && ((res.audioUrl != null && !res.audioUrl.isEmpty()) || (res.videoUrl != null && !res.videoUrl.isEmpty()))) {
+                CACHE.put(videoId, res);
+                return res;
+            }
 
-        // Strategy 2: IOS client (broad music/age/geo compatibility + HLS fallback)
-        ResolvedStream iosRes = callInnerTube(videoId, true);
-        if (iosRes != null && ((iosRes.audioUrl != null && !iosRes.audioUrl.isEmpty()) || (iosRes.videoUrl != null && !iosRes.videoUrl.isEmpty()) || (iosRes.hlsUrl != null && !iosRes.hlsUrl.isEmpty()))) {
-            CACHE.put(videoId, iosRes);
-            return iosRes;
+            // Strategy 2: IOS client (broad music/age/geo compatibility + HLS fallback)
+            ResolvedStream iosRes = callInnerTube(videoId, true);
+            if (iosRes != null && ((iosRes.audioUrl != null && !iosRes.audioUrl.isEmpty()) || (iosRes.videoUrl != null && !iosRes.videoUrl.isEmpty()) || (iosRes.hlsUrl != null && !iosRes.hlsUrl.isEmpty()))) {
+                CACHE.put(videoId, iosRes);
+                return iosRes;
+            }
+            return null;
+        } finally {
+            IN_FLIGHT.remove(videoId);
         }
-        return null;
     }
 
     private static ResolvedStream callInnerTube(String videoId, boolean useIos) {
@@ -235,23 +249,34 @@ public final class DirectYouTubeResolver {
                 }
             }
 
-            // Verify candidates actually return 200 OK on a real GET (catches PoToken-gated 403 audio URLs)
-            boolean audOk = !bestAudUrl.isEmpty() && isStreamReadable(bestAudUrl, ua);
-            boolean progOk = !bestProgUrl.isEmpty() && isStreamReadable(bestProgUrl, ua);
+            // Progressive MP4 (itag 18) is direct progressive audio+video.
+            boolean hasProg = bestProgUrl != null && !bestProgUrl.isEmpty();
+            boolean hasAud = bestAudUrl != null && !bestAudUrl.isEmpty();
 
-            if (!audOk && progOk) {
+            if (hasAud) {
+                boolean audOk = isStreamReadable(bestAudUrl, ua);
+                if (!audOk) {
+                    if (hasProg) {
+                        bestAudUrl = bestProgUrl;
+                        bestAudExt = "mp4";
+                        bestAudMime = "video/mp4";
+                    } else {
+                        bestAudUrl = "";
+                    }
+                }
+            } else if (hasProg) {
                 bestAudUrl = bestProgUrl;
                 bestAudExt = "mp4";
                 bestAudMime = "video/mp4";
-            } else if (!audOk) {
-                bestAudUrl = "";
             }
 
-            if (!progOk) {
-                bestProgUrl = !hlsUrl.isEmpty() ? hlsUrl : "";
+            if (!hasProg && !hlsUrl.isEmpty()) {
+                bestProgUrl = hlsUrl;
             }
 
-            if (bestAudUrl.isEmpty() && bestProgUrl.isEmpty() && hlsUrl.isEmpty()) {
+            if ((bestAudUrl == null || bestAudUrl.isEmpty()) &&
+                (bestProgUrl == null || bestProgUrl.isEmpty()) &&
+                (hlsUrl == null || hlsUrl.isEmpty())) {
                 return null;
             }
 
@@ -277,8 +302,8 @@ public final class DirectYouTubeResolver {
             testConn = (HttpURLConnection) u.openConnection();
             testConn.setRequestMethod("GET");
             testConn.setInstanceFollowRedirects(true);
-            testConn.setConnectTimeout(1800);
-            testConn.setReadTimeout(1800);
+            testConn.setConnectTimeout(2500);
+            testConn.setReadTimeout(2500);
             testConn.setRequestProperty("Range", "bytes=0-1024");
             if (ua != null && !ua.isEmpty()) {
                 testConn.setRequestProperty("User-Agent", ua);
