@@ -39,9 +39,31 @@ try {
   Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
   Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
 } catch (_) {}
-window.addEventListener('visibilitychange', (e) => {
-  e.stopImmediatePropagation();
-}, true);
+document.addEventListener('visibilitychange', (e) => { e.stopImmediatePropagation(); }, true);
+window.addEventListener('visibilitychange', (e) => { e.stopImmediatePropagation(); }, true);
+window.addEventListener('pagehide', (e) => { e.stopImmediatePropagation(); }, true);
+
+// Web Audio Keep-Alive: Keeps the Android audio sink active with zero hardware shutdown delay
+let _keepAliveAudioCtx = null;
+export function ensureAudioKeepAlive() {
+  try {
+    if (!_keepAliveAudioCtx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        _keepAliveAudioCtx = new AudioCtx();
+        const osc = _keepAliveAudioCtx.createOscillator();
+        const gain = _keepAliveAudioCtx.createGain();
+        gain.gain.value = 0.00001;
+        osc.connect(gain);
+        gain.connect(_keepAliveAudioCtx.destination);
+        osc.start();
+      }
+    }
+    if (_keepAliveAudioCtx && _keepAliveAudioCtx.state === 'suspended') {
+      _keepAliveAudioCtx.resume().catch(() => {});
+    }
+  } catch (_) {}
+}
 
 // App State
 const state = {
@@ -1682,25 +1704,17 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
     if (shortsOpen) {
       const shortsVideo = document.getElementById('shorts-video-element');
       if (shortsVideo) {
-        if (typeof posMs === 'number' && posMs > 0) {
-          const t = posMs / 1000;
-          if (Math.abs((shortsVideo.currentTime || 0) - t) > 1.5) shortsVideo.currentTime = t;
+        if (!shortsVideo.paused && !shortsVideo.ended) {
+          releaseNative();
+          return;
         }
-        if (playing) {
-          const onPlaying = () => {
-            shortsVideo.removeEventListener('playing', onPlaying);
-            releaseNative();
-          };
-          shortsVideo.addEventListener('playing', onPlaying, { once: true });
+        if (playing && !isUserPaused) {
           shortsVideo.play().catch(() => releaseNative());
-          setTimeout(releaseNative, 1500);
         } else {
           shortsVideo.pause();
-          releaseNative();
         }
-      } else {
-        releaseNative();
       }
+      releaseNative();
       return;
     }
 
@@ -1712,11 +1726,13 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
     if (state.playbackEngine === 'youtube' && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
       const iframe = document.getElementById('youtube-embed-player');
       if (iframe && iframe.contentWindow) {
-        if (typeof posMs === 'number' && posMs > 0) {
+        if (typeof posMs === 'number' && posMs > 0 && Math.abs((ytCurrentTimeSec || 0) - (posMs / 1000)) > 2.5) {
           iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [posMs / 1000, true] }), '*');
         }
-        iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: playing ? 'playVideo' : 'pauseVideo', args: '' }), '*');
-        ytIsPlaying = Boolean(playing);
+        if (playing && !isUserPaused) {
+          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: '' }), '*');
+          ytIsPlaying = true;
+        }
       }
       updatePlayPauseIcons(Boolean(playing));
       setTimeout(releaseNative, 600);
@@ -1728,27 +1744,36 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
       releaseNative();
       return;
     }
-    if (typeof posMs === 'number' && posMs > 0) {
-      const targetSec = posMs / 1000;
-      if (Math.abs((videoElem.currentTime || 0) - targetSec) > 1.5) {
-        videoElem.currentTime = targetSec;
-      }
+
+    // Media is actively playing seamlessly in WebView: NEVER seek, reload, or flicker video!
+    if (!videoElem.paused && !videoElem.ended) {
+      releaseNative();
+      updatePlayPauseIcons(true);
+      return;
     }
-    if (playing) {
-      let releaseTimer = null;
-      const onPlaying = () => {
-        videoElem.removeEventListener('playing', onPlaying);
-        if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
-        releaseNative();
-      };
-      videoElem.addEventListener('playing', onPlaying, { once: true });
-      releaseTimer = setTimeout(onPlaying, 3500);
-      videoElem.play().catch(() => onPlaying());
+
+    // Only if unexpectedly paused by OS background transition and user wanted playback
+    if (playing && !isUserPaused) {
+      videoElem.play().catch(() => {});
+      updatePlayPauseIcons(true);
     } else {
       videoElem.pause();
-      releaseNative();
+      updatePlayPauseIcons(false);
     }
-    updatePlayPauseIcons(Boolean(playing));
+    releaseNative();
+  } catch (_) {}
+};
+
+window.onPipModeChanged = function(isInPip) {
+  try {
+    const playerModal = document.getElementById('player-modal');
+    const customOverlay = document.getElementById('st-custom-overlay');
+    if (isInPip) {
+      if (playerModal) playerModal.classList.add('in-pip');
+      if (customOverlay) customOverlay.classList.add('controls-hidden');
+    } else {
+      if (playerModal) playerModal.classList.remove('in-pip');
+    }
   } catch (_) {}
 };
 
@@ -2227,6 +2252,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           clearTimeout(nativeBufferWatchdog);
           nativeBufferWatchdog = null;
         }
+        isUserPaused = false;
+        isMiniPaused = false;
+        ensureAudioKeepAlive();
         updatePlayPauseIcons(true);
         syncNativeMediaService(true, true);
         scheduleOverlayAutoHide();
@@ -2237,7 +2265,15 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onplaying = onPlaying;
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
-        if (!isUserPaused && state.activeVideo && state.isAudioMode) {
+        if (isUserPaused) {
+          updatePlayPauseIcons(false);
+          if (Date.now() >= _nativeHandoffLockUntil) {
+            syncNativeMediaService(false, true);
+          }
+          customOverlay?.classList.remove('controls-hidden');
+          return;
+        }
+        if (state.activeVideo && state.isAudioMode) {
           // If paused by OS background transition rather than user action, immediately resume with zero gap!
           videoElem.play().catch(() => {});
           return;
@@ -2452,7 +2488,7 @@ function initPlayerControls() {
     } else {
       const v = document.getElementById('html5-video-element');
       if (!v) return;
-      if (v.paused || isUserPaused) {
+      if (v.paused) {
         resumeCurrentPlayback();
       } else {
         pauseCurrentPlayback();
@@ -3845,6 +3881,7 @@ export function closeShortsReel() {
     shortsVideo.ontimeupdate = null;
     try {
       shortsVideo.pause();
+      shortsVideo.currentTime = 0;
       shortsVideo.removeAttribute('src');
       shortsVideo.load();
     } catch (_) {}
@@ -3857,6 +3894,14 @@ export function closeShortsReel() {
   }
   const spinner = document.getElementById('shorts-spinner');
   if (spinner) spinner.style.display = 'none';
+
+  // Immediately stop any native media service playback from shorts
+  try {
+    window.AndroidMediaService?.stopNativePlayback?.();
+    if (!state.activeVideo) {
+      window.AndroidMediaService?.stopService?.();
+    }
+  } catch (_) {}
 
   syncNativeOverlayFlag();
 }
@@ -3927,6 +3972,10 @@ async function openShortsFeedReel() {
 
 function openShortsModal(short) {
   if (!short) return;
+  state.activeTab = 'shorts';
+  document.querySelectorAll('.nav-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === 'shorts');
+  });
   const modal = document.getElementById('shorts-modal');
   const embedContainer = document.getElementById('shorts-embed-container');
   const videoElem = document.getElementById('shorts-video-element');

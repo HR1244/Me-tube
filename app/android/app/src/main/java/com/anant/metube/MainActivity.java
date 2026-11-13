@@ -3,6 +3,7 @@ package com.anant.metube;
 import android.Manifest;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.app.PictureInPictureParams;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -11,6 +12,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
@@ -19,6 +21,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.Rational;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
@@ -878,6 +881,36 @@ public class MainActivity extends BridgeActivity {
                     null
                 );
             }
+        }
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (mediaIsPlaying && bgAudioEnabled) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+                    try {
+                        builder.setAspectRatio(new Rational(16, 9));
+                    } catch (Exception ignored) {}
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        builder.setAutoEnterEnabled(true);
+                    }
+                    enterPictureInPictureMode(builder.build());
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().evaluateJavascript(
+                "window.onPipModeChanged && window.onPipModeChanged(" + isInPictureInPictureMode + ");",
+                null
+            );
         }
     }
 
