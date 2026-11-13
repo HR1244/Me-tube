@@ -2039,13 +2039,12 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     ytCurrentTimeSec = seekSeconds || 0;
     ytDurationSec = video.duration || 0;
     if (iframeContainer) {
-      const originParam = typeof window !== 'undefined' && window.location?.origin ? `&origin=${encodeURIComponent(window.location.origin)}` : '';
       const startParam = seekSeconds > 0 ? `&start=${Math.floor(seekSeconds)}` : '';
       iframeContainer.style.display = 'block';
       iframeContainer.innerHTML = `
         <iframe 
           id="youtube-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1&controls=1${startParam}${originParam}"
+          src="https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1&playsinline=1&enablejsapi=1&rel=0&modestbranding=1&controls=1${startParam}"
           title="${(video.title || 'Video').replace(/"/g, '&quot;')}"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -2089,7 +2088,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onended = null;
       videoElem.onloadedmetadata = null;
 
-      videoElem.style.display = 'none';
+      videoElem.style.display = 'block';
       videoElem.loop = Boolean(state.isLooping);
       videoElem.playbackRate = Number(state.playbackRate || 1.0);
 
@@ -2129,7 +2128,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           if (nativeRes?.ok && nativeRes.url) {
             startVideoSource(nativeRes.url);
           } else {
-            startVideoSource(primaryStreamUrl);
+            console.warn('[Player] Direct stream unavailable, activating YouTube engine');
+            state.playbackEngine = 'youtube';
+            setupPlayerPlayback(video, seekSeconds);
           }
         });
       } else {
@@ -2220,14 +2221,14 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         }
       };
 
-      // Watchdog: if still stuck at readyState 0 after 25s on a YouTube video, fallback cleanly
+      // Watchdog: if native stream hasn't buffered within 2.8s on a YouTube video, seamlessly switch to YouTube engine
       nativeBufferWatchdog = setTimeout(() => {
-        if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && videoElem.readyState === 0 && !videoElem.paused && !video.isExternal) {
-          console.warn('[Player] Native stream watchdog timeout -> switching to YouTube fallback');
+        if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && (videoElem.readyState < 2 || videoElem.paused) && !video.isExternal) {
+          console.warn('[Player] Native stream watchdog -> activating YouTube player');
           state.playbackEngine = 'youtube';
           setupPlayerPlayback(video, seekSeconds);
         }
-      }, 25000);
+      }, 2800);
     }
   }
 }
@@ -2665,27 +2666,31 @@ function initDownloadModal() {
         && Boolean(window.AndroidDownloader?.startDownloadFull || window.AndroidDownloader?.startDownloadWithUa || window.AndroidDownloader?.startDownload);
 
       if (canUseNativeDirect) {
-        const fmtType = isAudioFmt(state.selectedFormat.type) ? 'audio' : 'video';
+        const wantAudio = isAudioFmt(state.selectedFormat.type);
+        const fmtType = wantAudio ? 'audio' : 'video';
         const nativeRes = await resolveViaNativeInnerTube(state.activeVideo.id, fmtType);
         if (nativeRes?.ok && nativeRes.url) {
           const rawTitle = state.activeVideo.title || nativeRes.title || state.activeVideo.id;
           const safeTitle = rawTitle.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 60) || state.activeVideo.id;
-          const ext = nativeRes.ext || (fmtType === 'audio' ? 'm4a' : 'mp4');
+          const ext = wantAudio ? (state.selectedFormat.type === 'mp3' ? 'mp3' : (nativeRes.ext || 'm4a')) : (nativeRes.ext || 'mp4');
           const filename = `${safeTitle}.${ext}`;
           const jobId = `local_${state.activeVideo.id}_${fmtType}_${Date.now()}`;
+          const isSourceVideo = Boolean(nativeRes.extractAudio) || (nativeRes.mimeType && nativeRes.mimeType.startsWith('video/'));
+          const extractAudio = wantAudio && isSourceVideo;
+          const mimeType = wantAudio ? (ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4') : (nativeRes.mimeType || 'video/mp4');
           const localJob = {
             job_id: jobId,
             video_id: state.activeVideo.id,
             title: rawTitle,
             format_type: fmtType,
-            quality: fmtType === 'audio' ? 'M4A Audio' : (state.selectedFormat.quality || 'Direct'),
+            quality: wantAudio ? (ext.toUpperCase() + ' Audio') : (state.selectedFormat.quality || 'Direct'),
             status: 'downloading',
             percent: 5,
             filename,
             client_direct_url: nativeRes.url,
             userAgent: nativeRes.userAgent || '',
-            mimeType: nativeRes.mimeType || (fmtType === 'audio' ? 'audio/mp4' : 'video/mp4'),
-            extractAudio: Boolean(nativeRes.extractAudio),
+            mimeType,
+            extractAudio,
             isLocalDirect: true,
             created_at: Date.now()
           };
@@ -2693,7 +2698,7 @@ function initDownloadModal() {
           saveLocalDownloads(state.localDownloads);
           autoSavedJobIds.add(jobId);
           saveSetToStorage(AUTOSAVED_JOBS_KEY, autoSavedJobIds);
-          triggerSaveToDevice(nativeRes.url, filename, jobId, nativeRes.userAgent || '', localJob.mimeType, Boolean(nativeRes.extractAudio));
+          triggerSaveToDevice(nativeRes.url, filename, jobId, nativeRes.userAgent || '', mimeType, extractAudio);
 
           modal.classList.remove('open');
           confirmBtn.disabled = false;
@@ -3903,12 +3908,16 @@ function openShortsModal(short) {
       if (videoElem.readyState === 0 && (modal.classList.contains('open') || modal.style.display === 'block')) {
         launchShortsEmbedFallback();
       }
-    }, 5500);
+    }, 1800);
 
     if (window.AndroidInnerTube?.resolveForDownloadAsync) {
       resolveViaNativeInnerTube(currentShort.id, 'video').then((nativeRes) => {
         if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
-        startShortSource(nativeRes?.ok && nativeRes.url ? nativeRes.url : streamUrl);
+        if (nativeRes?.ok && nativeRes.url) {
+          startShortSource(nativeRes.url);
+        } else {
+          launchShortsEmbedFallback();
+        }
       });
     } else {
       startShortSource(streamUrl);
@@ -4646,13 +4655,9 @@ function getLocalUpdateMeta() {
 function updateSettingsVersionLabel(statusMsg = '') {
   const verEl = document.getElementById('settings-app-version');
   const statusEl = document.getElementById('settings-update-status');
-  const resetBtn = document.getElementById('btn-reset-ota');
   const meta = getLocalUpdateMeta();
   if (verEl) {
     verEl.textContent = `Version ${meta.otaVersion} (Build ${meta.otaCode}${meta.usingOta ? ' • OTA' : ''})`;
-  }
-  if (resetBtn) {
-    resetBtn.style.display = meta.usingOta ? 'inline-block' : 'none';
   }
   if (statusEl && statusMsg) {
     statusEl.textContent = statusMsg;
@@ -4899,10 +4904,6 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
       checkForAppUpdate(true);
     }
-  });
-
-  document.getElementById('btn-reset-ota')?.addEventListener('click', () => {
-    window.AndroidUpdater?.resetToBundled?.();
   });
 
   updateSettingsVersionLabel();

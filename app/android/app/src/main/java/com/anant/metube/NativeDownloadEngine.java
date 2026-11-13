@@ -187,15 +187,19 @@ public final class NativeDownloadEngine {
             String outName = st.filename;
             String outMime = st.mimeType;
 
-            if (extractAudio) {
-                postNotification(ctx, id, outName, "Converting audio track...", 97, true, null);
+            boolean wantAudio = (st.mimeType != null && st.mimeType.startsWith("audio/"))
+                || st.filename.toLowerCase().endsWith(".mp3")
+                || st.filename.toLowerCase().endsWith(".m4a");
+
+            if (extractAudio || wantAudio) {
+                postNotification(ctx, id, outName, "Processing audio track...", 97, true, null);
                 if (extractAudioToM4a(tmpIn, tmpM4a) && tmpM4a.exists() && tmpM4a.length() > 1024) {
                     sourceFile = tmpM4a;
-                    outMime = "audio/mp4";
-                    outName = replaceExtension(outName, ".m4a");
-                } else {
-                    outMime = "video/mp4";
-                    outName = replaceExtension(outName, ".mp4");
+                }
+                if (wantAudio) {
+                    outMime = st.filename.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "audio/mp4";
+                    String targetExt = st.filename.toLowerCase().endsWith(".mp3") ? ".mp3" : ".m4a";
+                    outName = replaceExtension(outName, targetExt);
                 }
             }
 

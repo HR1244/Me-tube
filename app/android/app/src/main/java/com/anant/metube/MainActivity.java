@@ -561,12 +561,14 @@ public class MainActivity extends BridgeActivity {
                             DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
                             boolean wantAudio = formatType != null && (formatType.equalsIgnoreCase("mp3") || formatType.equalsIgnoreCase("audio") || formatType.equalsIgnoreCase("m4a"));
                             if (res != null) {
+                                boolean isAudioCandidate = res.audioUrl != null && !res.audioUrl.isEmpty();
                                 String targetUrl = wantAudio
-                                    ? (!res.audioUrl.isEmpty() ? res.audioUrl : res.videoUrl)
+                                    ? (isAudioCandidate ? res.audioUrl : res.videoUrl)
                                     : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : res.audioUrl);
-                                boolean extractAudio = wantAudio && res.audioMime != null && res.audioMime.startsWith("video/");
-                                String ext = wantAudio ? (extractAudio ? "m4a" : res.audioExt) : "mp4";
-                                String mime = wantAudio ? (extractAudio ? "audio/mp4" : res.audioMime) : "video/mp4";
+                                boolean isSourceVideo = !isAudioCandidate || (res.audioMime != null && res.audioMime.startsWith("video/"));
+                                boolean extractAudio = wantAudio && isSourceVideo;
+                                String ext = wantAudio ? (formatType != null && formatType.equalsIgnoreCase("mp3") ? "mp3" : "m4a") : "mp4";
+                                String mime = wantAudio ? (formatType != null && formatType.equalsIgnoreCase("mp3") ? "audio/mpeg" : "audio/mp4") : "video/mp4";
                                 if (targetUrl != null && !targetUrl.isEmpty() && !targetUrl.contains(".m3u8")) {
                                     out.put("ok", true);
                                     out.put("url", targetUrl);

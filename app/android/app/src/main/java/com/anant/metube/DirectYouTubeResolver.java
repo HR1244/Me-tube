@@ -268,7 +268,7 @@ public final class DirectYouTubeResolver {
         }
     }
 
-    /** Plain GET probe (without Range header) matching ExoPlayer initial read & standard HTTP downloaders. */
+    /** Range-based GET probe matching ExoPlayer & standard HTTP media engines with ultra-fast latency. */
     public static boolean isStreamReadable(String urlStr, String ua) {
         if (urlStr == null || urlStr.isEmpty()) return false;
         HttpURLConnection testConn = null;
@@ -277,24 +277,21 @@ public final class DirectYouTubeResolver {
             testConn = (HttpURLConnection) u.openConnection();
             testConn.setRequestMethod("GET");
             testConn.setInstanceFollowRedirects(true);
-            testConn.setConnectTimeout(4500);
-            testConn.setReadTimeout(4500);
+            testConn.setConnectTimeout(1800);
+            testConn.setReadTimeout(1800);
+            testConn.setRequestProperty("Range", "bytes=0-1024");
             if (ua != null && !ua.isEmpty()) {
                 testConn.setRequestProperty("User-Agent", ua);
             }
             int code = testConn.getResponseCode();
-            if (code < 200 || code >= 300) {
+            if (code != 200 && code != 206) {
                 Log.w(TAG, "Probe rejected (" + code + "): " + urlStr.substring(0, Math.min(64, urlStr.length())));
                 return false;
             }
             try (InputStream is = testConn.getInputStream()) {
-                byte[] buf = new byte[4096];
-                int total = 0;
-                int r;
-                while (total < 1024 && (r = is.read(buf, 0, Math.min(buf.length, 4096 - total))) != -1) {
-                    total += r;
-                }
-                return total > 0;
+                byte[] buf = new byte[1024];
+                int r = is.read(buf, 0, buf.length);
+                return r > 0;
             }
         } catch (Exception e) {
             Log.w(TAG, "Probe exception: " + e.getMessage());
