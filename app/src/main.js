@@ -2241,7 +2241,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
 
       // Watchdog: if native stream hasn't buffered within 9s on a YouTube video, seamlessly switch to YouTube engine
       nativeBufferWatchdog = setTimeout(() => {
-        if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && (videoElem.readyState < 2 || videoElem.paused) && !video.isExternal) {
+        if (state.activeVideo?.id === video.id && state.playbackEngine === 'native' && videoElem.readyState < 2 && !video.isExternal) {
           console.warn('[Player] Native stream watchdog -> activating YouTube player');
           state.playbackEngine = 'youtube';
           setupPlayerPlayback(video, seekSeconds);
@@ -4713,12 +4713,12 @@ async function checkForAppUpdate(manual = false) {
     const updateBtn = document.getElementById('btn-header-update');
     const checkBtn = document.getElementById('btn-check-updates');
 
-    const hasNewApk = Boolean(
+    const canUseOta = Boolean(
       info &&
-      Number(info.native_version_code || 0) > meta.nativeVersionCode &&
-      info.has_apk &&
-      info.apk_url &&
-      window.AndroidUpdater?.installApkUpdate
+      Number(info.ota_code || 0) > meta.otaCode &&
+      info.has_bundle &&
+      info.bundle_url &&
+      window.AndroidUpdater?.installOtaUpdate
     );
     const hasNewOta = Boolean(
       info &&
@@ -4726,9 +4726,18 @@ async function checkForAppUpdate(manual = false) {
       info.has_bundle &&
       info.bundle_url
     );
+    // Strict priority: NEVER prefer APK when an OTA bundle is available!
+    const hasNewApk = Boolean(
+      !canUseOta &&
+      info &&
+      Number(info.native_version_code || 0) > meta.nativeVersionCode &&
+      info.has_apk &&
+      info.apk_url &&
+      window.AndroidUpdater?.installApkUpdate
+    );
 
-    if (hasNewApk || hasNewOta) {
-      pendingOtaInfo = { ...info, _preferApk: hasNewApk };
+    if (hasNewOta || hasNewApk) {
+      pendingOtaInfo = { ...info, _preferApk: !canUseOta && hasNewApk };
       if (updateBtn) {
         updateBtn.style.display = 'inline-flex';
         updateBtn.title = `Update v${info.ota_version} Ready — Tap to Install`;
@@ -4738,17 +4747,21 @@ async function checkForAppUpdate(manual = false) {
       }
       updateSettingsVersionLabel(
         hasNewApk
-          ? `🚀 New app version v${info.ota_version} ready: ${info.notes || '1-tap in-app update (no uninstall)'}`
-          : `✨ New update v${info.ota_version} available: ${info.notes || 'Tap to auto-install'}`
+          ? `🚀 New native build v${info.ota_version} ready: ${info.notes || 'Tap to update'}`
+          : `✨ New update v${info.ota_version} ready: ${info.notes || '1-click instant OTA update'}`
       );
       if (manual) {
+        startAutoOtaUpdate(pendingOtaInfo);
+      } else if (!state.activeVideo && window.AndroidUpdater?.installOtaUpdate && hasNewOta) {
+        // Auto-apply in background on app startup if idle
+        console.log('[OTA] Auto-applying background OTA update on startup...');
         startAutoOtaUpdate(pendingOtaInfo);
       }
     } else {
       pendingOtaInfo = null;
       if (updateBtn) updateBtn.style.display = 'none';
       if (checkBtn) checkBtn.textContent = 'Check Update';
-      updateSettingsVersionLabel('✓ App is up to date (GitHub & OTA auto-updates active).');
+      updateSettingsVersionLabel('✓ App is up to date (OTA auto-updates active).');
       if (manual) {
         showToast(`✓ You are on the latest version (v${meta.otaVersion})`);
       }
@@ -4765,7 +4778,9 @@ function startAutoOtaUpdate(info) {
   if (!info || (!info.bundle_url && !info.apk_url)) return;
   const serverBase = getServerUrl();
 
-  if (info._preferApk && info.apk_url && window.AndroidUpdater?.installApkUpdate) {
+  const useOta = Boolean(info.has_bundle && info.bundle_url && window.AndroidUpdater?.installOtaUpdate && !info._preferApk);
+
+  if (!useOta && info._preferApk && info.apk_url && window.AndroidUpdater?.installApkUpdate) {
     const updateBtn = document.getElementById('btn-header-update');
     const banner = document.getElementById('ota-progress-banner');
     const label = document.getElementById('ota-progress-label');

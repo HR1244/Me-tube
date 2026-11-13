@@ -85,7 +85,7 @@ jobs:
           manifest = {
               "ota_code": ver_code,
               "ota_version": ver_name,
-              "native_version_code": ver_code,
+              "native_version_code": 1,
               "title": f"MeTube Update v{ver_name}",
               "notes": notes,
               "has_bundle": True,
