@@ -818,15 +818,26 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
-        if (bgAudioEnabled && mediaIsPlaying && (!activeAudioUrl.isEmpty() || DirectYouTubeResolver.isValidYouTubeId(activeVideoId))) {
-            startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
-        }
         super.onPause();
+        if (bgAudioEnabled && mediaIsPlaying) {
+            // Keep WebView actively running so audio continues uninterrupted with ZERO pause/delay!
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().onResume();
+            }
+            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+        }
     }
 
     @Override
     public void onStop() {
         super.onStop();
+        if (bgAudioEnabled && mediaIsPlaying) {
+            // Maintain active WebView execution while device is locked or minimized
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().onResume();
+            }
+            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+        }
     }
 
     @Override

@@ -1401,11 +1401,13 @@ export function hideMiniPlayer() {
 }
 
 export function resumeCurrentPlayback() {
+  isMiniPaused = false;
   if (state.playbackEngine === 'youtube') {
     const iframe = document.getElementById('youtube-embed-player');
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
     }
+    ytIsPlaying = true;
   } else {
     const videoElem = document.getElementById('html5-video-element');
     if (videoElem) videoElem.play().catch(() => {});
@@ -1415,11 +1417,13 @@ export function resumeCurrentPlayback() {
 }
 
 export function pauseCurrentPlayback() {
+  isMiniPaused = true;
   if (state.playbackEngine === 'youtube') {
     const iframe = document.getElementById('youtube-embed-player');
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
     }
+    ytIsPlaying = false;
   } else {
     const videoElem = document.getElementById('html5-video-element');
     if (videoElem) videoElem.pause();
@@ -1773,6 +1777,7 @@ function updatePlayPauseIcons(isPlaying) {
 }
 
 export function stopAllPlayback(preserve = null) {
+  isMiniPaused = true;
   // If preserving nothing, hide floating mini-player and stop native BG audio service
   if (!preserve || preserve.startsWith('shorts')) {
     hideMiniPlayer();
@@ -1861,6 +1866,7 @@ export function stopAllPlayback(preserve = null) {
 
 async function openVideoPlayer(video) {
   if (!video) return;
+  isMiniPaused = false;
   state.activeVideo = video;
   state.playbackEngine = 'native';
 
@@ -2194,6 +2200,11 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onplaying = onPlaying;
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
+        if (!isMiniPaused && state.activeVideo && state.isAudioMode) {
+          // If paused by OS background transition rather than user action, immediately resume with zero gap!
+          videoElem.play().catch(() => {});
+          return;
+        }
         updatePlayPauseIcons(false);
         // Do not overwrite native foreground playback state when paused by our own OS background handoff
         if (Date.now() >= _nativeHandoffLockUntil) {
@@ -3301,6 +3312,10 @@ function openOfflinePlayer(fileUrl, filename, formatType) {
       syncNativeMediaService(true, true);
     };
     videoElem.onpause = () => {
+      if (!isMiniPaused && state.isAudioMode) {
+        videoElem.play().catch(() => {});
+        return;
+      }
       updatePlayPauseIcons(false);
       if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
     };
@@ -3916,6 +3931,10 @@ function openShortsModal(short) {
     videoElem.onplaying = onShortPlaying;
     videoElem.onplay = () => syncNativeMediaService(true, true);
     videoElem.onpause = () => {
+      if (!isMiniPaused && state.isAudioMode && !state.isShortMuted) {
+        videoElem.play().catch(() => {});
+        return;
+      }
       if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
     };
     videoElem.onerror = () => {
@@ -4751,10 +4770,6 @@ async function checkForAppUpdate(manual = false) {
           : `✨ New update v${info.ota_version} ready: ${info.notes || '1-click instant OTA update'}`
       );
       if (manual) {
-        startAutoOtaUpdate(pendingOtaInfo);
-      } else if (!state.activeVideo && window.AndroidUpdater?.installOtaUpdate && hasNewOta) {
-        // Auto-apply in background on app startup if idle
-        console.log('[OTA] Auto-applying background OTA update on startup...');
         startAutoOtaUpdate(pendingOtaInfo);
       }
     } else {
