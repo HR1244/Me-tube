@@ -28,6 +28,7 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 
@@ -55,6 +56,26 @@ public class MediaPlaybackService extends Service {
     public static volatile boolean isNativePlaying = false;
     public static volatile long nativePositionMs = 0L;
     public static volatile String currentStreamUrl = "";
+    private static volatile MediaPlaybackService activeInstance = null;
+
+    public static void stopImmediately() {
+        isNativePlaying = false;
+        isNativeAudioActive = false;
+        currentStreamUrl = "";
+        MediaPlaybackService inst = activeInstance;
+        if (inst != null) {
+            inst.mainHandler.post(() -> {
+                if (inst.exoPlayer != null) {
+                    try {
+                        inst.exoPlayer.stop();
+                        inst.exoPlayer.release();
+                        inst.exoPlayer = null;
+                    } catch (Exception ignored) {}
+                }
+                inst.stopServiceCleanly();
+            });
+        }
+    }
 
     private static final String DEFAULT_UA =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36";
@@ -104,6 +125,7 @@ public class MediaPlaybackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        activeInstance = this;
         createNotificationChannel();
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -334,8 +356,19 @@ public class MediaPlaybackService extends Service {
                 .setUsage(C.USAGE_MEDIA)
                 .build();
 
+            DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    15000,
+                    50000,
+                    250,
+                    500
+                )
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build();
+
             exoPlayer = new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(dataFactory))
+                .setLoadControl(loadControl)
                 .setAudioAttributes(attrs, true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
@@ -656,6 +689,9 @@ public class MediaPlaybackService extends Service {
 
     @Override
     public void onDestroy() {
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
         isNativeAudioActive = false;
         isNativePlaying = false;
         releaseMediaPlayer();

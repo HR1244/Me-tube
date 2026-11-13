@@ -520,7 +520,11 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
             return real_name
 
     # Return SVG monogram data URI if creator has no public CDN avatar yet (never truncated broken img)
-    return generate_channel_avatar_svg(clean_name)
+    svg = generate_channel_avatar_svg(clean_name)
+    svg_uri = "data:image/svg+xml;utf8," + urllib.parse.quote(svg)
+    if cache_key:
+        avatar_cache[cache_key] = svg_uri
+    return svg_uri
 
 def generate_channel_banner_svg(name: str) -> str:
     """Generates an aesthetic 1200x320 SVG channel panoramic banner with YouTube dark theme gradient."""
@@ -569,14 +573,16 @@ def _extract_innertube_banner_from_json(data: Dict[str, Any]) -> Optional[str]:
                     return ("https:" + u) if u.startswith("//") else u
     except Exception:
         pass
-    # 2. c4TabbedHeaderRenderer
+    # 2. c4TabbedHeaderRenderer (banner, tvBanner, mobileBanner)
     try:
         if "c4TabbedHeaderRenderer" in header:
-            thumbs = header["c4TabbedHeaderRenderer"].get("banner", {}).get("thumbnails", [])
-            if thumbs:
-                u = thumbs[-1].get("url")
-                if u:
-                    return ("https:" + u) if u.startswith("//") else u
+            c4 = header["c4TabbedHeaderRenderer"]
+            for field in ("banner", "tvBanner", "mobileBanner"):
+                thumbs = c4.get(field, {}).get("thumbnails", [])
+                if thumbs:
+                    u = thumbs[-1].get("url")
+                    if u:
+                        return ("https:" + u) if u.startswith("//") else u
     except Exception:
         pass
     # 3. Regex search for YouTube banner URLs with width specification

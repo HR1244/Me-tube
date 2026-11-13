@@ -184,6 +184,12 @@ export function resolveAvatarUrl(avatar, channelName, channelId) {
   if (a && a.startsWith('http') && !a.includes('localhost') && !a.includes('127.0.0.1') && !a.includes('default-user') && !a.includes('default_user')) {
     return a;
   }
+  if (a && (a.startsWith('data:image/svg+xml') || a.startsWith('<svg'))) {
+    if (a.startsWith('<svg')) {
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(a);
+    }
+    return a;
+  }
   if (OFFICIAL_CREATOR_AVATARS[clean]) {
     return OFFICIAL_CREATOR_AVATARS[clean];
   }
@@ -261,6 +267,12 @@ export function resolveBannerUrl(banner, channelName, channelId) {
   if (b && b.startsWith('http') && !b.includes('localhost') && !b.includes('127.0.0.1')) {
     return b;
   }
+  if (b && (b.startsWith('data:image/svg+xml') || b.startsWith('<svg'))) {
+    if (b.startsWith('<svg')) {
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(b);
+    }
+    return b;
+  }
   const server = getServerUrl();
   return `${server}/api/channel/banner?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}&raw=1`;
 }
@@ -279,6 +291,18 @@ export function attachBannerHandlers(imgEl, channelName, channelId) {
     imgEl.onerror = null;
     imgEl.src = getSvgBannerDataUrl(channelName);
   };
+  imgEl.addEventListener('load', () => {
+    if (imgEl.naturalWidth > 0 && imgEl.naturalWidth < 10) {
+      if (!imgEl.dataset.bannerRetried) {
+        imgEl.dataset.bannerRetried = '1';
+        const server = getServerUrl();
+        const clean = (channelName || 'Creator').trim();
+        imgEl.src = `${server}/api/channel/banner?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}&raw=1&refresh=1`;
+      } else {
+        imgEl.src = getSvgBannerDataUrl(channelName);
+      }
+    }
+  });
 }
 
 function getChannelBannerUrl(channelName, channelId) {
@@ -1661,13 +1685,15 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
       }
     }
     if (playing) {
+      let releaseTimer = null;
       const onPlaying = () => {
         videoElem.removeEventListener('playing', onPlaying);
+        if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
         releaseNative();
       };
       videoElem.addEventListener('playing', onPlaying, { once: true });
-      videoElem.play().catch(() => releaseNative());
-      setTimeout(releaseNative, 1500);
+      releaseTimer = setTimeout(onPlaying, 3500);
+      videoElem.play().catch(() => onPlaying());
     } else {
       videoElem.pause();
       releaseNative();
@@ -1805,12 +1831,16 @@ async function openVideoPlayer(video) {
 
   // Halt any previous playback completely (zero simultaneous audio/video, zero glimpses)
   stopAllPlayback();
+  try { window.AndroidMediaService?.stopNativePlayback?.(); } catch (_) {}
+  try { window.AndroidMediaService?.stopService?.(); } catch (_) {}
 
   // Instantly clear old video element and iframe DOM so old frames/audio never flash
   const prevVideo = document.getElementById('html5-video-element');
   if (prevVideo) {
     try {
       prevVideo.pause();
+      prevVideo.currentTime = 0;
+      prevVideo.src = '';
       prevVideo.removeAttribute('src');
       prevVideo.load();
     } catch (_) {}
@@ -2068,7 +2098,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       let triedFallback = false;
       const startVideoSource = (srcUrl) => {
         if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
+        if (!srcUrl) return;
         videoElem.src = srcUrl;
+        videoElem.currentTime = 0;
         videoElem.play().catch((err) => {
           console.log(`[Player] Autoplay note: ${err}`);
         });
@@ -3389,13 +3421,14 @@ async function openChannelExplorer(video) {
 
   if (bannerImg) {
     bannerImg.dataset.bannerRetried = '';
-    bannerImg.src = resolveBannerUrl(video.channel_banner, channelName, channelId);
     attachBannerHandlers(bannerImg, channelName, channelId);
+    bannerImg.src = resolveBannerUrl(video.channel_banner, channelName, channelId);
   }
 
   if (avatarBigImg) {
-    avatarBigImg.src = resolveAvatarUrl(video.channel_avatar, channelName, channelId);
+    avatarBigImg.dataset.avatarRetried = '';
     attachAvatarHandlers(avatarBigImg, channelName, channelId);
+    avatarBigImg.src = resolveAvatarUrl(video.channel_avatar, channelName, channelId);
   }
 
   const isSub = isChannelSubscribed(channelId, channelName);
@@ -4606,19 +4639,21 @@ async function fetchLatestManifestWithFallback() {
     srvInfo = await api.getAppVersion();
   } catch (_) {}
 
-  // Also check GitHub Releases directly if server lacked APK/update metadata or failed
+  let ghInfo = null;
+  try {
+    const ghRes = await fetch(`${GITHUB_MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    if (ghRes.ok) {
+      ghInfo = await ghRes.json();
+    }
+  } catch (_) {}
+
   const srvCode = Math.max(Number(srvInfo?.native_version_code || 0), Number(srvInfo?.ota_code || 0));
-  if (!srvInfo || srvCode <= 1) {
-    try {
-      const ghRes = await fetch(`${GITHUB_MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
-      if (ghRes.ok) {
-        const ghInfo = await ghRes.json();
-        const ghCode = Math.max(Number(ghInfo?.native_version_code || 0), Number(ghInfo?.ota_code || 0));
-        if (ghCode >= srvCode) return ghInfo;
-      }
-    } catch (_) {}
+  const ghCode = Math.max(Number(ghInfo?.native_version_code || 0), Number(ghInfo?.ota_code || 0));
+
+  if (ghCode > srvCode) {
+    return ghInfo;
   }
-  return srvInfo;
+  return srvInfo || ghInfo;
 }
 
 async function checkForAppUpdate(manual = false) {
