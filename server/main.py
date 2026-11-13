@@ -522,16 +522,134 @@ def resolve_channel_avatar(channel_id: Optional[str], channel_name: Optional[str
     # Return SVG monogram data URI if creator has no public CDN avatar yet (never truncated broken img)
     return generate_channel_avatar_svg(clean_name)
 
-def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str]) -> str:
-    """Scrapes and caches the real YouTube channel panoramic banner."""
+def generate_channel_banner_svg(name: str) -> str:
+    """Generates an aesthetic 1200x320 SVG channel panoramic banner with YouTube dark theme gradient."""
+    clean_name = (name or "Creator").strip()
+    gradients = [
+        ("#1a1a2e", "#16213e"),
+        ("#0f2027", "#203a43"),
+        ("#2c3e50", "#000000"),
+        ("#1f1c2c", "#928dab"),
+        ("#141e30", "#243b55"),
+        ("#232526", "#414345"),
+    ]
+    c1, c2 = gradients[abs(hash(clean_name)) % len(gradients)]
+    safe_name = html.escape(clean_name)
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="{c1}"/>
+      <stop offset="100%" stop-color="{c2}"/>
+    </linearGradient>
+    <linearGradient id="overlayGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="rgba(0,0,0,0.6)"/>
+      <stop offset="100%" stop-color="transparent"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" fill="url(#bgGrad)"/>
+  <circle cx="1100" cy="60" r="180" fill="rgba(255,255,255,0.03)"/>
+  <circle cx="100" cy="280" r="140" fill="rgba(255,255,255,0.02)"/>
+  <rect width="1200" height="320" fill="url(#overlayGrad)"/>
+  <text x="60" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="28" font-weight="800" fill="rgba(255,255,255,0.85)">{safe_name}</text>
+</svg>"""
+
+def _extract_innertube_banner_from_json(data: Dict[str, Any]) -> Optional[str]:
+    """Extracts high-resolution genuine YouTube channel panoramic banner from Innertube JSON."""
+    if not isinstance(data, dict):
+        return None
+    header = data.get("header", {})
+    # 1. pageHeaderRenderer
+    try:
+        if "pageHeaderRenderer" in header:
+            phvm = header["pageHeaderRenderer"].get("content", {}).get("pageHeaderViewModel", {})
+            sources = phvm.get("banner", {}).get("imageBannerViewModel", {}).get("image", {}).get("sources", [])
+            if sources:
+                u = sources[-1].get("url")
+                if u:
+                    return ("https:" + u) if u.startswith("//") else u
+    except Exception:
+        pass
+    # 2. c4TabbedHeaderRenderer
+    try:
+        if "c4TabbedHeaderRenderer" in header:
+            thumbs = header["c4TabbedHeaderRenderer"].get("banner", {}).get("thumbnails", [])
+            if thumbs:
+                u = thumbs[-1].get("url")
+                if u:
+                    return ("https:" + u) if u.startswith("//") else u
+    except Exception:
+        pass
+    # 3. Regex search for YouTube banner URLs with width specification
+    try:
+        txt = json.dumps(header)
+        matches = re.findall(r'https?:?//yt3\.(?:ggpht|googleusercontent)\.com/[A-Za-z0-9_-]+=(?:w1060|w1138|w1707|w2120|w2276|w2560|fcrop64)[A-Za-z0-9_=-]*', txt)
+        if matches:
+            u = matches[-1]
+            return ("https:" + u) if u.startswith("//") else u
+    except Exception:
+        pass
+    return None
+
+def resolve_channel_banner(channel_id: Optional[str], channel_name: Optional[str], force_refresh: bool = False) -> str:
+    """Scrapes and caches the genuine YouTube channel panoramic banner via Innertube."""
     clean_name = (channel_name or "Creator").strip()
-    fallback_banner = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80"
+    cache_key = channel_id or clean_name
     
-    if channel_id and channel_id in banner_cache:
-        return banner_cache[channel_id]
+    if not force_refresh:
+        if cache_key and cache_key in banner_cache:
+            return banner_cache[cache_key]
+        if clean_name in banner_cache:
+            return banner_cache[clean_name]
+    
+    # 1. Direct channel ID lookup
+    target_id = channel_id
+    if not target_id and clean_name and clean_name.startswith("UC"):
+        target_id = clean_name
         
-    banner_cache[channel_id] = fallback_banner
-    return fallback_banner
+    if target_id and target_id.startswith("UC"):
+        try:
+            data = innertube_request("browse", {"browseId": target_id}, timeout=4)
+            b = _extract_innertube_banner_from_json(data)
+            if b:
+                banner_cache[target_id] = b
+                if clean_name and clean_name not in ("Creator", "YouTube Shorts"):
+                    banner_cache[clean_name] = b
+                return b
+        except Exception as e:
+            logger.warning(f"Innertube browse banner failed for {target_id}: {e}")
+
+    # 2. Channel name search to find channelId, then browse
+    if clean_name and clean_name not in ("Creator", "YouTube Shorts"):
+        try:
+            data = innertube_request("search", {"query": clean_name, "params": "EgIQAg=="}, timeout=3)
+            cid = ""
+            sections = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
+            for sec in sections:
+                for it in sec.get("itemSectionRenderer", {}).get("contents", []):
+                    cr = it.get("channelRenderer")
+                    if cr and cr.get("channelId"):
+                        cid = cr["channelId"]
+                        break
+                if cid:
+                    break
+            if cid:
+                b_data = innertube_request("browse", {"browseId": cid}, timeout=4)
+                b = _extract_innertube_banner_from_json(b_data)
+                if b:
+                    banner_cache[cid] = b
+                    banner_cache[clean_name] = b
+                    if channel_id:
+                        banner_cache[channel_id] = b
+                    return b
+        except Exception as e:
+            logger.warning(f"Innertube search banner failed for {clean_name}: {e}")
+
+    # 3. Clean SVG monogram gradient fallback (guarantees zero broken cut PNG images)
+    svg = generate_channel_banner_svg(clean_name)
+    svg_uri = "data:image/svg+xml;utf8," + urllib.parse.quote(svg)
+    if cache_key:
+        banner_cache[cache_key] = svg_uri
+    return svg_uri
 
 class DownloadRequest(BaseModel):
     video_id: str = ""
@@ -1190,11 +1308,42 @@ def get_shorts_feed(
         enrich_items_avatars(final_shorts, max_enrich=12)
     return {"page": page, "next_token": out_token, "shorts": final_shorts}
 
-@app.get("/api/channel/banner")
-def get_channel_banner_endpoint(id: Optional[str] = None, name: Optional[str] = None):
-    """Returns a direct 302 redirect to the creator's real YouTube channel banner."""
-    banner_url = resolve_channel_banner(id, name)
-    return RedirectResponse(url=banner_url, status_code=302)
+@app.api_route("/api/channel/banner", methods=["GET", "HEAD"])
+def get_channel_banner_endpoint(
+    id: Optional[str] = None,
+    name: Optional[str] = None,
+    refresh: bool = False,
+    raw: bool = False
+):
+    """Returns the creator's genuine original YouTube banner (supports force refresh and byte proxy)."""
+    clean_name = (name or "Creator").strip()
+    cache_key = id or clean_name
+    
+    if refresh:
+        if id: banner_cache.pop(id, None)
+        if clean_name: banner_cache.pop(clean_name, None)
+
+    resolved = resolve_channel_banner(id, clean_name, force_refresh=refresh)
+    
+    if resolved.startswith("data:image/svg+xml"):
+        svg_body = urllib.parse.unquote(resolved.split(",", 1)[1]) if "," in resolved else resolved
+        return Response(content=svg_body, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=1800"})
+
+    if raw:
+        try:
+            req = urllib.request.Request(
+                resolved,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                content_type = r.headers.get("Content-Type") or "image/jpeg"
+                return Response(content=r.read(), media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+        except Exception as e:
+            logger.warning(f"Banner raw proxy failed for {resolved}: {e}")
+            svg_body = generate_channel_banner_svg(clean_name)
+            return Response(content=svg_body, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+    return RedirectResponse(url=resolved, status_code=302)
 
 def is_stream_alive(stream_url: str) -> bool:
     """Tests if a direct stream URL actually serves video bytes (prevents 502/401/403 dead proxies)."""

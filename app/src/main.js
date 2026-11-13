@@ -216,13 +216,69 @@ function getChannelAvatarUrl(channelName, channelId) {
   return resolveAvatarUrl(null, channelName, channelId);
 }
 
-function getChannelBannerUrl(channelName, channelId) {
+export function getSvgBannerDataUrl(channelName) {
   const clean = (channelName || 'Creator').trim();
-  const server = getServerUrl();
-  if (channelId && channelId.startsWith('UC')) {
-    return `${server}/api/channel/banner?id=${encodeURIComponent(channelId)}&name=${encodeURIComponent(clean)}`;
+  const gradients = [
+    ['#1a1a2e', '#16213e'],
+    ['#0f2027', '#203a43'],
+    ['#2c3e50', '#000000'],
+    ['#1f1c2c', '#928dab'],
+    ['#141e30', '#243b55'],
+    ['#232526', '#414345']
+  ];
+  let h = 0;
+  for (let i = 0; i < clean.length; i++) h = (h * 31 + clean.charCodeAt(i)) >>> 0;
+  const [c1, c2] = gradients[h % gradients.length];
+  const safe = clean.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="${c1}"/>
+        <stop offset="100%" stop-color="${c2}"/>
+      </linearGradient>
+      <linearGradient id="sh" x1="0%" y1="100%" x2="0%" y2="0%">
+        <stop offset="0%" stop-color="rgba(0,0,0,0.6)"/>
+        <stop offset="100%" stop-color="transparent"/>
+      </linearGradient>
+    </defs>
+    <rect width="1200" height="320" fill="url(#bg)"/>
+    <circle cx="1100" cy="60" r="180" fill="rgba(255,255,255,0.04)"/>
+    <circle cx="100" cy="280" r="140" fill="rgba(255,255,255,0.03)"/>
+    <rect width="1200" height="320" fill="url(#sh)"/>
+    <text x="60" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="28" font-weight="800" fill="rgba(255,255,255,0.9)">${safe}</text>
+  </svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+
+export function resolveBannerUrl(banner, channelName, channelId) {
+  const clean = (channelName || 'Creator').trim();
+  let b = banner ? String(banner).trim() : '';
+  if (b.startsWith('//')) b = 'https:' + b;
+  if (b && b.startsWith('http') && !b.includes('localhost') && !b.includes('127.0.0.1')) {
+    return b;
   }
-  return 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80';
+  const server = getServerUrl();
+  return `${server}/api/channel/banner?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}&raw=1`;
+}
+
+export function attachBannerHandlers(imgEl, channelName, channelId) {
+  if (!imgEl) return;
+  imgEl.referrerPolicy = 'no-referrer';
+  imgEl.onerror = () => {
+    if (!imgEl.dataset.bannerRetried) {
+      imgEl.dataset.bannerRetried = '1';
+      const server = getServerUrl();
+      const clean = (channelName || 'Creator').trim();
+      imgEl.src = `${server}/api/channel/banner?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(clean)}&raw=1&refresh=1`;
+      return;
+    }
+    imgEl.onerror = null;
+    imgEl.src = getSvgBannerDataUrl(channelName);
+  };
+}
+
+function getChannelBannerUrl(channelName, channelId) {
+  return resolveBannerUrl(null, channelName, channelId);
 }
 
 // Subscriptions Management System (Clean User-Only Subscriptions)
@@ -257,6 +313,7 @@ function toggleChannelSubscription(creator) {
   if (!creator || (!creator.name && !creator.channel)) return false;
   const cName = creator.name || creator.channel;
   const cId = creator.id || creator.channel_id || '';
+  const cAvatar = creator.avatar || creator.channel_avatar || '';
   let subs = getSubscriptions();
   const index = subs.findIndex((s) => (cId && s.id === cId) || s.name.toLowerCase() === cName.toLowerCase());
   let nowSubscribed = false;
@@ -265,7 +322,7 @@ function toggleChannelSubscription(creator) {
     subs.splice(index, 1);
     nowSubscribed = false;
   } else {
-    subs.unshift({ id: cId, name: cName });
+    subs.unshift({ id: cId, name: cName, avatar: cAvatar });
     nowSubscribed = true;
   }
 
@@ -280,7 +337,6 @@ function toggleChannelSubscription(creator) {
 function renderSubscriptionsBar() {
   const listElem = document.getElementById('subscriptions-scroll-list');
   const subBar = document.getElementById('subscriptions-bar');
-  // Keep subscriptions bar hidden on starting Home screen as requested
   if (subBar) subBar.style.display = 'none';
   if (listElem) listElem.innerHTML = '';
 }
@@ -1490,6 +1546,8 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
       audioUrl = video.direct_stream_url.startsWith('http') ? video.direct_stream_url : `${serverBase}${video.direct_stream_url}`;
     } else if (video.isExternal) {
       audioUrl = api.getStreamProxyUrl(video.direct_audio_url || video.direct_stream_url || '');
+    } else if (videoElem && videoElem.src && videoElem.src.startsWith('http') && !videoElem.src.includes('blob:')) {
+      audioUrl = videoElem.src;
     } else {
       audioUrl = `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
     }
@@ -1526,6 +1584,10 @@ window.pauseWebMediaForNativeHandoff = function() {
 window.resumeWebMediaFromNative = function(posMs, playing) {
   try {
     _nativeHandoffLockUntil = 0;
+    const releaseNative = () => {
+      try { window.AndroidMediaService?.stopNativePlayback?.(); } catch (_) {}
+    };
+
     const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
     if (shortsOpen) {
       const shortsVideo = document.getElementById('shorts-video-element');
@@ -1534,13 +1596,29 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
           const t = posMs / 1000;
           if (Math.abs((shortsVideo.currentTime || 0) - t) > 1.5) shortsVideo.currentTime = t;
         }
-        if (playing) shortsVideo.play().catch(() => {});
-        else shortsVideo.pause();
+        if (playing) {
+          const onPlaying = () => {
+            shortsVideo.removeEventListener('playing', onPlaying);
+            releaseNative();
+          };
+          shortsVideo.addEventListener('playing', onPlaying, { once: true });
+          shortsVideo.play().catch(() => releaseNative());
+          setTimeout(releaseNative, 1500);
+        } else {
+          shortsVideo.pause();
+          releaseNative();
+        }
+      } else {
+        releaseNative();
       }
       return;
     }
 
-    if (!state.activeVideo) return;
+    if (!state.activeVideo) {
+      releaseNative();
+      return;
+    }
+
     if (state.playbackEngine === 'youtube' && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
       const iframe = document.getElementById('youtube-embed-player');
       if (iframe && iframe.contentWindow) {
@@ -1551,11 +1629,15 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
         ytIsPlaying = Boolean(playing);
       }
       updatePlayPauseIcons(Boolean(playing));
+      setTimeout(releaseNative, 600);
       return;
     }
 
     const videoElem = document.getElementById('html5-video-element');
-    if (!videoElem) return;
+    if (!videoElem) {
+      releaseNative();
+      return;
+    }
     if (typeof posMs === 'number' && posMs > 0) {
       const targetSec = posMs / 1000;
       if (Math.abs((videoElem.currentTime || 0) - targetSec) > 1.5) {
@@ -1563,9 +1645,16 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
       }
     }
     if (playing) {
-      videoElem.play().catch(() => {});
+      const onPlaying = () => {
+        videoElem.removeEventListener('playing', onPlaying);
+        releaseNative();
+      };
+      videoElem.addEventListener('playing', onPlaying, { once: true });
+      videoElem.play().catch(() => releaseNative());
+      setTimeout(releaseNative, 1500);
     } else {
       videoElem.pause();
+      releaseNative();
     }
     updatePlayPauseIcons(Boolean(playing));
   } catch (_) {}
@@ -1691,8 +1780,26 @@ async function openVideoPlayer(video) {
     state.playbackEngine = 'native';
   }
 
-  // Halt any previous playback (zero simultaneous audio/video)
-  stopAllPlayback(state.playbackEngine === 'youtube' ? 'main-youtube' : 'main-native');
+  // Halt any previous playback completely (zero simultaneous audio/video, zero glimpses)
+  stopAllPlayback();
+
+  // Instantly clear old video element and iframe DOM so old frames/audio never flash
+  const prevVideo = document.getElementById('html5-video-element');
+  if (prevVideo) {
+    try {
+      prevVideo.pause();
+      prevVideo.removeAttribute('src');
+      prevVideo.load();
+    } catch (_) {}
+    prevVideo.style.display = 'none';
+  }
+  const prevIframe = document.getElementById('embed-iframe-container');
+  if (prevIframe) {
+    prevIframe.innerHTML = '';
+    prevIframe.style.display = 'none';
+  }
+  const prevSpinner = document.getElementById('player-video-spinner');
+  if (prevSpinner) prevSpinner.style.display = 'flex';
 
   // Persist to Watch History immediately to drive dynamic personalized feed!
   saveToWatchHistory(video);
@@ -1906,9 +2013,21 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     }
 
     if (videoElem) {
-      videoElem.style.display = 'block';
+      videoElem.style.display = 'none';
       videoElem.loop = Boolean(state.isLooping);
       videoElem.playbackRate = Number(state.playbackRate || 1.0);
+
+      const showVideoWhenReady = () => {
+        if (state.activeVideo?.id !== video.id) return;
+        videoElem.style.display = 'block';
+        if (spinner) spinner.style.display = 'none';
+      };
+      videoElem.onloadeddata = showVideoWhenReady;
+      videoElem.oncanplay = showVideoWhenReady;
+      videoElem.onplaying = () => {
+        showVideoWhenReady();
+        updatePlayPauseIcons(true);
+      };
 
       const serverBase = getServerUrl();
       const devId = encodeURIComponent(getDeviceId());
@@ -3118,7 +3237,9 @@ async function loadChannelTab(tab = 'videos') {
         avatarBigImg.src = resolveAvatarUrl(res.avatar, res.title || video.channel, res.channel_id || video.channel_id);
       }
       if (res.banner && bannerImg) {
-        bannerImg.src = res.banner;
+        bannerImg.dataset.bannerRetried = '';
+        bannerImg.src = resolveBannerUrl(res.banner, res.title || video.channel, res.channel_id || video.channel_id);
+        attachBannerHandlers(bannerImg, res.title || video.channel, res.channel_id || video.channel_id);
       }
       const handleStr = res.handle || `@${(res.title || video.channel || 'Creator').replace(/\s+/g, '')}`;
       const subStr = res.subscribers || res.subscriber_count_text || 'Official Channel';
@@ -3225,7 +3346,9 @@ async function openChannelExplorer(video) {
   if (bioLine) bioLine.textContent = 'Official creator channel';
 
   if (bannerImg) {
-    bannerImg.src = getChannelBannerUrl(channelName, channelId);
+    bannerImg.dataset.bannerRetried = '';
+    bannerImg.src = resolveBannerUrl(video.channel_banner, channelName, channelId);
+    attachBannerHandlers(bannerImg, channelName, channelId);
   }
 
   if (avatarBigImg) {
@@ -4107,7 +4230,7 @@ async function loadSubscriptionsView() {
 
   // If user has subscribed to channels
   if (subs.length > 0) {
-    container.innerHTML = `
+    const renderSubsHeaderHtml = () => `
       <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
         <span style="font-size:13px; font-weight:700; color:#FFF;">${subs.length} Following</span>
         <div style="display:flex; gap:8px;">
@@ -4115,13 +4238,44 @@ async function loadSubscriptionsView() {
           <button id="btn-sync-cookies-quick" style="background:#222; color:#aaa; border:1px solid #333; padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync</button>
         </div>
       </div>
+      <!-- Authentic YouTube Subscribed Channels Story Bar -->
+      <div class="subs-channels-row" style="display:flex; gap:14px; overflow-x:auto; padding:12px 14px; border-bottom:1px solid #222; scrollbar-width:none; -webkit-overflow-scrolling:touch;">
+        ${subs.map((s, idx) => {
+          const aUrl = resolveAvatarUrl(s.avatar, s.name, s.id);
+          return `
+            <div class="sub-channel-pill" data-idx="${idx}" style="display:flex; flex-direction:column; align-items:center; width:64px; flex-shrink:0; cursor:pointer;">
+              <div style="position:relative; width:48px; height:48px; border-radius:50%; padding:2px; background:linear-gradient(45deg, #FF0000, #990000); margin-bottom:4px; box-shadow:0 2px 6px rgba(0,0,0,0.5);">
+                <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
+              </div>
+              <span style="font-size:11px; font-weight:600; color:#FFF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+
+    container.innerHTML = `
+      ${renderSubsHeaderHtml()}
       <div class="spinner-box">
         <div class="spinner"></div>
       </div>
     `;
 
-    document.getElementById('btn-add-more-subs')?.addEventListener('click', showAddChannelPrompt);
-    document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
+    const wireSubsHeaderEvents = () => {
+      document.getElementById('btn-add-more-subs')?.addEventListener('click', showAddChannelPrompt);
+      document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
+      container.querySelectorAll('.sub-channel-pill').forEach((pill) => {
+        const idx = Number(pill.dataset.idx);
+        const s = subs[idx];
+        if (!s) return;
+        const img = pill.querySelector('.sub-pill-avatar');
+        if (img) attachAvatarHandlers(img, s.name, s.id);
+        pill.addEventListener('click', () => {
+          openChannelExplorer({ channel: s.name, channel_id: s.id, channel_avatar: s.avatar });
+        });
+      });
+    };
+    wireSubsHeaderEvents();
 
     try {
       const channelNames = subs.map((s) => s.name || s.id).join(',');
@@ -4130,31 +4284,21 @@ async function loadSubscriptionsView() {
 
       if (videos.length === 0) {
         container.innerHTML = `
-          <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
-            <span style="font-size:13px; font-weight:700; color:#FFF;">${subs.length} Following</span>
-            <button id="btn-add-more-subs" style="background:#222; color:#FFF; border:1px solid #444; padding:6px 12px; border-radius:16px; font-size:12px; font-weight:700; cursor:pointer;">+ Add Channel</button>
-          </div>
+          ${renderSubsHeaderHtml()}
           <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
             <div style="font-size:32px; margin-bottom:10px;">📺</div>
             <div style="font-size:15px; font-weight:700; color:#FFF;">No recent videos found</div>
             <div style="font-size:12px; margin-top:4px;">Follow more creators or check back later.</div>
           </div>
         `;
-        document.getElementById('btn-add-more-subs')?.addEventListener('click', showAddChannelPrompt);
+        wireSubsHeaderEvents();
         return;
       }
 
       container.innerHTML = `
-        <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
-          <span style="font-size:13px; font-weight:700; color:#FFF;">${subs.length} Following</span>
-          <div style="display:flex; gap:8px;">
-            <button id="btn-add-more-subs" style="background:#222; color:#FFF; border:1px solid #444; padding:6px 12px; border-radius:16px; font-size:12px; font-weight:700; cursor:pointer;">+ Add Channel</button>
-            <button id="btn-sync-cookies-quick" style="background:#222; color:#aaa; border:1px solid #333; padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync</button>
-          </div>
-        </div>
+        ${renderSubsHeaderHtml()}
       `;
-      document.getElementById('btn-add-more-subs')?.addEventListener('click', showAddChannelPrompt);
-      document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
+      wireSubsHeaderEvents();
 
       videos.forEach((video) => {
         container.appendChild(createVideoCardElement(video));
@@ -4172,12 +4316,12 @@ async function loadSubscriptionsView() {
 
   // If user has NO subscriptions yet: Render clean onboarding
   const suggestedCreators = [
-    { name: 'MrBeast', id: 'UCX6OQ3DkcsbYNE6H8uQQuVA', avatar: 'https://yt3.googleusercontent.com/nxYrc_1_2f77DoBadyxMTmv7ZpRZapHR5jbuYe7PlPd5cIRJxtNNEYyOC0ZsxaDyJJzXrnJiuDE=s176-c-k-c0x00ffffff-no-rj' },
-    { name: 'MKBHD', id: 'UCBJycsmduvYEL83R_U4JriQ', avatar: 'https://yt3.googleusercontent.com/qu4TmIaYUlS41-dJ9gZ7DUR3nilvmB5_11i6OKSdvNnBNiyOusZP1bMN6ICnuxtjFBb6ioKgRQ=s176-c-k-c0x00ffffff-no-rj' },
-    { name: 'Veritasium', id: 'UCHnyfMqiRRG1u-2MsSQLbXA', avatar: 'https://yt3.googleusercontent.com/7vCbvtCqtjQ3YLgsJt7Y952MQV1sBvhllSCSxHP8_sVZdcPCBrITfhkN2RdyCuwPnsByq-1GoA=s176-c-k-c0x00ffffff-no-rj' },
-    { name: 'Fireship', id: 'UCvjgXvBlbQiydffZU7m1_aw', avatar: 'https://yt3.googleusercontent.com/3fPNbkf_xPyCleq77ZhcxyeorY97NtMHVNUbaAON_RBDH9ydL4hJkjxC8x_4mpuopkB8oI7Ct6Y=s176-c-k-c0x00ffffff-no-rj' },
-    { name: 'Kurzgesagt', id: 'UCsXVk37bltHxD1rDPwtNM8Q', avatar: 'https://yt3.googleusercontent.com/ytc/AIdro_kU52XqK1ZrqjK145d2lA88zV8N-P644Y6P4g=s176-c-k-c0x00ffffff-no-rj' },
-    { name: 'Lofi Girl', id: 'UCSJ4gkVC6NrvII8umztf0Ow', avatar: 'https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s176-c-k-c0x00ffffff-no-rj' }
+    { name: 'MrBeast', id: 'UCX6OQ3DkcsbYNE6H8uQQuVA' },
+    { name: 'MKBHD', id: 'UCBJycsmduvYEL83R_U4JriQ' },
+    { name: 'Veritasium', id: 'UCHnyfMqiRRG1u-2MsSQLbXA' },
+    { name: 'Fireship', id: 'UCvjgXvBlbQiydffZU7m1_aw' },
+    { name: 'Kurzgesagt', id: 'UCsXVk37bltHxD1rDPwtNM8Q' },
+    { name: 'Lofi Girl', id: 'UCSJ4gkVC6NrvII8umztf0Ow' }
   ];
 
   container.innerHTML = `
@@ -4206,20 +4350,23 @@ async function loadSubscriptionsView() {
       <!-- Suggested Creators List -->
       <div style="font-size:13px; font-weight:700; color:#FFF; margin-bottom:12px;">Suggested Creators:</div>
       <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:24px;">
-        ${suggestedCreators.map(c => `
-          <div style="display:flex; align-items:center; justify-content:space-between; background:#181818; padding:10px 12px; border-radius:10px; border:1px solid #282828;">
-            <div style="display:flex; align-items:center; gap:12px;">
-              <img src="${c.avatar}" alt="${c.name}" style="width:38px; height:38px; border-radius:50%; object-fit:cover;" />
-              <div>
-                <div style="font-size:13px; font-weight:700; color:#FFF;">${c.name}</div>
-                <div style="font-size:11px; color:var(--text-gray);">YouTube Creator</div>
+        ${suggestedCreators.map(c => {
+          const aUrl = resolveAvatarUrl(null, c.name, c.id);
+          return `
+            <div style="display:flex; align-items:center; justify-content:space-between; background:#181818; padding:10px 12px; border-radius:10px; border:1px solid #282828;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <img class="suggested-avatar-img" data-name="${c.name}" data-id="${c.id}" src="${aUrl}" alt="${c.name}" referrerpolicy="no-referrer" style="width:40px; height:40px; border-radius:50%; object-fit:cover; background:#222;" />
+                <div>
+                  <div style="font-size:13px; font-weight:700; color:#FFF;">${c.name}</div>
+                  <div style="font-size:11px; color:var(--text-gray);">YouTube Creator</div>
+                </div>
               </div>
+              <button class="btn-follow-suggested" data-name="${c.name}" data-id="${c.id}" style="background:#FFFFFF; color:#0F0F0F; border:none; padding:6px 14px; border-radius:16px; font-weight:700; font-size:12px; cursor:pointer;">
+                Follow
+              </button>
             </div>
-            <button class="btn-follow-suggested" data-name="${c.name}" data-id="${c.id}" data-avatar="${c.avatar}" style="background:#FFFFFF; color:#0F0F0F; border:none; padding:6px 14px; border-radius:16px; font-weight:700; font-size:12px; cursor:pointer;">
-              Follow
-            </button>
-          </div>
-        `).join('')}
+          `;
+        }).join('')}
       </div>
 
       <!-- Sync YouTube Cookies button -->
@@ -4230,6 +4377,11 @@ async function loadSubscriptionsView() {
       </div>
     </div>
   `;
+
+  // Attach avatar handlers for suggested creators so they auto-refresh or fallback cleanly
+  container.querySelectorAll('.suggested-avatar-img').forEach((img) => {
+    attachAvatarHandlers(img, img.dataset.name, img.dataset.id);
+  });
 
   // Form submit handler
   document.getElementById('form-sub-add')?.addEventListener('submit', (e) => {

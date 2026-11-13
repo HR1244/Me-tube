@@ -321,6 +321,15 @@ public class MainActivity extends BridgeActivity {
                 }
 
                 @JavascriptInterface
+                public void stopNativePlayback() {
+                    if (MediaPlaybackService.isNativeAudioActive) {
+                        Intent ret = new Intent(MainActivity.this, MediaPlaybackService.class);
+                        ret.setAction(MediaPlaybackService.ACTION_HANDOFF_RETURN);
+                        startService(ret);
+                    }
+                }
+
+                @JavascriptInterface
                 public String getNativeStatus() {
                     try {
                         JSONObject o = new JSONObject();
@@ -792,13 +801,9 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onPause() {
         if (bgAudioEnabled && mediaIsPlaying && (!activeAudioUrl.isEmpty() || DirectYouTubeResolver.isValidYouTubeId(activeVideoId))) {
-            // Hand audio playback to OS ForegroundService BEFORE super.onPause() pauses WebView
+            // Hand audio playback to OS ForegroundService with 0ms pause
             startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
             if (getBridge() != null && getBridge().getWebView() != null) {
-                getBridge().getWebView().evaluateJavascript(
-                    "window.pauseWebMediaForNativeHandoff && window.pauseWebMediaForNativeHandoff();",
-                    null
-                );
                 getBridge().getWebView().resumeTimers();
             }
         }
@@ -820,16 +825,20 @@ public class MainActivity extends BridgeActivity {
         if (MediaPlaybackService.isNativeAudioActive) {
             long nativePos = MediaPlaybackService.nativePositionMs;
             boolean nativePlaying = MediaPlaybackService.isNativePlaying;
-            Intent ret = new Intent(this, MediaPlaybackService.class);
-            ret.setAction(MediaPlaybackService.ACTION_HANDOFF_RETURN);
-            startService(ret);
             if (getBridge() != null && getBridge().getWebView() != null) {
-                getBridge().getWebView().postDelayed(() ->
-                    getBridge().getWebView().evaluateJavascript(
-                        "window.resumeWebMediaFromNative && window.resumeWebMediaFromNative(" + nativePos + "," + nativePlaying + ");",
-                        null
-                    ),
-                120);
+                // Resume web media immediately while native audio keeps playing smoothly until web media is ready
+                getBridge().getWebView().evaluateJavascript(
+                    "window.resumeWebMediaFromNative && window.resumeWebMediaFromNative(" + nativePos + "," + nativePlaying + ");",
+                    null
+                );
+                // Fallback cleanup in case webview doesn't fire playing event within 2.5 seconds
+                getBridge().getWebView().postDelayed(() -> {
+                    if (MediaPlaybackService.isNativeAudioActive) {
+                        Intent ret = new Intent(this, MediaPlaybackService.class);
+                        ret.setAction(MediaPlaybackService.ACTION_HANDOFF_RETURN);
+                        startService(ret);
+                    }
+                }, 2500L);
             }
         }
     }

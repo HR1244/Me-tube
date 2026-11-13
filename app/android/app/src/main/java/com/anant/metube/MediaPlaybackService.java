@@ -238,6 +238,23 @@ public class MediaPlaybackService extends Service {
                     resolvedHlsUrl = cached.hlsUrl != null ? cached.hlsUrl : "";
                     resolvedUa = cached.userAgent != null ? cached.userAgent : DEFAULT_UA;
                     startNativePlayer(cachedTarget, resolvedUa, posMs, shouldPlay);
+                } else if (!currentFallbackUrl.isEmpty()) {
+                    // Play fallback/active stream URL immediately with 0ms delay, and resolve fresh stream in background
+                    startNativePlayer(currentFallbackUrl, DEFAULT_UA, posMs, shouldPlay);
+                    new Thread(() -> {
+                        DirectYouTubeResolver.ResolvedStream res = DirectYouTubeResolver.resolve(videoId);
+                        if (mySeq != playSeq || !isNativeAudioActive) return;
+                        if (res != null) {
+                            resolvedAudioUrl = res.audioUrl != null ? res.audioUrl : "";
+                            resolvedVideoUrl = res.videoUrl != null ? res.videoUrl : "";
+                            resolvedHlsUrl = res.hlsUrl != null ? res.hlsUrl : "";
+                            resolvedUa = res.userAgent != null ? res.userAgent : DEFAULT_UA;
+                            if (res.durationMs > 0 && currentDurationMs <= 0) {
+                                currentDurationMs = res.durationMs;
+                                updateNotificationAndSession();
+                            }
+                        }
+                    }).start();
                 } else {
                     updateNotificationAndSession();
                     new Thread(() -> {
