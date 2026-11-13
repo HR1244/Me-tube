@@ -1782,6 +1782,16 @@ export function stopAllPlayback(preserve = null) {
   if (preserve !== 'main-native') {
     const videoElem = document.getElementById('html5-video-element');
     if (videoElem) {
+      videoElem.onerror = null;
+      videoElem.onloadeddata = null;
+      videoElem.oncanplay = null;
+      videoElem.onplaying = null;
+      videoElem.onplay = null;
+      videoElem.onpause = null;
+      videoElem.ontimeupdate = null;
+      videoElem.onwaiting = null;
+      videoElem.onended = null;
+      videoElem.onloadedmetadata = null;
       try {
         videoElem.pause();
         videoElem.removeAttribute('src');
@@ -1806,6 +1816,16 @@ export function stopAllPlayback(preserve = null) {
   if (preserve !== 'shorts-native') {
     const shortsVideo = document.getElementById('shorts-video-element');
     if (shortsVideo) {
+      shortsVideo.onerror = null;
+      shortsVideo.onloadeddata = null;
+      shortsVideo.oncanplay = null;
+      shortsVideo.onplaying = null;
+      shortsVideo.onplay = null;
+      shortsVideo.onpause = null;
+      shortsVideo.ontimeupdate = null;
+      shortsVideo.onwaiting = null;
+      shortsVideo.onended = null;
+      shortsVideo.onloadedmetadata = null;
       try {
         shortsVideo.pause();
         shortsVideo.removeAttribute('src');
@@ -1824,39 +1844,11 @@ export function stopAllPlayback(preserve = null) {
 }
 
 async function openVideoPlayer(video) {
+  if (!video) return;
   state.activeVideo = video;
-  if (video.isExternal) {
-    state.playbackEngine = 'native';
-  }
+  state.playbackEngine = 'native';
 
-  // Halt any previous playback completely (zero simultaneous audio/video, zero glimpses)
-  stopAllPlayback();
-  try { window.AndroidMediaService?.stopNativePlayback?.(); } catch (_) {}
-  try { window.AndroidMediaService?.stopService?.(); } catch (_) {}
-
-  // Instantly clear old video element and iframe DOM so old frames/audio never flash
-  const prevVideo = document.getElementById('html5-video-element');
-  if (prevVideo) {
-    try {
-      prevVideo.pause();
-      prevVideo.currentTime = 0;
-      prevVideo.src = '';
-      prevVideo.removeAttribute('src');
-      prevVideo.load();
-    } catch (_) {}
-    prevVideo.style.display = 'none';
-  }
-  const prevIframe = document.getElementById('embed-iframe-container');
-  if (prevIframe) {
-    prevIframe.innerHTML = '';
-    prevIframe.style.display = 'none';
-  }
-  const prevSpinner = document.getElementById('player-video-spinner');
-  if (prevSpinner) prevSpinner.style.display = 'flex';
-
-  // Persist to Watch History immediately to drive dynamic personalized feed!
-  saveToWatchHistory(video);
-
+  // 1. OPEN PLAYER MODAL IMMEDIATELY WITH METADATA - 0ms LATENCY
   const modal = document.getElementById('player-modal');
   const titleElem = document.getElementById('player-video-title');
   const overlayTitleElem = document.getElementById('st-overlay-title');
@@ -1869,16 +1861,18 @@ async function openVideoPlayer(video) {
   const subBtn = document.getElementById('btn-sub-toggle');
   const bgBtn = document.getElementById('btn-bg-audio');
 
-  modal.classList.add('open');
+  if (modal) {
+    modal.classList.add('open');
+  }
   const safeTitle = video.title || 'Playing Video';
-  titleElem.textContent = safeTitle;
+  if (titleElem) titleElem.textContent = safeTitle;
   if (overlayTitleElem) overlayTitleElem.textContent = safeTitle;
   if (topbarTitleElem) topbarTitleElem.textContent = safeTitle;
-  viewsElem.textContent = video.isExternal ? (video.channel || 'Universal Link Media') : formatViews(video.view_count);
+  if (viewsElem) viewsElem.textContent = video.isExternal ? (video.channel || 'Universal Link Media') : formatViews(video.view_count);
 
   const cName = video.channel || 'Creator';
-  channelNameElem.textContent = cName;
-  channelSubsElem.textContent = video.isExternal ? 'Extracted Stream' : 'Creator';
+  if (channelNameElem) channelNameElem.textContent = cName;
+  if (channelSubsElem) channelSubsElem.textContent = video.isExternal ? 'Extracted Stream' : 'Creator';
 
   if (bgBtn) {
     bgBtn.classList.toggle('active', Boolean(state.isAudioMode));
@@ -1901,10 +1895,6 @@ async function openVideoPlayer(video) {
   if (miniChannel) miniChannel.textContent = cName;
   if (miniBar) miniBar.style.display = 'none';
 
-  // Setup MediaSession & native BG service state
-  updateMediaSession(video);
-  syncNativeMediaService(true, true);
-
   // Update Subscribe button state
   const isSubbed = isChannelSubscribed(video.channel_id, cName);
   state.isSubscribed = isSubbed;
@@ -1916,10 +1906,30 @@ async function openVideoPlayer(video) {
 
   // Real Channel Avatar Image with auto-refreshing Fallback
   const avatarUrl = resolveAvatarUrl(video.channel_avatar, cName, video.channel_id);
-  channelAvatarImg.src = avatarUrl;
-  attachAvatarHandlers(channelAvatarImg, cName, video.channel_id);
+  if (channelAvatarImg) {
+    channelAvatarImg.src = avatarUrl;
+    attachAvatarHandlers(channelAvatarImg, cName, video.channel_id);
+  }
 
-  descElem.textContent = video.description || '';
+  if (descElem) descElem.textContent = video.description || '';
+
+  // Show loading spinner immediately
+  const prevSpinner = document.getElementById('player-video-spinner');
+  if (prevSpinner) prevSpinner.style.display = 'flex';
+
+  // Halt any previous playback completely (zero simultaneous audio/video, zero glimpses)
+  stopAllPlayback();
+
+  // Persist to Watch History immediately to drive dynamic personalized feed!
+  try {
+    saveToWatchHistory(video);
+  } catch (_) {}
+
+  // Setup MediaSession & native BG service state
+  try {
+    updateMediaSession(video);
+    syncNativeMediaService(true, true);
+  } catch (_) {}
 
   // Setup Player Engine (Native Snaptube Custom UI or YouTube Engine)
   setupPlayerPlayback(video);
@@ -1933,13 +1943,13 @@ async function openVideoPlayer(video) {
   try {
     const details = await api.getVideo(video.id);
     if (details && state.activeVideo?.id === video.id) {
-      if (details.channel_follower_count) {
+      if (details.channel_follower_count && channelSubsElem) {
         channelSubsElem.textContent = `${formatViews(details.channel_follower_count)} subscribers`;
       }
-      if (details.description) {
+      if (details.description && descElem) {
         descElem.textContent = details.description;
       }
-      if (details.channel_avatar && !video.channel_avatar) {
+      if (details.channel_avatar && !video.channel_avatar && channelAvatarImg) {
         channelAvatarImg.src = resolveAvatarUrl(details.channel_avatar, details.channel || cName, details.channel_id || video.channel_id);
       }
       if (Array.isArray(details.available_resolutions) && details.available_resolutions.length) {
@@ -2067,6 +2077,18 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     }
 
     if (videoElem) {
+      // Clear any prior listeners to guarantee zero recursive error loops
+      videoElem.onerror = null;
+      videoElem.onloadeddata = null;
+      videoElem.oncanplay = null;
+      videoElem.onplaying = null;
+      videoElem.onplay = null;
+      videoElem.onpause = null;
+      videoElem.ontimeupdate = null;
+      videoElem.onwaiting = null;
+      videoElem.onended = null;
+      videoElem.onloadedmetadata = null;
+
       videoElem.style.display = 'none';
       videoElem.loop = Boolean(state.isLooping);
       videoElem.playbackRate = Number(state.playbackRate || 1.0);
@@ -2075,12 +2097,6 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         if (state.activeVideo?.id !== video.id) return;
         videoElem.style.display = 'block';
         if (spinner) spinner.style.display = 'none';
-      };
-      videoElem.onloadeddata = showVideoWhenReady;
-      videoElem.oncanplay = showVideoWhenReady;
-      videoElem.onplaying = () => {
-        showVideoWhenReady();
-        updatePlayPauseIcons(true);
       };
 
       const serverBase = getServerUrl();
@@ -2099,8 +2115,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       const startVideoSource = (srcUrl) => {
         if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
         if (!srcUrl) return;
-        videoElem.src = srcUrl;
-        videoElem.currentTime = 0;
+        if (videoElem.src !== srcUrl) {
+          videoElem.src = srcUrl;
+        }
         videoElem.play().catch((err) => {
           console.log(`[Player] Autoplay note: ${err}`);
         });
@@ -2116,7 +2133,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           }
         });
       } else {
-        videoElem.src = primaryStreamUrl;
+        startVideoSource(primaryStreamUrl);
       }
 
       const curTimeLbl = document.getElementById('st-time-current');
@@ -2135,13 +2152,15 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
 
       videoElem.onloadedmetadata = () => {
         if (seekSeconds > 0 && Number.isFinite(videoElem.duration) && seekSeconds < videoElem.duration) {
-          videoElem.currentTime = seekSeconds;
+          try {
+            videoElem.currentTime = seekSeconds;
+          } catch (_) {}
         }
         updateSliderUI();
       };
 
       const onPlaying = () => {
-        if (spinner) spinner.style.display = 'none';
+        showVideoWhenReady();
         if (nativeBufferWatchdog) {
           clearTimeout(nativeBufferWatchdog);
           nativeBufferWatchdog = null;
@@ -2151,7 +2170,8 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         scheduleOverlayAutoHide();
       };
 
-      videoElem.onloadeddata = onPlaying;
+      videoElem.onloadeddata = showVideoWhenReady;
+      videoElem.oncanplay = showVideoWhenReady;
       videoElem.onplaying = onPlaying;
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
@@ -2179,16 +2199,20 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       };
 
       videoElem.onerror = () => {
+        // Guard: ignore errors if src was cleared or during teardown
+        if (!videoElem.src || videoElem.src === window.location.href || videoElem.src === '') return;
+        if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
+
         if (!triedFallback && fallbackStreamUrl && videoElem.src !== fallbackStreamUrl) {
           triedFallback = true;
           console.warn('[Player] Trying backup stream source...');
-          videoElem.src = fallbackStreamUrl;
-          videoElem.play().catch(() => {});
+          startVideoSource(fallbackStreamUrl);
           return;
         }
         if (spinner) spinner.style.display = 'none';
         if (!video.isExternal) {
-          showToast('Native stream failed, switching to YouTube player...');
+          console.warn('[Player] Native stream failed, switching to YouTube player fallback');
+          showToast('Switching to YouTube player...');
           state.playbackEngine = 'youtube';
           setupPlayerPlayback(video, seekSeconds);
         } else {
@@ -2204,10 +2228,6 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           setupPlayerPlayback(video, seekSeconds);
         }
       }, 25000);
-
-      videoElem.play().catch((err) => {
-        console.log(`[Player] Autoplay note: ${err}`);
-      });
     }
   }
 }
@@ -3818,6 +3838,11 @@ function openShortsModal(short) {
       shortsFallbackWatchdog = null;
     }
     if (videoElem) {
+      videoElem.onerror = null;
+      videoElem.onloadeddata = null;
+      videoElem.onplaying = null;
+      videoElem.onplay = null;
+      videoElem.onpause = null;
       try { videoElem.pause(); videoElem.removeAttribute('src'); videoElem.load(); } catch (_) {}
       videoElem.style.display = 'none';
     }
@@ -3871,6 +3896,7 @@ function openShortsModal(short) {
       if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
     };
     videoElem.onerror = () => {
+      if (!videoElem.src || videoElem.src === window.location.href || videoElem.src === '') return;
       launchShortsEmbedFallback();
     };
     shortsFallbackWatchdog = setTimeout(() => {
