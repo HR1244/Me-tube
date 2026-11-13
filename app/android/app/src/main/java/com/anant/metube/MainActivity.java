@@ -44,6 +44,7 @@ import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
+import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebChromeClient;
 
@@ -818,26 +819,42 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
-        super.onPause();
         if (bgAudioEnabled && mediaIsPlaying) {
-            // Keep WebView actively running so audio continues uninterrupted with ZERO pause/delay!
+            // Brave-style background playback: prevent Capacitor Bridge from pausing WebView or halting media
+            Bridge b = this.bridge;
+            this.bridge = null;
+            try {
+                super.onPause();
+            } finally {
+                this.bridge = b;
+            }
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().onResume();
             }
             startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+            return;
         }
+        super.onPause();
     }
 
     @Override
     public void onStop() {
-        super.onStop();
         if (bgAudioEnabled && mediaIsPlaying) {
-            // Maintain active WebView execution while device is locked or minimized
+            // Keep WebView actively running with wake lock while minimized or screen locked
+            Bridge b = this.bridge;
+            this.bridge = null;
+            try {
+                super.onStop();
+            } finally {
+                this.bridge = b;
+            }
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().onResume();
             }
             startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+            return;
         }
+        super.onStop();
     }
 
     @Override

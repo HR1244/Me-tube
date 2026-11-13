@@ -753,20 +753,16 @@ function initNavigation() {
 }
 
 function switchTab(tabId) {
+  if (tabId !== 'shorts') {
+    closeShortsReel();
+  }
+
+  state.activeTab = tabId;
+
   if (tabId === 'shorts') {
     openShortsFeedReel();
     return;
   }
-
-  // If shorts modal is open while switching tabs, close it and halt playback
-  const sm = document.getElementById('shorts-modal');
-  if (sm && (sm.classList.contains('open') || sm.style.display === 'block')) {
-    stopAllPlayback();
-    sm.classList.remove('open');
-    sm.style.display = 'none';
-  }
-
-  state.activeTab = tabId;
 
   // Update Bottom Nav active state
   document.querySelectorAll('.nav-item').forEach((b) => {
@@ -1346,6 +1342,17 @@ export async function openUniversalUrl(url) {
 // =========================================================
 // FLOATING MINI-PLAYER & BACKGROUND AUDIO CONTROLLER
 // =========================================================
+export let isUserPaused = false;
+let isMiniPaused = false;
+
+export function setMediaSessionPlaybackState(stateStr) {
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.playbackState = stateStr;
+    } catch (_) {}
+  }
+}
+
 export function updateMediaSession(video) {
   if (!('mediaSession' in navigator) || !video) return;
   try {
@@ -1367,6 +1374,28 @@ export function updateMediaSession(video) {
       stopAllPlayback();
       hideMiniPlayer();
     });
+    try {
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.seekTime != null && Number.isFinite(details.seekTime)) {
+          const v = document.getElementById('html5-video-element');
+          if (v) v.currentTime = details.seekTime;
+        }
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        const v = document.getElementById('html5-video-element');
+        if (v) v.currentTime = Math.min(v.duration || 0, v.currentTime + (details.seekOffset || 10));
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        const v = document.getElementById('html5-video-element');
+        if (v) v.currentTime = Math.max(0, v.currentTime - (details.seekOffset || 10));
+      });
+      navigator.mediaSession.setActionHandler('nexttrack', () => {
+        document.getElementById('btn-st-next')?.click();
+      });
+      navigator.mediaSession.setActionHandler('previoustrack', () => {
+        document.getElementById('btn-st-prev')?.click();
+      });
+    } catch (_) {}
   } catch (err) {
     console.warn('[MediaSession] Error registering metadata:', err);
   }
@@ -1380,7 +1409,7 @@ export function minimizeToMiniPlayer() {
   if (miniBar && state.activeVideo) {
     miniBar.style.display = 'flex';
     const videoElem = document.getElementById('html5-video-element');
-    const playing = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : !isMiniPaused;
+    const playing = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : (!isMiniPaused && !isUserPaused);
     updatePlayPauseIcons(playing);
     syncNativeMediaService(playing, true);
   }
@@ -1401,6 +1430,7 @@ export function hideMiniPlayer() {
 }
 
 export function resumeCurrentPlayback() {
+  isUserPaused = false;
   isMiniPaused = false;
   if (state.playbackEngine === 'youtube') {
     const iframe = document.getElementById('youtube-embed-player');
@@ -1417,6 +1447,7 @@ export function resumeCurrentPlayback() {
 }
 
 export function pauseCurrentPlayback() {
+  isUserPaused = true;
   isMiniPaused = true;
   if (state.playbackEngine === 'youtube') {
     const iframe = document.getElementById('youtube-embed-player');
@@ -1432,9 +1463,8 @@ export function pauseCurrentPlayback() {
   syncNativeMediaService(false, true);
 }
 
-let isMiniPaused = false;
 export function toggleMiniPlayPause() {
-  if (isMiniPaused) {
+  if (isUserPaused || isMiniPaused) {
     resumeCurrentPlayback();
   } else {
     pauseCurrentPlayback();
@@ -1774,9 +1804,11 @@ function updatePlayPauseIcons(isPlaying) {
   const miniBtn = document.getElementById('btn-mini-play-pause');
   if (stBtn) stBtn.textContent = isPlaying ? '⏸' : '▶';
   if (miniBtn) miniBtn.textContent = isPlaying ? '⏸' : '▶';
+  setMediaSessionPlaybackState(isPlaying ? 'playing' : 'paused');
 }
 
 export function stopAllPlayback(preserve = null) {
+  isUserPaused = true;
   isMiniPaused = true;
   // If preserving nothing, hide floating mini-player and stop native BG audio service
   if (!preserve || preserve.startsWith('shorts')) {
@@ -1866,9 +1898,14 @@ export function stopAllPlayback(preserve = null) {
 
 async function openVideoPlayer(video) {
   if (!video) return;
+  isUserPaused = false;
   isMiniPaused = false;
   state.activeVideo = video;
   state.playbackEngine = 'native';
+
+  // Instantly hide prior video frame to eliminate any glimpse of previous video
+  const priorVideo = document.getElementById('html5-video-element');
+  if (priorVideo) priorVideo.style.display = 'none';
 
   // 1. OPEN PLAYER MODAL IMMEDIATELY WITH METADATA - 0ms LATENCY
   const modal = document.getElementById('player-modal');
@@ -2112,7 +2149,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onended = null;
       videoElem.onloadedmetadata = null;
 
-      videoElem.style.display = 'block';
+      videoElem.style.display = 'none'; // Keep hidden until bytes load to eliminate any glimpse of previous video
       videoElem.loop = Boolean(state.isLooping);
       videoElem.playbackRate = Number(state.playbackRate || 1.0);
 
@@ -2200,7 +2237,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onplaying = onPlaying;
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
-        if (!isMiniPaused && state.activeVideo && state.isAudioMode) {
+        if (!isUserPaused && state.activeVideo && state.isAudioMode) {
           // If paused by OS background transition rather than user action, immediately resume with zero gap!
           videoElem.play().catch(() => {});
           return;
@@ -2406,11 +2443,20 @@ function initPlayerControls() {
 
   document.getElementById('btn-st-playpause')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!videoElem) return;
-    if (videoElem.paused) {
-      videoElem.play().catch(() => {});
+    if (state.playbackEngine === 'youtube') {
+      if (ytIsPlaying) {
+        pauseCurrentPlayback();
+      } else {
+        resumeCurrentPlayback();
+      }
     } else {
-      videoElem.pause();
+      const v = document.getElementById('html5-video-element');
+      if (!v) return;
+      if (v.paused || isUserPaused) {
+        resumeCurrentPlayback();
+      } else {
+        pauseCurrentPlayback();
+      }
     }
     scheduleOverlayAutoHide();
   });
@@ -3480,7 +3526,28 @@ async function openChannelExplorer(video) {
   if (bannerImg) {
     bannerImg.dataset.bannerRetried = '';
     attachBannerHandlers(bannerImg, channelName, channelId);
-    bannerImg.src = resolveBannerUrl(video.channel_banner, channelName, channelId);
+    bannerImg.src = getSvgBannerDataUrl(channelName);
+    const targetBanner = resolveBannerUrl(video.channel_banner, channelName, channelId);
+    const preloader = new Image();
+    preloader.referrerPolicy = 'no-referrer';
+    preloader.onload = () => {
+      if (state.activeChannel?.channel === channelName) {
+        bannerImg.src = targetBanner;
+      }
+    };
+    preloader.onerror = () => {
+      const server = getServerUrl();
+      const refUrl = `${server}/api/channel/banner?id=${encodeURIComponent(channelId || '')}&name=${encodeURIComponent(channelName)}&raw=1&refresh=1`;
+      const retryImg = new Image();
+      retryImg.referrerPolicy = 'no-referrer';
+      retryImg.onload = () => {
+        if (state.activeChannel?.channel === channelName) {
+          bannerImg.src = refUrl;
+        }
+      };
+      retryImg.src = refUrl;
+    };
+    preloader.src = targetBanner;
   }
 
   if (avatarBigImg) {
@@ -3753,7 +3820,49 @@ function initDiagnostics() {
 // =========================================================
 // 11. SHORTS FULLSCREEN VERTICAL REEL CONTROLLER
 // =========================================================
+let currentShortsSessionToken = 0;
+let shortsFallbackWatchdog = null;
+
+export function closeShortsReel() {
+  currentShortsSessionToken++;
+  if (shortsFallbackWatchdog) {
+    clearTimeout(shortsFallbackWatchdog);
+    shortsFallbackWatchdog = null;
+  }
+  const modal = document.getElementById('shorts-modal');
+  if (modal) {
+    modal.classList.remove('open');
+    modal.style.display = 'none';
+  }
+  const shortsVideo = document.getElementById('shorts-video-element');
+  if (shortsVideo) {
+    shortsVideo.onerror = null;
+    shortsVideo.onloadeddata = null;
+    shortsVideo.oncanplay = null;
+    shortsVideo.onplaying = null;
+    shortsVideo.onplay = null;
+    shortsVideo.onpause = null;
+    shortsVideo.ontimeupdate = null;
+    try {
+      shortsVideo.pause();
+      shortsVideo.removeAttribute('src');
+      shortsVideo.load();
+    } catch (_) {}
+    shortsVideo.style.display = 'none';
+  }
+  const embedContainer = document.getElementById('shorts-embed-container');
+  if (embedContainer) {
+    embedContainer.innerHTML = '';
+    embedContainer.style.display = 'none';
+  }
+  const spinner = document.getElementById('shorts-spinner');
+  if (spinner) spinner.style.display = 'none';
+
+  syncNativeOverlayFlag();
+}
+
 async function openShortsFeedReel() {
+  state.activeTab = 'shorts';
   const modal = document.getElementById('shorts-modal');
   const spinner = document.getElementById('shorts-spinner');
   if (modal) {
@@ -3763,6 +3872,11 @@ async function openShortsFeedReel() {
   if (spinner) spinner.style.display = 'flex';
   syncNativeOverlayFlag();
 
+  document.querySelectorAll('.nav-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === 'shorts');
+  });
+
+  const sessionToken = ++currentShortsSessionToken;
   state.shortsSessionSeed = Date.now();
   state.shortsPage = 1;
   state.shortsNextToken = '';
@@ -3775,6 +3889,7 @@ async function openShortsFeedReel() {
       seen: seenStr,
       seed: state.shortsSessionSeed
     });
+    if (sessionToken !== currentShortsSessionToken || state.activeTab !== 'shorts') return;
     if (res && res.shorts && res.shorts.length > 0) {
       state.shortsList = res.shorts;
       state.shortsNextToken = res.next_token || '';
@@ -3784,17 +3899,21 @@ async function openShortsFeedReel() {
       state.currentShortIndex = 0;
     }
   } catch (e) {
+    if (sessionToken !== currentShortsSessionToken || state.activeTab !== 'shorts') return;
     if (state.shorts && state.shorts.length > 0) {
       state.shortsList = [...state.shorts].sort(() => Math.random() - 0.5);
       state.currentShortIndex = 0;
     }
   }
 
+  if (sessionToken !== currentShortsSessionToken || state.activeTab !== 'shorts') return;
+
   if (state.shortsList.length > 0) {
     openShortsModal(state.shortsList[0]);
   } else {
     try {
       const resTrend = await api.getTrending('shorts', 1);
+      if (sessionToken !== currentShortsSessionToken || state.activeTab !== 'shorts') return;
       if (resTrend && resTrend.videos && resTrend.videos.length > 0) {
         state.shortsList = resTrend.videos;
         openShortsModal(state.shortsList[0]);
@@ -3805,8 +3924,6 @@ async function openShortsFeedReel() {
     showToast('Could not load Shorts. Please check connection.');
   }
 }
-
-let shortsFallbackWatchdog = null;
 
 function openShortsModal(short) {
   if (!short) return;
@@ -3820,6 +3937,14 @@ function openShortsModal(short) {
   const likeCountElem = document.getElementById('shorts-like-count');
 
   if (!modal) return;
+
+  const thisShortsToken = ++currentShortsSessionToken;
+  const isShortsActive = () => {
+    const m = document.getElementById('shorts-modal');
+    return thisShortsToken === currentShortsSessionToken &&
+           state.activeTab === 'shorts' &&
+           m && (m.classList.contains('open') || m.style.display === 'block');
+  };
 
   if (shortsFallbackWatchdog) {
     clearTimeout(shortsFallbackWatchdog);
@@ -3858,6 +3983,7 @@ function openShortsModal(short) {
 
   // Asynchronously resolve authentic creator details & avatar
   api.getVideo(currentShort.id).then((det) => {
+    if (!isShortsActive()) return;
     if (det && det.channel && state.shortsList[state.currentShortIndex]?.id === currentShort.id) {
       currentShort.channel = det.channel;
       currentShort.channel_id = det.channel_id || currentShort.channel_id;
@@ -3870,6 +3996,7 @@ function openShortsModal(short) {
   }).catch(() => {});
 
   const launchShortsEmbedFallback = () => {
+    if (!isShortsActive()) return;
     if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
     if (shortsFallbackWatchdog) {
       clearTimeout(shortsFallbackWatchdog);
@@ -3914,12 +4041,14 @@ function openShortsModal(short) {
 
     const streamUrl = `${getServerUrl()}/api/stream/${currentShort.id}?proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
     const startShortSource = (srcUrl) => {
+      if (!isShortsActive()) return;
       if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
       videoElem.src = srcUrl;
       videoElem.play().catch(() => {});
     };
 
     const onShortPlaying = () => {
+      if (!isShortsActive()) return;
       if (spinner) spinner.style.display = 'none';
       if (shortsFallbackWatchdog) {
         clearTimeout(shortsFallbackWatchdog);
@@ -3929,19 +4058,22 @@ function openShortsModal(short) {
     };
     videoElem.onloadeddata = onShortPlaying;
     videoElem.onplaying = onShortPlaying;
-    videoElem.onplay = () => syncNativeMediaService(true, true);
+    videoElem.onplay = () => { if (isShortsActive()) syncNativeMediaService(true, true); };
     videoElem.onpause = () => {
-      if (!isMiniPaused && state.isAudioMode && !state.isShortMuted) {
+      if (!isShortsActive()) return;
+      if (!isUserPaused && !isMiniPaused && state.isAudioMode && !state.isShortMuted) {
         videoElem.play().catch(() => {});
         return;
       }
       if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
     };
     videoElem.onerror = () => {
+      if (!isShortsActive()) return;
       if (!videoElem.src || videoElem.src === window.location.href || videoElem.src === '') return;
       launchShortsEmbedFallback();
     };
     shortsFallbackWatchdog = setTimeout(() => {
+      if (!isShortsActive()) return;
       if (videoElem.readyState === 0 && (modal.classList.contains('open') || modal.style.display === 'block')) {
         launchShortsEmbedFallback();
       }
@@ -3949,6 +4081,7 @@ function openShortsModal(short) {
 
     if (window.AndroidInnerTube?.resolveForDownloadAsync) {
       resolveViaNativeInnerTube(currentShort.id, 'video').then((nativeRes) => {
+        if (!isShortsActive()) return;
         if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
         if (nativeRes?.ok && nativeRes.url) {
           startShortSource(nativeRes.url);
@@ -3976,13 +4109,8 @@ function initShortsPlayer() {
   const creatorRow = document.getElementById('shorts-creator-row');
 
   closeBtn?.addEventListener('click', () => {
-    if (shortsFallbackWatchdog) clearTimeout(shortsFallbackWatchdog);
-    stopAllPlayback();
-    if (modal) {
-      modal.classList.remove('open');
-      modal.style.display = 'none';
-    }
-    syncNativeOverlayFlag();
+    closeShortsReel();
+    switchTab('home');
   });
 
   soundBtn?.addEventListener('click', () => {
@@ -4403,7 +4531,7 @@ async function loadSubscriptionsView() {
           return `
             <div class="sub-channel-pill" data-idx="${idx}" style="display:flex; flex-direction:column; align-items:center; width:64px; flex-shrink:0; cursor:pointer;">
               <div style="position:relative; width:48px; height:48px; border-radius:50%; padding:2px; background:linear-gradient(45deg, #FF0000, #990000); margin-bottom:4px; box-shadow:0 2px 6px rgba(0,0,0,0.5);">
-                <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
+                <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" onerror="this.onerror=null;this.src='${getSvgAvatarDataUrl(s.name)}';" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
               </div>
               <span style="font-size:11px; font-weight:600; color:#FFF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
             </div>
@@ -4618,10 +4746,8 @@ window.handleAndroidBack = function() {
   }
   const shortsModal = document.getElementById('shorts-modal');
   if (shortsModal && (shortsModal.classList.contains('open') || shortsModal.style.display === 'block')) {
-    stopAllPlayback();
-    shortsModal.classList.remove('open');
-    shortsModal.style.display = 'none';
-    syncNativeOverlayFlag();
+    closeShortsReel();
+    switchTab('home');
     return true;
   }
   const playerModal = document.getElementById('player-modal');
