@@ -461,20 +461,17 @@
                 </div>
               </div>
 
-              <!-- Snaptube Primary Actions Strip (Download Pill + BG Audio + Speed + Engine) -->
+              <!-- Snaptube Primary Actions Strip (Big Yellow Download + Round Headphones + Round 3-Dots) -->
               <div class="player-controls-row">
-                <button class="btn-snaptube-dl-pill" id="btn-player-download">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.4" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <button class="btn-snaptube-dl-pill" id="btn-player-download" title="Download Video or Audio">
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.6" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                   <span>Download</span>
                 </button>
-                <button class="btn-player-action" id="btn-bg-audio" title="Background Audio & Screen-Off Play">
-                  <span>🎧 Bg Play</span>
+                <button class="btn-player-round-action" id="btn-bg-audio" title="Background Audio & Screen-Off Play">
+                  <span>🎧</span>
                 </button>
-                <button class="btn-player-action" id="btn-player-settings-pill" title="Quality & Speed">
-                  <span id="player-quality-badge">⚙ Auto</span>
-                </button>
-                <button class="btn-player-action" id="btn-engine-toggle" title="Switch Playback Engine">
-                  <span id="engine-toggle-label">⚡ Native</span>
+                <button class="btn-player-round-action" id="btn-player-settings-pill" title="Quality, Speed & Settings">
+                  <span>⋮</span>
                 </button>
               </div>
 
@@ -817,6 +814,7 @@
                 <!-- Native Direct Vertical Stream or Safe-Boxed Embed -->
                 <div id="shorts-embed-container" class="shorts-media-layer"></div>
                 <video id="shorts-video-element" playsinline webkit-playsinline loop class="shorts-media-layer" style="display:none; width:100%; height:100%; object-fit:cover; background:#000;"></video>
+                <div class="shorts-scrim-bottom"></div>
                 <div id="shorts-spinner" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; z-index:50; pointer-events:none;"><div class="spinner"></div></div>
                 <div id="shorts-gesture-catcher" style="position:absolute; inset:0; z-index:60; touch-action:none;"></div>
 

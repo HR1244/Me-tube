@@ -147,7 +147,18 @@ public final class NativeDownloadEngine {
             }
 
             long cl = conn.getContentLengthLong();
-            if (cl > 0) st.totalBytes = cl;
+            if (cl > 0) {
+                st.totalBytes = cl;
+            } else {
+                String cr = conn.getHeaderField("Content-Range");
+                if (cr != null && cr.contains("/")) {
+                    try {
+                        String totStr = cr.substring(cr.lastIndexOf('/') + 1).trim();
+                        long parsedTot = Long.parseLong(totStr);
+                        if (parsedTot > 0) st.totalBytes = parsedTot;
+                    } catch (Exception ignored) {}
+                }
+            }
 
             long lastNotifAt = 0L;
             try (InputStream is = conn.getInputStream(); FileOutputStream fos = new FileOutputStream(tmpIn)) {

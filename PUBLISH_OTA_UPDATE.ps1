@@ -60,3 +60,4 @@ Remove-Item $zipPath -Force
 Remove-Item $manifestTmp -Force
 
 Write-Host "Published OTA v$Version (ota_code=$nextCode) successfully!" -ForegroundColor Green
+

@@ -205,9 +205,13 @@ export function attachAvatarHandlers(imgEl, channelName, channelId) {
     imgEl.src = getSvgAvatarDataUrl(channelName);
   };
   imgEl.addEventListener('load', () => {
-    if (imgEl.naturalWidth > 0 && imgEl.naturalWidth < 4 && !imgEl.dataset.avatarRetried) {
-      imgEl.dataset.avatarRetried = '1';
-      imgEl.src = api.getChannelAvatarRefreshUrl(channelId || '', channelName || '', true);
+    if (imgEl.naturalWidth > 0 && imgEl.naturalWidth < 4) {
+      if (!imgEl.dataset.avatarRetried) {
+        imgEl.dataset.avatarRetried = '1';
+        imgEl.src = api.getChannelAvatarRefreshUrl(channelId || '', channelName || '', true);
+      } else {
+        imgEl.src = getSvgAvatarDataUrl(channelName);
+      }
     }
   });
 }
@@ -1007,10 +1011,22 @@ async function loadMoreFeedVideos() {
 
     if (freshVideos.length === 0) {
       state.emptyPageStreak = (state.emptyPageStreak || 0) + 1;
-      if (state.searchQuery && !nextTok && state.emptyPageStreak >= 2) {
+      if (state.searchQuery && !nextTok && state.emptyPageStreak >= 3) {
         state.hasMore = false;
-      } else if (state.emptyPageStreak >= 3) {
-        state.hasMore = false;
+      } else if (!state.searchQuery) {
+        // Continuous infinite feed: Rotate into dynamic YouTube discovery topics so the feed never halts!
+        const discoveryTopics = ['trending', 'popular music', 'top gaming', 'viral entertainment', 'tech highlights', 'world news'];
+        const topic = discoveryTopics[(state.emptyPageStreak || 0) % discoveryTopics.length];
+        try {
+          const discRes = await api.search(topic, Math.floor(((state.emptyPageStreak || 0) / discoveryTopics.length) + 1));
+          const discVideos = (discRes && discRes.videos) || [];
+          const discFresh = discVideos.filter((v) => v && v.id && !existingIds.has(v.id));
+          if (discFresh.length > 0) {
+            state.emptyPageStreak = 0;
+            state.videos.push(...discFresh);
+            discFresh.forEach((v) => container.appendChild(createVideoCardElement(v)));
+          }
+        } catch (_) {}
       }
     } else {
       state.emptyPageStreak = 0;
@@ -1676,9 +1692,16 @@ window.handleNativeMediaEvent = function(cmd, posMs, playing) {
     syncNativeOverlayFlag();
     return;
   }
-  if (cmd === 'play' || cmd === 'pause') {
-    updatePlayPauseIcons(cmd === 'play' || Boolean(playing));
+  if (cmd === 'play') {
+    resumeCurrentPlayback();
+  } else if (cmd === 'pause') {
+    pauseCurrentPlayback();
+  } else if (typeof cmd === 'string' && cmd.startsWith('seek:')) {
+    const s = parseFloat(cmd.replace('seek:', '')) / 1000;
+    const v = document.getElementById('html5-video-element');
+    if (v && Number.isFinite(s)) v.currentTime = s;
   }
+  updatePlayPauseIcons(cmd === 'play' || Boolean(playing));
 };
 
 function setFullscreenLandscape(enabled) {
@@ -1829,7 +1852,8 @@ async function openVideoPlayer(video) {
 
   if (bgBtn) {
     bgBtn.classList.toggle('active', Boolean(state.isAudioMode));
-    bgBtn.innerHTML = state.isAudioMode ? '<span>🎧 Bg Play: ON</span>' : '<span>🎧 Bg Play</span>';
+    bgBtn.innerHTML = '<span>🎧</span>';
+    bgBtn.title = state.isAudioMode ? 'Background Play: ON (Tap to toggle)' : 'Background Play: OFF (Tap to toggle)';
   }
   state.availableResolutions = Array.isArray(video.available_resolutions) && video.available_resolutions.length
     ? video.available_resolutions
@@ -2440,10 +2464,11 @@ function initPlayerControls() {
     state.isAudioMode = !state.isAudioMode;
     try { localStorage.setItem('metube_bg_play', state.isAudioMode ? '1' : '0'); } catch (_) {}
     bgAudioBtn.classList.toggle('active', state.isAudioMode);
-    bgAudioBtn.innerHTML = state.isAudioMode ? '<span>🎧 Bg Play: ON</span>' : '<span>🎧 Bg Play</span>';
+    bgAudioBtn.innerHTML = '<span>🎧</span>';
+    bgAudioBtn.title = state.isAudioMode ? 'Background Play: ON (Tap to toggle)' : 'Background Play: OFF (Tap to toggle)';
     syncNativeMediaService(null, true);
     if (state.isAudioMode) {
-      showToast('🎧 Background Play ON: Keeps playing in Recents, app switch & lockscreen!');
+      showToast('🎧 Background Play ON: Smooth gapless playback in background & recents');
     } else {
       try { window.AndroidMediaService?.stopService?.(); } catch (_) {}
       showToast('Background Play OFF');
@@ -2602,7 +2627,8 @@ function initDownloadModal() {
             title: rawTitle,
             format_type: fmtType,
             quality: fmtType === 'audio' ? 'M4A Audio' : (state.selectedFormat.quality || 'Direct'),
-            status: 'client_ready',
+            status: 'downloading',
+            percent: 5,
             filename,
             client_direct_url: nativeRes.url,
             userAgent: nativeRes.userAgent || '',
@@ -2896,6 +2922,22 @@ async function loadDownloadsList(force = false) {
                 ...dmEntry,
                 ...parsedProg
               };
+              if (item.isLocalDirect) {
+                if (normSt === 8) {
+                  item.status = 'completed';
+                  item.percent = 100;
+                  saveLocalDownloads(state.localDownloads);
+                } else if (normSt === 16) {
+                  item.status = 'error';
+                  item.error = parsedProg.error || 'Download failed';
+                  saveLocalDownloads(state.localDownloads);
+                } else {
+                  item.status = 'downloading';
+                  item.percent = parsedProg.percent || item.percent || 15;
+                  item.downloaded_bytes = parsedProg.downloadedBytes;
+                  item.total_bytes = parsedProg.totalBytes;
+                }
+              }
               if (normSt === 1 || normSt === 2 || normSt === 4) {
                 hasActiveNative = true;
               }
@@ -3029,14 +3071,14 @@ function renderDownloadsDOM(container, counter, downloadsList) {
 
         ${(isCompleted && !dmActive) ? `
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid var(--border-subtle);">
-            ${dmSuccess ? `
-              <span style="font-size:11px; font-weight:700; color:#4ADE80;">✓ Saved in Downloads/MeTube</span>
-              <button class="btn-open-native" data-uri="${dm.localUri || ''}" data-mime="${dm.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
-                ▶ Open / Play
+            ${(dmSuccess || item.isLocalDirect) ? `
+              <span style="font-size:11px; font-weight:700; color:#4ADE80;">✓ Downloaded to MeTube</span>
+              <button class="btn-open-native" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 18px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
+                ▶ Play
               </button>
             ` : `
-              <button class="btn-save-device" data-job="${item.job_id}" data-video-id="${item.video_id || ''}" data-type="${item.format_type || 'video'}" data-url="${fileUrl}" data-filename="${item.filename}" data-ua="${(item.userAgent || dm?.customUa || '').replace(/"/g, '&quot;')}" data-mime="${(item.mimeType || dm?.mimeType || '').replace(/"/g, '&quot;')}" style="flex:1; background:#FF0000; color:#FFF; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
-                <span>${dmFailed ? '🔄 Retry Save to Phone' : '💾 Save to Device'}</span>
+              <button class="btn-save-device" data-job="${item.job_id}" data-video-id="${item.video_id || ''}" data-type="${item.format_type || 'video'}" data-url="${fileUrl}" data-filename="${item.filename}" data-ua="${(item.userAgent || dm?.customUa || '').replace(/"/g, '&quot;')}" data-mime="${(item.mimeType || dm?.mimeType || '').replace(/"/g, '&quot;')}" style="flex:1; background:#FFC700; color:#000; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
+                <span>${dmFailed ? '🔄 Retry Download' : '💾 Save to Phone'}</span>
               </button>
               <button class="btn-play-offline" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
                 ▶ Play
@@ -3858,23 +3900,32 @@ function initShortsPlayer() {
     isPrefetchingShorts = true;
     try {
       state.shortsPage = (state.shortsPage || 1) + 1;
+      const seedVal = Date.now() + Math.floor(Math.random() * 100000);
       const moreRes = await api.getShorts(state.shortsPage, {
         nextToken: state.shortsNextToken || '',
         interests: getRecentInterestKeywords() || '',
-        seen: (state.shortsSeenIds || []).slice(-60).join(','),
-        seed: state.shortsSessionSeed || Date.now()
+        seen: (state.shortsSeenIds || []).slice(-80).join(','),
+        seed: seedVal
       });
       state.shortsNextToken = (moreRes && moreRes.next_token) || '';
       if (moreRes && moreRes.shorts && moreRes.shorts.length > 0) {
         const existing = new Set(state.shortsList.map((s) => s.id));
         const seenSet = new Set(state.shortsSeenIds || []);
-        const fresh = moreRes.shorts.filter((s) => !existing.has(s.id) && !seenSet.has(s.id));
+        // Randomize incoming batch so shorts feed is always diverse and never monotonic
+        const incoming = [...moreRes.shorts].sort(() => Math.random() - 0.5);
+        const fresh = incoming.filter((s) => !existing.has(s.id) && !seenSet.has(s.id));
         if (fresh.length > 0) {
           state.shortsList.push(...fresh);
         } else {
-          // Topic rotation if same batch occurred
-          const extra = moreRes.shorts.filter((s) => !existing.has(s.id));
-          state.shortsList.push(...extra);
+          const extra = incoming.filter((s) => !existing.has(s.id));
+          if (extra.length > 0) {
+            state.shortsList.push(...extra);
+          } else {
+            // Fresh search query for trending shorts
+            const queryRes = await api.search('trending shorts viral dance comedy music', 1);
+            const queryShorts = (queryRes?.videos || []).filter((v) => !existing.has(v.id)).map((v) => ({ ...v, is_short: true, type: 'short' }));
+            if (queryShorts.length > 0) state.shortsList.push(...queryShorts);
+          }
         }
       }
     } catch (_) {} finally {
@@ -3891,8 +3942,10 @@ function initShortsPlayer() {
       await prefetchMoreShorts();
       if (state.currentShortIndex + 1 < state.shortsList.length) {
         openShortsModal(state.shortsList[state.currentShortIndex + 1]);
-      } else {
-        openShortsModal(state.shortsList[0]);
+      } else if (state.shortsList.length > 1) {
+        // Pick a random short from the list instead of always repeating the 0th item!
+        const randIdx = Math.floor(Math.random() * state.shortsList.length);
+        openShortsModal(state.shortsList[randIdx]);
       }
     }
 
@@ -4447,6 +4500,11 @@ window.handleAndroidBack = function() {
     syncNativeOverlayFlag();
     return true;
   }
+  const btnBackPl = document.getElementById('btn-back-to-playlists');
+  if (btnBackPl) {
+    btnBackPl.click();
+    return true;
+  }
   const channelModal = document.getElementById('channel-modal');
   if (channelModal && channelModal.classList.contains('open')) {
     channelModal.classList.remove('open');
@@ -4465,6 +4523,11 @@ window.handleAndroidBack = function() {
   if (playerModal && playerModal.classList.contains('open')) {
     // Minimize to mini-player so video audio keeps playing seamlessly in background!
     minimizeToMiniPlayer();
+    return true;
+  }
+  const miniBar = document.getElementById('mini-player-bar');
+  if (miniBar && miniBar.style.display && miniBar.style.display !== 'none') {
+    hideMiniPlayer();
     return true;
   }
   const sidebar = document.getElementById('sidebar-overlay');

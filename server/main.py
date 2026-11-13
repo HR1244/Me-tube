@@ -810,12 +810,15 @@ def get_channel_avatar_endpoint(
 
     if raw:
         try:
-            req = urllib.request.Request(resolved, headers={"User-Agent": "Mozilla/5.0", "Referer": ""})
+            req = urllib.request.Request(resolved, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": ""})
             with urllib.request.urlopen(req, timeout=5) as res:
                 ctype = res.headers.get("Content-Type", "image/jpeg")
                 return Response(content=res.read(), media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
         except Exception:
-            pass
+            svg_body = generate_channel_avatar_svg(clean_name)
+            if svg_body.startswith("data:image/svg+xml"):
+                svg_body = urllib.parse.unquote(svg_body.split(",", 1)[1]) if "," in svg_body else svg_body
+            return Response(content=svg_body, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=300"})
 
     return RedirectResponse(url=resolved, status_code=302, headers={"Cache-Control": "public, max-age=3600"})
 
@@ -2271,6 +2274,26 @@ def get_channel_content(
                             break
 
             items = _parse_channel_tab_items(chosen_tab or {}, tab_norm, browse_id, c_title, avatar, limit) if chosen_tab else []
+            if not items and c_title:
+                try:
+                    s_res = innertube_search_paged(query=f'"{c_title}"' if tab_norm == "videos" else f'"{c_title}" #shorts', limit=min(limit, 24), enrich_limit=0)
+                    for sv in s_res.get("videos", []):
+                        if sv.get("id"):
+                            items.append({
+                                "id": sv["id"],
+                                "title": sv.get("title", ""),
+                                "channel": sv.get("channel") or c_title,
+                                "channel_id": sv.get("channel_id") or browse_id,
+                                "channel_avatar": avatar,
+                                "duration": sv.get("duration"),
+                                "duration_string": sv.get("duration_string", ""),
+                                "view_count": sv.get("view_count", 0),
+                                "thumbnail": sv.get("thumbnail", f"https://i.ytimg.com/vi/{sv['id']}/hqdefault.jpg"),
+                                "url": f"https://www.youtube.com/watch?v={sv['id']}",
+                                "type": "short" if tab_norm == "shorts" else "video"
+                            })
+                except Exception:
+                    pass
             # If Innertube browse resolved the channel header cleanly, return even if tab has 0 items (e.g. no playlists tab)
             res_obj = {
                 "channel_id": browse_id,

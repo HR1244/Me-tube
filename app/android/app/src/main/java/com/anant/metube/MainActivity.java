@@ -800,20 +800,38 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
-        if (bgAudioEnabled && mediaIsPlaying && (!activeAudioUrl.isEmpty() || DirectYouTubeResolver.isValidYouTubeId(activeVideoId))) {
-            // Hand audio playback to OS ForegroundService with 0ms pause
-            startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
+        super.onPause();
+        if (bgAudioEnabled && mediaIsPlaying) {
+            // Keep Chromium media engine and timers running uninterrupted with OS foreground priority
             if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().onResume();
+                getBridge().getWebView().resumeTimers();
+            }
+            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+        }
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        if (bgAudioEnabled && mediaIsPlaying) {
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().onResume();
                 getBridge().getWebView().resumeTimers();
             }
         }
-        super.onPause();
     }
 
     @Override
     public void onResume() {
         super.onResume();
         pushSafeInsetsToWebView();
+        if (bgAudioEnabled && mediaIsPlaying) {
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().onResume();
+                getBridge().getWebView().resumeTimers();
+            }
+        }
         if (pendingApkInstallFile != null && pendingApkInstallFile.exists()) {
             boolean canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls();
             if (canInstall) {
@@ -826,19 +844,17 @@ public class MainActivity extends BridgeActivity {
             long nativePos = MediaPlaybackService.nativePositionMs;
             boolean nativePlaying = MediaPlaybackService.isNativePlaying;
             if (getBridge() != null && getBridge().getWebView() != null) {
-                // Resume web media immediately while native audio keeps playing smoothly until web media is ready
                 getBridge().getWebView().evaluateJavascript(
                     "window.resumeWebMediaFromNative && window.resumeWebMediaFromNative(" + nativePos + "," + nativePlaying + ");",
                     null
                 );
-                // Fallback cleanup in case webview doesn't fire playing event within 2.5 seconds
                 getBridge().getWebView().postDelayed(() -> {
                     if (MediaPlaybackService.isNativeAudioActive) {
                         Intent ret = new Intent(this, MediaPlaybackService.class);
                         ret.setAction(MediaPlaybackService.ACTION_HANDOFF_RETURN);
                         startService(ret);
                     }
-                }, 2500L);
+                }, 1500L);
             }
         }
     }
