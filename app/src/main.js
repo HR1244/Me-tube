@@ -4268,10 +4268,6 @@ function openShortsModal(short) {
   const embedContainer = document.getElementById('shorts-embed-container');
   const videoElem = document.getElementById('shorts-video-element');
   const spinner = document.getElementById('shorts-spinner');
-  const avatarImg = document.getElementById('shorts-channel-avatar');
-  const channelNameElem = document.getElementById('shorts-channel-name');
-  const titleElem = document.getElementById('shorts-title');
-  const likeCountElem = document.getElementById('shorts-like-count');
 
   if (!modal) return;
 
@@ -4315,6 +4311,15 @@ function openShortsModal(short) {
   modal.classList.add('open');
   syncNativeOverlayFlag();
 
+  const cName = currentShort.channel || 'Creator';
+  const channelNameElem = document.getElementById('shorts-channel-name');
+  const avatarImg = document.getElementById('shorts-channel-avatar');
+  if (channelNameElem) channelNameElem.textContent = `@${cName.replace(/\s+/g, '')}`;
+  if (avatarImg) {
+    avatarImg.src = resolveAvatarUrl(currentShort.channel_avatar, cName, currentShort.channel_id);
+    attachAvatarHandlers(avatarImg, cName, currentShort.channel_id);
+  }
+
   const launchShortsEmbed = () => {
     if (!isShortsActive()) return;
     if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
@@ -4334,15 +4339,16 @@ function openShortsModal(short) {
     if (spinner) spinner.style.display = 'none';
     if (embedContainer) {
       embedContainer.style.display = 'block';
-      // Native YouTube playback with full user interactions enabled (pointer-events: auto, controls=1)
+      const muteParam = state.isShortMuted ? 1 : 0;
+      // Clean YouTube embed with pointer-events:none so gestures pass to gesture surface
       embedContainer.innerHTML = `
         <iframe 
           id="shorts-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=1&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3"
+          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3&enablejsapi=1&mute=${muteParam}"
           title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          style="width:100%; height:100%; border:none; pointer-events:auto;"
+          style="width:100%; height:100%; border:none; pointer-events:none;"
         ></iframe>
       `;
     }
@@ -4350,6 +4356,29 @@ function openShortsModal(short) {
 
   // Launch official YouTube Shorts player directly & immediately
   launchShortsEmbed();
+}
+
+function showShortsCenterFeedback(type) {
+  const el = document.getElementById('shorts-center-feedback');
+  if (!el) return;
+  let iconHtml = '';
+  if (type === 'play') {
+    iconHtml = `<svg viewBox="0 0 24 24" width="38" height="38" fill="#FFF"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
+  } else if (type === 'pause') {
+    iconHtml = `<svg viewBox="0 0 24 24" width="38" height="38" fill="#FFF"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+  } else if (type === 'liked') {
+    iconHtml = `<svg viewBox="0 0 24 24" width="50" height="50" fill="#FF0000"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
+  }
+  el.innerHTML = iconHtml;
+  el.style.display = 'flex';
+  el.classList.remove('animate');
+  void el.offsetWidth;
+  el.classList.add('animate');
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => {
+    el.style.display = 'none';
+    el.classList.remove('animate');
+  }, 480);
 }
 
 function initShortsPlayer() {
@@ -4361,14 +4390,15 @@ function initShortsPlayer() {
   const nextBtn = document.getElementById('btn-shorts-next');
   const likeBtn = document.getElementById('btn-shorts-like');
   const downloadBtn = document.getElementById('btn-shorts-download');
-  const creatorRow = document.getElementById('shorts-creator-row');
+  const creatorRow = document.getElementById('shorts-creator-pill');
 
   closeBtn?.addEventListener('click', () => {
     closeShortsReel();
     switchTab('home');
   });
 
-  soundBtn?.addEventListener('click', () => {
+  soundBtn?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
     state.isShortMuted = !state.isShortMuted;
     const frame = document.getElementById('shorts-embed-player');
     if (frame && frame.contentWindow) {
@@ -4426,47 +4456,85 @@ function initShortsPlayer() {
     }
   };
 
+  let isNavigatingShorts = false;
   const goToNextShort = async () => {
+    if (isNavigatingShorts) return;
     if (state.shortsList.length === 0) return;
-    const nextIdx = state.currentShortIndex + 1;
-    if (nextIdx < state.shortsList.length) {
-      openShortsModal(state.shortsList[nextIdx]);
-    } else {
-      await prefetchMoreShorts();
-      if (state.currentShortIndex + 1 < state.shortsList.length) {
-        openShortsModal(state.shortsList[state.currentShortIndex + 1]);
-      } else if (state.shortsList.length > 1) {
-        // Pick a random short from the list instead of always repeating the 0th item!
-        const randIdx = Math.floor(Math.random() * state.shortsList.length);
-        openShortsModal(state.shortsList[randIdx]);
+    isNavigatingShorts = true;
+    try {
+      const nextIdx = state.currentShortIndex + 1;
+      if (nextIdx < state.shortsList.length) {
+        openShortsModal(state.shortsList[nextIdx]);
+      } else {
+        await prefetchMoreShorts();
+        if (state.currentShortIndex + 1 < state.shortsList.length) {
+          openShortsModal(state.shortsList[state.currentShortIndex + 1]);
+        } else if (state.shortsList.length > 1) {
+          // Pick a random short from the list instead of repeating
+          const randIdx = Math.floor(Math.random() * state.shortsList.length);
+          openShortsModal(state.shortsList[randIdx]);
+        }
       }
-    }
 
-    if (state.currentShortIndex >= state.shortsList.length - 4) {
-      prefetchMoreShorts();
+      if (state.currentShortIndex >= state.shortsList.length - 4) {
+        prefetchMoreShorts();
+      }
+    } finally {
+      setTimeout(() => { isNavigatingShorts = false; }, 320);
     }
   };
 
   const goToPrevShort = () => {
+    if (isNavigatingShorts) return;
     if (state.shortsList.length === 0) return;
-    const prevIdx = Math.max(0, state.currentShortIndex - 1);
-    openShortsModal(state.shortsList[prevIdx]);
+    isNavigatingShorts = true;
+    try {
+      const prevIdx = Math.max(0, state.currentShortIndex - 1);
+      openShortsModal(state.shortsList[prevIdx]);
+    } finally {
+      setTimeout(() => { isNavigatingShorts = false; }, 320);
+    }
   };
 
-  nextBtn?.addEventListener('click', goToNextShort);
-  prevBtn?.addEventListener('click', goToPrevShort);
-
-  likeBtn?.addEventListener('click', () => {
-    const isLiked = likeBtn.classList.toggle('active');
-    likeBtn.style.color = isLiked ? '#FF0000' : '#FFF';
+  nextBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    goToNextShort();
+  });
+  prevBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    goToPrevShort();
   });
 
-  downloadBtn?.addEventListener('click', () => {
+  let isShortPaused = false;
+  const toggleShortsPlayPause = () => {
+    const frame = document.getElementById('shorts-embed-player');
+    const vid = document.getElementById('shorts-video-element');
+    isShortPaused = !isShortPaused;
+    if (frame && frame.contentWindow) {
+      const func = isShortPaused ? 'pauseVideo' : 'playVideo';
+      frame.contentWindow.postMessage(`{"event":"command","func":"${func}","args":""}`, '*');
+    }
+    if (vid) {
+      if (isShortPaused) vid.pause();
+      else vid.play().catch(() => {});
+    }
+    showShortsCenterFeedback(isShortPaused ? 'pause' : 'play');
+  };
+
+  likeBtn?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    const isLiked = likeBtn.classList.toggle('active');
+    likeBtn.style.color = isLiked ? '#FF0000' : '#FFF';
+    showShortsCenterFeedback('liked');
+  });
+
+  downloadBtn?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
     const cur = state.shortsList[state.currentShortIndex];
     if (cur) openDownloadModal(cur);
   });
 
-  // 100% Reliable Mobile Swipe Gestures on Gesture Catcher Surface
+  // 100% Reliable Mobile Swipe & Scroll Gestures on Gesture Catcher Surface
   const gestureSurface = document.getElementById('shorts-gesture-catcher') || modal;
   let touchStartY = 0;
   let touchStartX = 0;
@@ -4488,24 +4556,37 @@ function initShortsPlayer() {
     const duration = Date.now() - touchStartTime;
 
     // Detect Vertical Swipe (Up = Next, Down = Prev)
-    if (deltaY < -40 && Math.abs(deltaY) > Math.abs(deltaX)) {
+    if (deltaY < -35 && Math.abs(deltaY) > Math.abs(deltaX) * 0.75) {
       goToNextShort();
       return;
-    } else if (deltaY > 40 && Math.abs(deltaY) > Math.abs(deltaX)) {
+    } else if (deltaY > 35 && Math.abs(deltaY) > Math.abs(deltaX) * 0.75) {
       goToPrevShort();
       return;
     }
 
-    // Detect Tap (Mute/Unmute) & Double Tap (Like)
-    if (Math.abs(deltaY) < 15 && Math.abs(deltaX) < 15 && duration < 300) {
+    // Detect Tap (Play/Pause) & Double Tap (Like)
+    if (Math.abs(deltaY) < 16 && Math.abs(deltaX) < 16 && duration < 320) {
       const now = Date.now();
-      if (now - lastTapTime < 300) {
+      if (now - lastTapTime < 320) {
         likeBtn?.click();
-        showToast('Liked Short');
       } else {
-        soundBtn?.click();
+        toggleShortsPlayPause();
       }
       lastTapTime = now;
+    }
+  }, { passive: true });
+
+  // Mouse wheel / trackpad scroll support
+  let lastWheelAt = 0;
+  gestureSurface?.addEventListener('wheel', (e) => {
+    const now = Date.now();
+    if (now - lastWheelAt < 350) return;
+    if (e.deltaY > 25) {
+      lastWheelAt = now;
+      goToNextShort();
+    } else if (e.deltaY < -25) {
+      lastWheelAt = now;
+      goToPrevShort();
     }
   }, { passive: true });
 }

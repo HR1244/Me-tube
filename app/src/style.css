@@ -1421,7 +1421,110 @@ body.is-mobile-device .phone-home-indicator {
   height: 100%;
   z-index: 40;
   background: #000;
+  pointer-events: none;
+}
+
+.shorts-gesture-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 55;
+  touch-action: none;
+  background: transparent;
+  cursor: grab;
+}
+
+.shorts-center-feedback {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 65;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+
+.shorts-center-feedback.animate {
+  animation: shortsFlashFeedback 0.45s ease forwards;
+}
+
+@keyframes shortsFlashFeedback {
+  0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
+  35% { transform: translate(-50%, -50%) scale(1.1); opacity: 0.95; }
+  100% { transform: translate(-50%, -50%) scale(1.2); opacity: 0; }
+}
+
+.shorts-nav-actions {
+  position: absolute;
+  right: 14px;
+  bottom: 80px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   pointer-events: auto;
+}
+
+.shorts-circle-action {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s;
+}
+
+.shorts-circle-action:active {
+  transform: scale(0.92);
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.shorts-creator-pill {
+  position: absolute;
+  left: 14px;
+  bottom: 24px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  padding: 4px 12px 4px 4px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  pointer-events: auto;
+  max-width: 65%;
+}
+
+.shorts-pill-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: #222;
+  flex-shrink: 0;
+}
+
+.shorts-pill-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #FFF;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .shorts-top-header {

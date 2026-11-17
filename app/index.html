@@ -898,16 +898,44 @@
                     <span>Shorts</span>
                   </span>
                   <div style="display:flex; gap:10px;">
+                    <button class="icon-button" id="btn-shorts-sound" title="Toggle Sound" style="background:rgba(0,0,0,0.6); backdrop-filter:blur(8px); width:36px; height:36px; border-radius:18px;">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                    </button>
                     <button class="icon-button" id="btn-close-shorts" title="Close Shorts" style="background:rgba(0,0,0,0.6); backdrop-filter:blur(8px); width:36px; height:36px; border-radius:18px;">
                       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   </div>
                 </div>
 
-                <!-- Pure Native YouTube Shorts Player (No Obstructive Custom Overlay) -->
-                <div id="shorts-embed-container" class="shorts-media-layer" style="pointer-events:auto; z-index:40;"></div>
+                <!-- YouTube Shorts Embed Container -->
+                <div id="shorts-embed-container" class="shorts-media-layer" style="pointer-events:none; z-index:40;"></div>
                 <video id="shorts-video-element" playsinline webkit-playsinline loop class="shorts-media-layer" style="display:none; width:100%; height:100%; object-fit:cover; background:#000;"></video>
                 <div id="shorts-spinner" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; z-index:50; pointer-events:none;"><div class="spinner"></div></div>
+
+                <!-- Animated Feedback Badge (Play/Pause/Like Flash) -->
+                <div id="shorts-center-feedback" class="shorts-center-feedback" style="display:none;"></div>
+
+                <!-- Fullscreen Transparent Gesture Surface for Seamless Vertical Swiping & Scrolling -->
+                <div id="shorts-gesture-catcher" class="shorts-gesture-surface"></div>
+
+                <!-- Floating Right-Side Minimalist Navigation Buttons (Quick Up / Down Scroll) -->
+                <div class="shorts-nav-actions">
+                  <button class="shorts-circle-action" id="btn-shorts-prev" title="Previous Short">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="18 15 12 9 6 15"/></svg>
+                  </button>
+                  <button class="shorts-circle-action" id="btn-shorts-next" title="Next Short">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <button class="shorts-circle-action" id="btn-shorts-like" title="Like">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+                  </button>
+                </div>
+
+                <!-- Minimalist Bottom Creator Line -->
+                <div class="shorts-creator-pill" id="shorts-creator-pill">
+                  <img id="shorts-channel-avatar" src="" referrerpolicy="no-referrer" alt="" class="shorts-pill-avatar" />
+                  <span id="shorts-channel-name" class="shorts-pill-name">@Creator</span>
+                </div>
               </div>
             </div>
 
