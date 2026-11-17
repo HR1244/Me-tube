@@ -600,6 +600,11 @@ function initNavigation() {
     loadFeed('all');
   });
 
+  // Header Notifications shortcut
+  document.getElementById('btn-header-notifications')?.addEventListener('click', () => {
+    showToast('You are all caught up! Zero ads active.');
+  });
+
   // Header Downloads shortcut
   document.getElementById('btn-header-downloads')?.addEventListener('click', () => {
     switchTab('downloads');
@@ -657,7 +662,11 @@ function initNavigation() {
   document.querySelectorAll('.cat-pill').forEach((pill) => {
     pill.addEventListener('click', () => {
       const cat = pill.dataset.cat;
-      if (cat) selectCategory(cat);
+      if (cat === 'subs') {
+        switchTab('subscriptions');
+      } else if (cat) {
+        selectCategory(cat);
+      }
     });
   });
 
@@ -1191,9 +1200,6 @@ function createVideoCardElement(video) {
         <div class="video-title-row">
           <h3 class="video-title">${video.title}</h3>
           <div class="video-actions-quick">
-            <button class="quick-btn btn-card-download" title="Download">
-              <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            </button>
             <button class="quick-btn btn-card-dots" title="More options">
               <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
             </button>
@@ -1236,8 +1242,8 @@ function createVideoCardElement(video) {
     openChannelExplorer(video);
   });
 
-  // Click direct download
-  card.querySelector('.btn-card-download').addEventListener('click', (e) => {
+  // Click direct download (if present)
+  card.querySelector('.btn-card-download')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openDownloadModal(video);
   });
@@ -1261,19 +1267,21 @@ function createShortsShelfElement(shortsList) {
         <svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></svg>
       </div>
       <h2 class="shorts-shelf-title">Shorts</h2>
+      <button class="icon-button shorts-shelf-dots" title="More" style="margin-left:auto; width:28px; height:28px;">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+      </button>
     </div>
     <div class="shorts-carousel">
       ${shortsList.map((short) => `
         <div class="short-card" data-short-id="${short.id}">
           <div class="short-thumb-wrapper">
             <img class="short-thumb-img" src="${short.thumbnail}" alt="${short.title}" loading="lazy" />
-            <button class="short-download-quick" title="Download Short">
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            </button>
-          </div>
-          <div class="short-info">
-            <h4 class="short-title">${short.title}</h4>
-            <div class="short-views">${formatViews(short.view_count)}</div>
+            <div class="short-card-overlay">
+              <button class="short-more-btn" title="Options">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="#FFF"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+              </button>
+              <div class="short-overlay-title">${short.title}</div>
+            </div>
           </div>
         </div>
       `).join('')}
@@ -1285,9 +1293,9 @@ function createShortsShelfElement(shortsList) {
     const sId = card.dataset.shortId;
     const shortObj = shortsList.find((s) => s.id === sId);
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.short-download-quick')) {
+      if (e.target.closest('.short-more-btn')) {
         e.stopPropagation();
-        openDownloadModal(shortObj);
+        openActionsSheet(shortObj);
       } else {
         state.shortsList = shortsList;
         openShortsModal(shortObj);
@@ -1684,23 +1692,28 @@ export function resolveViaNativeInnerTube(videoId, formatType = 'audio') {
 export function syncNativeMediaService(playingOverride = null, force = false) {
   try {
     if (!window.AndroidMediaService?.syncState) return;
+
+    // ONLY LONG VIDEOS ON BG - Shorts must never play in background!
+    const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
+    if (shortsOpen) {
+      window.AndroidMediaService.syncState(false, false, 0, 0, '', '', '', '', '');
+      return;
+    }
+
     if (playingOverride === false && Date.now() < _nativeHandoffLockUntil && !force) return;
     const now = Date.now();
     if (!force && now - _lastNativeSyncAt < 3500) return;
     _lastNativeSyncAt = now;
 
-    const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
-    const video = shortsOpen ? (state.shortsList?.[state.currentShortIndex] || state.activeVideo) : state.activeVideo;
+    const video = state.activeVideo;
     if (!video) {
-      window.AndroidMediaService.syncState(false, Boolean(state.isAudioMode), 0, 0, '', '', '', '', '');
+      window.AndroidMediaService.syncState(false, false, 0, 0, '', '', '', '', '');
       return;
     }
 
-    const videoElem = shortsOpen
-      ? document.getElementById('shorts-video-element')
-      : document.getElementById('html5-video-element');
-    const audioElem = !shortsOpen ? document.getElementById('html5-audio-element') : null;
-    const isYtIframe = !shortsOpen && state.playbackEngine === 'youtube' && !video.isExternal && !video.isOffline;
+    const videoElem = document.getElementById('html5-video-element');
+    const audioElem = document.getElementById('html5-audio-element');
+    const isYtIframe = state.playbackEngine === 'youtube' && !video.isExternal && !video.isOffline;
     const isAudioPlaying = audioElem ? (!audioElem.paused && !audioElem.ended) : false;
     const isElemPlaying = (videoElem ? (!videoElem.paused && !videoElem.ended) : false) || isAudioPlaying;
     const isPlaying = playingOverride !== null
@@ -1751,6 +1764,28 @@ let _isAppInBackground = false;
 
 window.onAppBackground = function() {
   _isAppInBackground = true;
+
+  // ONLY LONG VIDEOS ON BG - Shorts must immediately stop on app minimize!
+  const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
+  if (shortsOpen) {
+    const shortsIframe = document.getElementById('shorts-embed-player');
+    if (shortsIframe && shortsIframe.contentWindow) {
+      try {
+        shortsIframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+      } catch (_) {}
+    }
+    const shortsVideo = document.getElementById('shorts-video-element');
+    if (shortsVideo && !shortsVideo.paused) {
+      try { shortsVideo.pause(); } catch (_) {}
+    }
+    try {
+      window.AndroidMediaService?.syncState?.(false, false, 0, 0, '', '', '', '', '');
+      window.AndroidMediaService?.stopNativePlayback?.();
+      window.AndroidMediaService?.stopService?.();
+    } catch (_) {}
+    return;
+  }
+
   // Pause video iframe in WebView so only high-priority native ExoPlayer plays audio in background
   if (state.playbackEngine === 'youtube') {
     const iframe = document.getElementById('youtube-embed-player');
@@ -4149,12 +4184,11 @@ export function closeShortsReel() {
   const spinner = document.getElementById('shorts-spinner');
   if (spinner) spinner.style.display = 'none';
 
-  // Immediately stop any native media service playback from shorts
+  // Immediately stop any native media service playback: ONLY LONG VIDEOS ON BG
   try {
+    window.AndroidMediaService?.syncState?.(false, false, 0, 0, '', '', '', '', '');
     window.AndroidMediaService?.stopNativePlayback?.();
-    if (!state.activeVideo) {
-      window.AndroidMediaService?.stopService?.();
-    }
+    window.AndroidMediaService?.stopService?.();
   } catch (_) {}
 
   syncNativeOverlayFlag();
@@ -4257,6 +4291,13 @@ function openShortsModal(short) {
   // Zero simultaneous playback: teardown all main audio/video + native service immediately!
   stopAllPlayback('shorts-native');
 
+  // ONLY LONG VIDEOS ON BG: Shorts must NEVER play in background!
+  try {
+    window.AndroidMediaService?.syncState?.(false, false, 0, 0, '', '', '', '', '');
+    window.AndroidMediaService?.stopNativePlayback?.();
+    window.AndroidMediaService?.stopService?.();
+  } catch (_) {}
+
   let idx = state.shortsList.findIndex((s) => s.id === short.id);
   if (idx < 0) {
     state.shortsList.unshift(short);
@@ -4273,30 +4314,6 @@ function openShortsModal(short) {
   modal.style.display = 'block';
   modal.classList.add('open');
   syncNativeOverlayFlag();
-
-  const cName = currentShort.channel || 'Creator';
-  if (channelNameElem) channelNameElem.textContent = `@${cName.replace(/\s+/g, '')}`;
-  if (titleElem) titleElem.textContent = currentShort.title || '';
-  if (likeCountElem) likeCountElem.textContent = formatViews(currentShort.view_count || currentShort.view_count_text || 'Likes');
-
-  if (avatarImg) {
-    avatarImg.src = resolveAvatarUrl(currentShort.channel_avatar, cName, currentShort.channel_id);
-    attachAvatarHandlers(avatarImg, cName, currentShort.channel_id);
-  }
-
-  // Asynchronously resolve authentic creator details & avatar
-  api.getVideo(currentShort.id).then((det) => {
-    if (!isShortsActive()) return;
-    if (det && det.channel && state.shortsList[state.currentShortIndex]?.id === currentShort.id) {
-      currentShort.channel = det.channel;
-      currentShort.channel_id = det.channel_id || currentShort.channel_id;
-      currentShort.channel_avatar = det.channel_avatar || currentShort.channel_avatar;
-      if (channelNameElem) channelNameElem.textContent = `@${det.channel.replace(/\s+/g, '')}`;
-      if (avatarImg && det.channel_avatar) {
-        avatarImg.src = resolveAvatarUrl(det.channel_avatar, det.channel, det.channel_id);
-      }
-    }
-  }).catch(() => {});
 
   const launchShortsEmbed = () => {
     if (!isShortsActive()) return;
@@ -4317,19 +4334,18 @@ function openShortsModal(short) {
     if (spinner) spinner.style.display = 'none';
     if (embedContainer) {
       embedContainer.style.display = 'block';
-      const muteParam = state.isShortMuted ? 1 : 0;
+      // Native YouTube playback with full user interactions enabled (pointer-events: auto, controls=1)
       embedContainer.innerHTML = `
         <iframe 
           id="shorts-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3&mute=${muteParam}"
+          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=1&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3"
           title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          style="width:100%; height:100%; border:none; pointer-events:none;"
+          style="width:100%; height:100%; border:none; pointer-events:auto;"
         ></iframe>
       `;
     }
-    syncNativeMediaService(true, true);
   };
 
   // Launch official YouTube Shorts player directly & immediately

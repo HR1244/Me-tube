@@ -425,64 +425,53 @@ body.is-mobile-device .phone-home-indicator {
   overflow: hidden;
 }
 
-/* Fixed Safe Top Header Bar + Prominent Aesthetic Search Bar */
+/* Fixed Safe Top Header Bar (Single Minimalist YouTube Row) */
 .metube-header {
-  padding-top: max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 10px);
-  padding-bottom: 10px;
-  padding-left: calc(max(var(--safe-left, 0px), 0px) + 12px);
-  padding-right: calc(max(var(--safe-right, 0px), 0px) + 12px);
+  padding-top: max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 6px);
+  padding-bottom: 6px;
+  padding-left: calc(max(var(--safe-left, 0px), 0px) + 14px);
+  padding-right: calc(max(var(--safe-right, 0px), 0px) + 14px);
   background: var(--bg);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
   z-index: 200;
   flex-shrink: 0;
   position: relative;
+  min-height: calc(48px + max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 6px));
+  box-sizing: border-box;
 }
 
 .header-top-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
   width: 100%;
 }
 
-.header-account-chip {
-  background: #1F1F1F;
-  border: 1px solid #333;
-  color: #E5E7EB;
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.header-account-chip.connected {
-  background: rgba(34, 197, 94, 0.14);
-  border-color: rgba(34, 197, 94, 0.45);
-  color: #4ADE80;
+.metube-header.search-mode-open .header-top-row {
+  display: none !important;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .icon-button {
   background: transparent;
   border: none;
   color: var(--text-white);
-  width: 36px;
-  height: 36px;
-  border-radius: 18px;
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -499,52 +488,75 @@ body.is-mobile-device .phone-home-indicator {
 }
 
 .icon-button svg {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   fill: currentColor;
 }
 
-/* MeTube Red Logo & Bold Text */
+/* Brand & Custom Logo */
 .metube-brand {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   cursor: pointer;
   text-decoration: none;
 }
 
-.metube-logo-badge {
-  width: 26px;
-  height: 18px;
-  background: var(--metube-red);
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.metube-logo-badge svg {
-  width: 9px;
-  height: 9px;
-  fill: #FFF;
-  margin-left: 1px;
+.metube-logo-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  object-fit: contain;
 }
 
 .metube-brand-text {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 800;
   color: var(--text-white);
   letter-spacing: -0.6px;
 }
 
-/* Always-Visible Aesthetic Search Pill */
+.notif-badge-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #FF0000;
+  color: #FFF;
+  font-size: 9px;
+  font-weight: 800;
+  width: 15px;
+  height: 15px;
+  border-radius: 7.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--bg);
+}
+
+/* YouTube Expandable Search Bar */
+.header-search-bar {
+  display: none;
+  width: 100%;
+  align-items: center;
+  background: #212121;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  height: 38px;
+  overflow: hidden;
+  margin: 0;
+}
+
+.metube-header.search-mode-open .header-search-bar {
+  display: flex !important;
+}
+
 .search-back-btn {
   background: transparent;
   border: none;
   color: var(--text-white);
-  padding: 0 8px 0 10px;
+  padding: 0 10px;
   cursor: pointer;
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
 }
@@ -554,66 +566,6 @@ body.is-mobile-device .phone-home-indicator {
   height: 18px;
 }
 
-.header-search-bar {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  background: #1B1B1E;
-  border: 1.5px solid rgba(255, 255, 255, 0.16);
-  border-radius: 24px;
-  height: 42px;
-  overflow: hidden;
-  margin: 0;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
-}
-
-.header-search-bar:focus-within {
-  border-color: #FFC700;
-  box-shadow: 0 4px 18px rgba(255, 199, 0, 0.22);
-  background: #232328;
-}
-
-.search-leading-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #FFC700;
-  padding-left: 14px;
-}
-
-.search-paste-btn {
-  background: transparent;
-  border: none;
-  color: #D1D5DB;
-  padding: 0 6px;
-  cursor: pointer;
-  font-size: 15px;
-  display: flex;
-  align-items: center;
-}
-
-.search-submit-btn {
-  background: var(--metube-red);
-  color: #FFF;
-  border: none;
-  height: 28px;
-  padding: 0 12px;
-  margin-right: 6px;
-  border-radius: 14px;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.metube-header.search-mode-open .search-back-btn {
-  display: flex !important;
-}
-
-.metube-header.search-mode-open .search-leading-icon {
-  display: none;
-}
-
 .search-input {
   flex: 1;
   min-width: 0;
@@ -621,14 +573,14 @@ body.is-mobile-device .phone-home-indicator {
   border: none;
   outline: none;
   color: var(--text-white);
-  padding: 0 10px;
-  font-size: 13px;
+  padding: 0 8px;
+  font-size: 14px;
 }
 
-.search-clear-btn {
+.search-paste-btn, .search-clear-btn {
   background: transparent;
   border: none;
-  color: var(--text-gray);
+  color: #AAAAAA;
   padding: 0 8px;
   cursor: pointer;
   display: flex;
@@ -1097,60 +1049,64 @@ body.is-mobile-device .phone-home-indicator {
 }
 
 .short-card {
-  width: 142px;
+  width: calc(50% - 6px);
+  min-width: 155px;
+  max-width: 185px;
   flex-shrink: 0;
   cursor: pointer;
+  position: relative;
 }
 
 .short-thumb-wrapper {
-  width: 142px;
-  height: 240px;
-  border-radius: 10px;
+  width: 100%;
+  height: 260px;
+  border-radius: 12px;
   overflow: hidden;
   position: relative;
-  background: #1E1E1E;
+  background: #1A1A1A;
 }
 
 .short-thumb-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
-.short-download-quick {
+.short-card-overlay {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
-  width: 30px;
-  height: 30px;
-  border-radius: 15px;
-  background: rgba(0, 0, 0, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 0.85) 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px;
+  border-radius: 12px;
+  box-sizing: border-box;
+}
+
+.short-more-btn {
+  background: transparent;
+  border: none;
+  align-self: flex-end;
+  padding: 3px;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #FFF;
-  cursor: pointer;
 }
 
-.short-info {
-  padding: 6px 2px 0;
-}
-
-.short-title {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
+.short-overlay-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #FFFFFF;
+  line-height: 17px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.short-views {
-  color: var(--text-gray);
-  font-size: 11px;
-  margin-top: 3px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
 /* =========================================================
@@ -1252,7 +1208,7 @@ body.is-mobile-device .phone-home-indicator {
    BOTTOM NAVIGATION BAR
    ========================================================= */
 .metube-bottom-nav {
-  height: calc(52px + var(--safe-bottom, 0px));
+  height: calc(48px + var(--safe-bottom, 0px));
   padding-bottom: var(--safe-bottom, 0px);
   background: var(--bg);
   border-top: 1px solid var(--border-subtle);
@@ -1268,27 +1224,38 @@ body.is-mobile-device .phone-home-indicator {
 
 .nav-item {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--text-gray);
-  font-size: 10px;
-  font-weight: 500;
-  gap: 3px;
+  color: #888888;
   cursor: pointer;
   background: transparent;
   border: none;
   flex: 1;
+  height: 100%;
+}
+
+.nav-item span {
+  display: none !important;
 }
 
 .nav-item svg {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
+  transition: transform 0.15s ease, color 0.15s ease;
 }
 
 .nav-item.active {
   color: #FFFFFF;
-  font-weight: 700;
+}
+
+.nav-item.active svg {
+  transform: scale(1.06);
+}
+
+.nav-add-circle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .nav-badge-dot {
@@ -1444,7 +1411,6 @@ body.is-mobile-device .phone-home-indicator {
   height: 100%;
   flex: 1;
   background: #000;
-  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -1455,46 +1421,17 @@ body.is-mobile-device .phone-home-indicator {
   height: 100%;
   z-index: 40;
   background: #000;
-}
-
-.shorts-scrim-bottom {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 170px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.72) 48%, rgba(0, 0, 0, 0.22) 78%, transparent 100%);
-  z-index: 45;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .shorts-top-header {
   position: absolute;
-  top: 12px;
+  top: 14px;
   left: 14px;
   right: 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  z-index: 100;
-}
-
-.shorts-right-actions {
-  position: absolute;
-  right: 12px;
-  bottom: 72px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  align-items: center;
-  z-index: 100;
-}
-
-.shorts-bottom-meta {
-  position: absolute;
-  bottom: 24px;
-  left: 14px;
-  right: 78px;
   z-index: 100;
   pointer-events: auto;
 }

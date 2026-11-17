@@ -329,6 +329,8 @@ public class MainActivity extends BridgeActivity {
                 @JavascriptInterface
                 public void stopService() {
                     mediaIsPlaying = false;
+                    bgAudioEnabled = false;
+                    activeVideoId = "";
                     stopMediaService();
                 }
 
