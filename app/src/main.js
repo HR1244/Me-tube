@@ -45,14 +45,9 @@ window.addEventListener('pagehide', (e) => { e.stopImmediatePropagation(); }, tr
 
 // Fast return to foreground resync: if audio is playing in background, seamlessly snap video to match
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && state.activeVideo && state.playbackEngine === 'native') {
-    const videoElem = document.getElementById('html5-video-element');
-    const audioElem = document.getElementById('html5-audio-element');
-    if (audioElem && audioElem.src && !audioElem.paused && videoElem) {
-      if (Math.abs(videoElem.currentTime - audioElem.currentTime) > 0.25) {
-        try { videoElem.currentTime = audioElem.currentTime; } catch (_) {}
-      }
-      videoElem.play().catch(() => {});
+  if (!document.hidden && state.activeVideo) {
+    if (window.onAppForegroundResume) {
+      window.onAppForegroundResume();
     }
   }
 });
@@ -115,7 +110,7 @@ const state = {
   isLoadingFeed: false,
   isLoadingMore: false,
   hasMore: true,
-  playbackEngine: 'native'
+  playbackEngine: 'youtube'
 };
 
 // Formatting helpers
@@ -1554,17 +1549,31 @@ if (typeof window !== 'undefined') {
         if (typeof msg.info.playerState === 'number') {
           const st = msg.info.playerState;
           if (st === 1 || st === 3) ytIsPlaying = true;
-          else if (st === 0 || st === 2) ytIsPlaying = false;
+          else if (st === 0) ytIsPlaying = false;
+          else if (st === 2 && isUserPaused) ytIsPlaying = false;
         }
         syncNativeMediaService(null, false);
       } else if (msg.event === 'onStateChange') {
         const st = Number(msg.info);
         if (st === 1 || st === 3) {
           ytIsPlaying = true;
+          isUserPaused = false;
           syncNativeMediaService(true, true);
-        } else if (st === 0 || st === 2) {
+        } else if (st === 0) {
           ytIsPlaying = false;
           syncNativeMediaService(false, true);
+          if (state.autoplay && state.suggestedVideos && state.suggestedVideos.length > 0) {
+            openVideoPlayer(state.suggestedVideos[0]);
+          }
+        } else if (st === 2) {
+          // If paused by OS background transition or window blur, do NOT cancel background audio!
+          if (!isUserPaused && state.isAudioMode && (_isAppInBackground || document.hidden)) {
+            return;
+          }
+          if (isUserPaused) {
+            ytIsPlaying = false;
+            syncNativeMediaService(false, true);
+          }
         }
       }
     } catch (_) {}
@@ -1702,6 +1711,60 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
   } catch (_) {}
 }
 
+let _isAppInBackground = false;
+
+window.onAppBackground = function() {
+  _isAppInBackground = true;
+  // Pause video iframe in WebView so only high-priority native ExoPlayer plays audio in background
+  if (state.playbackEngine === 'youtube') {
+    const iframe = document.getElementById('youtube-embed-player');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+    }
+  }
+};
+
+window.onAppForegroundResume = function(nativePosMs, wasPlaying) {
+  _isAppInBackground = false;
+  if (!state.activeVideo || isUserPaused) return;
+
+  const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
+  if (shortsOpen) {
+    const shortsIframe = document.getElementById('shorts-embed-player');
+    if (shortsIframe && shortsIframe.contentWindow) {
+      shortsIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+    }
+    const shortsVideo = document.getElementById('shorts-video-element');
+    if (shortsVideo && shortsVideo.paused) {
+      shortsVideo.play().catch(() => {});
+    }
+    return;
+  }
+
+  if (state.playbackEngine === 'youtube') {
+    const iframe = document.getElementById('youtube-embed-player');
+    if (iframe && iframe.contentWindow) {
+      if (typeof nativePosMs === 'number' && nativePosMs > 0 && Math.abs((ytCurrentTimeSec || 0) - (nativePosMs / 1000)) > 1.2) {
+        iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [nativePosMs / 1000, true] }), '*');
+      }
+      iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+      ytIsPlaying = true;
+    }
+    updatePlayPauseIcons(true);
+    syncNativeMediaService(true, true);
+  } else {
+    const videoElem = document.getElementById('html5-video-element');
+    const audioElem = document.getElementById('html5-audio-element');
+    if (audioElem && audioElem.src && !audioElem.paused && videoElem) {
+      videoElem.currentTime = audioElem.currentTime;
+    }
+    if (videoElem && videoElem.paused) videoElem.play().catch(() => {});
+    if (audioElem && audioElem.src && audioElem.paused) audioElem.play().catch(() => {});
+    updatePlayPauseIcons(true);
+    syncNativeMediaService(true, true);
+  }
+};
+
 window.pauseWebMediaForNativeHandoff = function() {
   try {
     _nativeHandoffLockUntil = Date.now() + 2500;
@@ -1725,17 +1788,9 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
 
     const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
     if (shortsOpen) {
-      const shortsVideo = document.getElementById('shorts-video-element');
-      if (shortsVideo) {
-        if (!shortsVideo.paused && !shortsVideo.ended) {
-          releaseNative();
-          return;
-        }
-        if (playing && !isUserPaused) {
-          shortsVideo.play().catch(() => releaseNative());
-        } else {
-          shortsVideo.pause();
-        }
+      const shortsIframe = document.getElementById('shorts-embed-player');
+      if (shortsIframe && shortsIframe.contentWindow) {
+        shortsIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
       }
       releaseNative();
       return;
@@ -1749,16 +1804,16 @@ window.resumeWebMediaFromNative = function(posMs, playing) {
     if (state.playbackEngine === 'youtube' && !state.activeVideo.isExternal && !state.activeVideo.isOffline) {
       const iframe = document.getElementById('youtube-embed-player');
       if (iframe && iframe.contentWindow) {
-        if (typeof posMs === 'number' && posMs > 0 && Math.abs((ytCurrentTimeSec || 0) - (posMs / 1000)) > 2.5) {
+        if (typeof posMs === 'number' && posMs > 0 && Math.abs((ytCurrentTimeSec || 0) - (posMs / 1000)) > 1.2) {
           iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [posMs / 1000, true] }), '*');
         }
-        if (playing && !isUserPaused) {
-          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: '' }), '*');
+        if (!isUserPaused) {
+          iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
           ytIsPlaying = true;
         }
       }
-      updatePlayPauseIcons(Boolean(playing));
-      setTimeout(releaseNative, 600);
+      updatePlayPauseIcons(true);
+      setTimeout(releaseNative, 400);
       return;
     }
 
@@ -1961,7 +2016,7 @@ async function openVideoPlayer(video) {
   isUserPaused = false;
   isMiniPaused = false;
   state.activeVideo = video;
-  state.playbackEngine = 'native';
+  state.playbackEngine = (video.isExternal || video.isOffline) ? 'native' : 'youtube';
 
   // Instantly hide prior video frame to eliminate any glimpse of previous video
   const priorVideo = document.getElementById('html5-video-element');
@@ -4207,7 +4262,7 @@ function openShortsModal(short) {
     }
   }).catch(() => {});
 
-  const launchShortsEmbedFallback = () => {
+  const launchShortsEmbed = () => {
     if (!isShortsActive()) return;
     if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
     if (shortsFallbackWatchdog) {
@@ -4226,10 +4281,11 @@ function openShortsModal(short) {
     if (spinner) spinner.style.display = 'none';
     if (embedContainer) {
       embedContainer.style.display = 'block';
+      const muteParam = state.isShortMuted ? 1 : 0;
       embedContainer.innerHTML = `
         <iframe 
           id="shorts-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3"
+          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3&mute=${muteParam}"
           title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -4240,73 +4296,8 @@ function openShortsModal(short) {
     syncNativeMediaService(true, true);
   };
 
-  // Try crisp Ad/Logo-free Native Vertical Video Stream first
-  if (videoElem) {
-    if (embedContainer) {
-      embedContainer.innerHTML = '';
-      embedContainer.style.display = 'none';
-    }
-    if (spinner) spinner.style.display = 'flex';
-    videoElem.style.display = 'block';
-    videoElem.muted = Boolean(state.isShortMuted);
-    videoElem.loop = true;
-
-    const streamUrl = `${getServerUrl()}/api/stream/${currentShort.id}?proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
-    const startShortSource = (srcUrl) => {
-      if (!isShortsActive()) return;
-      if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
-      videoElem.src = srcUrl;
-      videoElem.play().catch(() => {});
-    };
-
-    const onShortPlaying = () => {
-      if (!isShortsActive()) return;
-      if (spinner) spinner.style.display = 'none';
-      if (shortsFallbackWatchdog) {
-        clearTimeout(shortsFallbackWatchdog);
-        shortsFallbackWatchdog = null;
-      }
-      syncNativeMediaService(true, true);
-    };
-    videoElem.onloadeddata = onShortPlaying;
-    videoElem.onplaying = onShortPlaying;
-    videoElem.onplay = () => { if (isShortsActive()) syncNativeMediaService(true, true); };
-    videoElem.onpause = () => {
-      if (!isShortsActive()) return;
-      if (!isUserPaused && !isMiniPaused && state.isAudioMode && !state.isShortMuted) {
-        videoElem.play().catch(() => {});
-        return;
-      }
-      if (Date.now() >= _nativeHandoffLockUntil) syncNativeMediaService(false, true);
-    };
-    videoElem.onerror = () => {
-      if (!isShortsActive()) return;
-      if (!videoElem.src || videoElem.src === window.location.href || videoElem.src === '') return;
-      launchShortsEmbedFallback();
-    };
-    shortsFallbackWatchdog = setTimeout(() => {
-      if (!isShortsActive()) return;
-      if (videoElem.readyState === 0 && (modal.classList.contains('open') || modal.style.display === 'block')) {
-        launchShortsEmbedFallback();
-      }
-    }, 4500);
-
-    if (window.AndroidInnerTube?.resolveForDownloadAsync) {
-      resolveViaNativeInnerTube(currentShort.id, 'video').then((nativeRes) => {
-        if (!isShortsActive()) return;
-        if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
-        if (nativeRes?.ok && nativeRes.url) {
-          startShortSource(nativeRes.url);
-        } else {
-          launchShortsEmbedFallback();
-        }
-      });
-    } else {
-      startShortSource(streamUrl);
-    }
-  } else {
-    launchShortsEmbedFallback();
-  }
+  // Launch official YouTube Shorts player directly & immediately
+  launchShortsEmbed();
 }
 
 function initShortsPlayer() {
@@ -4327,6 +4318,11 @@ function initShortsPlayer() {
 
   soundBtn?.addEventListener('click', () => {
     state.isShortMuted = !state.isShortMuted;
+    const frame = document.getElementById('shorts-embed-player');
+    if (frame && frame.contentWindow) {
+      const func = state.isShortMuted ? 'mute' : 'unMute';
+      frame.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: '' }), '*');
+    }
     if (videoElem) videoElem.muted = state.isShortMuted;
     if (soundBtn) soundBtn.textContent = state.isShortMuted ? '🔇' : '🔊';
   });

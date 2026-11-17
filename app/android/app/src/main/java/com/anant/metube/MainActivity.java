@@ -829,7 +829,13 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onPause() {
         if (bgAudioEnabled && mediaIsPlaying) {
-            // Brave-style background playback: prevent Capacitor Bridge from pausing WebView or halting media
+            // Brave-style background playback: notify JS and transition audio to native foreground service
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().evaluateJavascript(
+                    "window.onAppBackground && window.onAppBackground();",
+                    null
+                );
+            }
             Bridge b = this.bridge;
             this.bridge = null;
             try {
@@ -840,7 +846,7 @@ public class MainActivity extends BridgeActivity {
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().onResume();
             }
-            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+            startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
             return;
         }
         super.onPause();
@@ -860,7 +866,7 @@ public class MainActivity extends BridgeActivity {
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().onResume();
             }
-            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+            startMediaServiceAction(MediaPlaybackService.ACTION_HANDOFF_PLAY, true);
             return;
         }
         super.onStop();
@@ -878,9 +884,15 @@ public class MainActivity extends BridgeActivity {
                 launchApkInstaller(f);
             }
         }
+        long nativePos = MediaPlaybackService.isNativeAudioActive ? MediaPlaybackService.nativePositionMs : -1L;
+        boolean nativePlaying = MediaPlaybackService.isNativeAudioActive ? MediaPlaybackService.isNativePlaying : mediaIsPlaying;
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().evaluateJavascript(
+                "window.onAppForegroundResume && window.onAppForegroundResume(" + nativePos + "," + nativePlaying + ");",
+                null
+            );
+        }
         if (MediaPlaybackService.isNativeAudioActive) {
-            long nativePos = MediaPlaybackService.nativePositionMs;
-            boolean nativePlaying = MediaPlaybackService.isNativePlaying;
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().evaluateJavascript(
                     "window.resumeWebMediaFromNative && window.resumeWebMediaFromNative(" + nativePos + "," + nativePlaying + ");",
