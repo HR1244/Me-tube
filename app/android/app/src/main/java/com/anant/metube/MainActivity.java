@@ -277,6 +277,10 @@ public class MainActivity extends BridgeActivity {
                     String audioUrl,
                     String thumbUrl
                 ) {
+                    boolean videoChanged = !activeVideoId.equals(videoId != null ? videoId : "");
+                    boolean playChanged = (mediaIsPlaying != isPlaying);
+                    boolean bgChanged = (bgAudioEnabled != bgEnabled);
+
                     mediaIsPlaying = isPlaying;
                     bgAudioEnabled = bgEnabled;
                     lastPositionMs = Math.max(0L, positionMs);
@@ -288,13 +292,15 @@ public class MainActivity extends BridgeActivity {
                     activeAudioUrl = audioUrl != null ? audioUrl : "";
                     activeThumbUrl = thumbUrl != null ? thumbUrl : "";
 
-                    if ((bgEnabled || isPlaying) && DirectYouTubeResolver.isValidYouTubeId(activeVideoId)) {
+                    if (videoChanged && (bgEnabled || isPlaying) && DirectYouTubeResolver.isValidYouTubeId(activeVideoId)) {
                         DirectYouTubeResolver.prewarmAsync(activeVideoId);
                     }
                     if (!MediaPlaybackService.isNativeAudioActive) {
                         if (bgEnabled && isPlaying) {
-                            startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
-                        } else if (!bgEnabled) {
+                            if (videoChanged || playChanged || bgChanged) {
+                                startMediaServiceAction(MediaPlaybackService.ACTION_START_OR_UPDATE, false);
+                            }
+                        } else if (!bgEnabled && bgChanged) {
                             stopMediaService();
                         }
                     }
@@ -568,7 +574,7 @@ public class MainActivity extends BridgeActivity {
                                 boolean isAudioCandidate = res.audioUrl != null && !res.audioUrl.isEmpty();
                                 String targetUrl = wantAudio
                                     ? (isAudioCandidate ? res.audioUrl : res.videoUrl)
-                                    : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : res.audioUrl);
+                                    : (res.videoUrl != null && !res.videoUrl.isEmpty() ? res.videoUrl : "");
                                 boolean isSourceVideo = !isAudioCandidate || (res.audioMime != null && res.audioMime.startsWith("video/"));
                                 boolean extractAudio = wantAudio && isSourceVideo;
                                 String ext = wantAudio ? (formatType != null && formatType.equalsIgnoreCase("mp3") ? "mp3" : "m4a") : "mp4";

@@ -43,6 +43,20 @@ document.addEventListener('visibilitychange', (e) => { e.stopImmediatePropagatio
 window.addEventListener('visibilitychange', (e) => { e.stopImmediatePropagation(); }, true);
 window.addEventListener('pagehide', (e) => { e.stopImmediatePropagation(); }, true);
 
+// Fast return to foreground resync: if audio is playing in background, seamlessly snap video to match
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.activeVideo && state.playbackEngine === 'native') {
+    const videoElem = document.getElementById('html5-video-element');
+    const audioElem = document.getElementById('html5-audio-element');
+    if (audioElem && audioElem.src && !audioElem.paused && videoElem) {
+      if (Math.abs(videoElem.currentTime - audioElem.currentTime) > 0.25) {
+        try { videoElem.currentTime = audioElem.currentTime; } catch (_) {}
+      }
+      videoElem.play().catch(() => {});
+    }
+  }
+});
+
 // Web Audio Keep-Alive: Keeps the Android audio sink active with zero hardware shutdown delay
 let _keepAliveAudioCtx = null;
 export function ensureAudioKeepAlive() {
@@ -1462,7 +1476,9 @@ export function resumeCurrentPlayback() {
     ytIsPlaying = true;
   } else {
     const videoElem = document.getElementById('html5-video-element');
+    const audioElem = document.getElementById('html5-audio-element');
     if (videoElem) videoElem.play().catch(() => {});
+    if (audioElem && audioElem.src && videoElem?.muted) audioElem.play().catch(() => {});
   }
   updatePlayPauseIcons(true);
   syncNativeMediaService(true, true);
@@ -1479,7 +1495,9 @@ export function pauseCurrentPlayback() {
     ytIsPlaying = false;
   } else {
     const videoElem = document.getElementById('html5-video-element');
+    const audioElem = document.getElementById('html5-audio-element');
     if (videoElem) videoElem.pause();
+    if (audioElem) audioElem.pause();
   }
   updatePlayPauseIcons(false);
   syncNativeMediaService(false, true);
@@ -1623,7 +1641,7 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
     if (!window.AndroidMediaService?.syncState) return;
     if (playingOverride === false && Date.now() < _nativeHandoffLockUntil && !force) return;
     const now = Date.now();
-    if (!force && now - _lastNativeSyncAt < 1600) return;
+    if (!force && now - _lastNativeSyncAt < 3500) return;
     _lastNativeSyncAt = now;
 
     const shortsOpen = Boolean(document.getElementById('shorts-modal')?.classList.contains('open'));
@@ -1636,8 +1654,10 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
     const videoElem = shortsOpen
       ? document.getElementById('shorts-video-element')
       : document.getElementById('html5-video-element');
+    const audioElem = !shortsOpen ? document.getElementById('html5-audio-element') : null;
     const isYtIframe = !shortsOpen && state.playbackEngine === 'youtube' && !video.isExternal && !video.isOffline;
-    const isElemPlaying = videoElem ? (!videoElem.paused && !videoElem.ended) : false;
+    const isAudioPlaying = audioElem ? (!audioElem.paused && !audioElem.ended) : false;
+    const isElemPlaying = (videoElem ? (!videoElem.paused && !videoElem.ended) : false) || isAudioPlaying;
     const isPlaying = playingOverride !== null
       ? Boolean(playingOverride)
       : (isYtIframe ? ytIsPlaying : isElemPlaying);
@@ -1647,6 +1667,9 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
     if (isYtIframe) {
       posMs = Math.floor((ytCurrentTimeSec || 0) * 1000);
       if (ytDurationSec > 0) durMs = Math.floor(ytDurationSec * 1000);
+    } else if (audioElem && audioElem.src && isAudioPlaying) {
+      posMs = Number.isFinite(audioElem.currentTime) ? Math.floor(audioElem.currentTime * 1000) : 0;
+      durMs = Number.isFinite(audioElem.duration) ? Math.floor(audioElem.duration * 1000) : durMs;
     } else if (videoElem) {
       posMs = Number.isFinite(videoElem.currentTime) ? Math.floor(videoElem.currentTime * 1000) : 0;
       durMs = Number.isFinite(videoElem.duration) ? Math.floor(videoElem.duration * 1000) : durMs;
@@ -1658,8 +1681,8 @@ export function syncNativeMediaService(playingOverride = null, force = false) {
       audioUrl = video.direct_stream_url.startsWith('http') ? video.direct_stream_url : `${serverBase}${video.direct_stream_url}`;
     } else if (video.isExternal) {
       audioUrl = api.getStreamProxyUrl(video.direct_audio_url || video.direct_stream_url || '');
-    } else if (videoElem && videoElem.src && videoElem.src.startsWith('http') && !videoElem.src.includes('blob:')) {
-      audioUrl = videoElem.src;
+    } else if (audioElem && audioElem.src && audioElem.src.startsWith('http')) {
+      audioUrl = audioElem.src;
     } else {
       audioUrl = `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${encodeURIComponent(getDeviceId())}`;
     }
@@ -1800,7 +1823,11 @@ window.handleNativeMediaEvent = function(cmd, posMs, playing) {
   } else if (typeof cmd === 'string' && cmd.startsWith('seek:')) {
     const s = parseFloat(cmd.replace('seek:', '')) / 1000;
     const v = document.getElementById('html5-video-element');
+    const a = document.getElementById('html5-audio-element');
     if (v && Number.isFinite(s)) v.currentTime = s;
+    if (a && Number.isFinite(s) && a.src) {
+      try { a.currentTime = s; } catch (_) {}
+    }
   }
   updatePlayPauseIcons(cmd === 'play' || Boolean(playing));
 };
@@ -1876,6 +1903,14 @@ export function stopAllPlayback(preserve = null) {
         videoElem.load();
       } catch (_) {}
       videoElem.style.display = 'none';
+    }
+    const audioElem = document.getElementById('html5-audio-element');
+    if (audioElem) {
+      try {
+        audioElem.pause();
+        audioElem.removeAttribute('src');
+        audioElem.load();
+      } catch (_) {}
     }
     const spinner = document.getElementById('player-video-spinner');
     if (spinner) spinner.style.display = 'none';
@@ -1964,9 +1999,14 @@ async function openVideoPlayer(video) {
     bgBtn.innerHTML = '<span>🎧</span>';
     bgBtn.title = state.isAudioMode ? 'Background Play: ON (Tap to toggle)' : 'Background Play: OFF (Tap to toggle)';
   }
-  state.availableResolutions = Array.isArray(video.available_resolutions) && video.available_resolutions.length
+  const rawResolutions = (Array.isArray(video.available_resolutions) && video.available_resolutions.length)
     ? video.available_resolutions
-    : [360, 480, 720];
+    : [1080, 720, 480, 360];
+  state.availableResolutions = rawResolutions
+    .map((r) => (typeof r === 'object' && r ? r.height : parseInt(r, 10)))
+    .filter((h) => Number.isFinite(h) && h >= 144);
+  state.availableResolutions = Array.from(new Set(state.availableResolutions)).sort((a, b) => b - a);
+  if (!state.availableResolutions.length) state.availableResolutions = [1080, 720, 480, 360];
   renderQualityOptionsSheet();
   syncNativeOverlayFlag();
 
@@ -2038,7 +2078,10 @@ async function openVideoPlayer(video) {
         channelAvatarImg.src = resolveAvatarUrl(details.channel_avatar, details.channel || cName, details.channel_id || video.channel_id);
       }
       if (Array.isArray(details.available_resolutions) && details.available_resolutions.length) {
-        state.availableResolutions = details.available_resolutions;
+        state.availableResolutions = details.available_resolutions
+          .map((r) => (typeof r === 'object' && r ? r.height : parseInt(r, 10)))
+          .filter((h) => Number.isFinite(h) && h >= 144);
+        state.availableResolutions = Array.from(new Set(state.availableResolutions)).sort((a, b) => b - a);
         renderQualityOptionsSheet();
       }
     }
@@ -2064,6 +2107,61 @@ function scheduleOverlayAutoHide() {
   }, 3400);
 }
 
+function changeVideoQuality(newQ) {
+  if (!state.activeVideo) return;
+  const video = state.activeVideo;
+  const videoElem = document.getElementById('html5-video-element');
+  const audioElem = document.getElementById('html5-audio-element');
+  if (!videoElem) return;
+
+  const resumeAt = (audioElem && audioElem.src && !audioElem.paused && Number.isFinite(audioElem.currentTime))
+    ? audioElem.currentTime
+    : (Number.isFinite(videoElem.currentTime) ? videoElem.currentTime : 0);
+  const wasPlaying = (!videoElem.paused && !videoElem.ended) || (audioElem && !audioElem.paused && !audioElem.ended);
+  const serverBase = getServerUrl();
+  const devId = encodeURIComponent(getDeviceId());
+  const qParam = (newQ && newQ !== 'auto') ? `&quality=${encodeURIComponent(newQ)}` : '';
+
+  const newVideoUrl = video.isExternal
+    ? (video.direct_stream_url || api.getStreamProxyUrl(video.url))
+    : `${serverBase}/api/stream/${video.id}?proxy=true&device_id=${devId}${qParam}`;
+
+  const audioUrl = `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${devId}`;
+  const useDualStream = !video.isExternal && !video.isOffline;
+
+  if (useDualStream && audioElem) {
+    if (audioElem.src !== audioUrl) {
+      audioElem.src = audioUrl;
+      try { audioElem.currentTime = resumeAt; } catch (_) {}
+    }
+    videoElem.muted = true;
+    if (wasPlaying && audioElem.paused) {
+      audioElem.play().catch(() => {});
+    }
+  } else {
+    videoElem.muted = false;
+    if (audioElem) {
+      audioElem.pause();
+      audioElem.removeAttribute('src');
+    }
+  }
+
+  const onMeta = () => {
+    if (resumeAt > 0 && Number.isFinite(videoElem.duration)) {
+      try { videoElem.currentTime = resumeAt; } catch (_) {}
+    }
+    if (wasPlaying) {
+      videoElem.play().catch(() => {});
+    }
+  };
+  videoElem.addEventListener('loadedmetadata', onMeta, { once: true });
+  videoElem.src = newVideoUrl;
+  try { videoElem.currentTime = resumeAt; } catch (_) {}
+  if (wasPlaying) {
+    videoElem.play().catch(() => {});
+  }
+}
+
 function renderQualityOptionsSheet() {
   const container = document.getElementById('setting-quality-options');
   const valSpan = document.getElementById('setting-val-quality');
@@ -2073,7 +2171,10 @@ function renderQualityOptionsSheet() {
   if (badgeSpan) badgeSpan.textContent = `⚙ ${qLabel}`;
   if (!container) return;
 
-  const opts = ['auto', ...(state.availableResolutions || [360, 480, 720]).map(String)];
+  const resList = state.availableResolutions && state.availableResolutions.length
+    ? state.availableResolutions
+    : [1080, 720, 480, 360];
+  const opts = ['auto', ...resList.map(String)];
   container.innerHTML = opts.map((q) => {
     const active = String(state.selectedQuality) === q ? 'active' : '';
     const txt = q === 'auto' ? 'Auto' : `${q}p`;
@@ -2090,9 +2191,7 @@ function renderQualityOptionsSheet() {
       const sheet = document.getElementById('player-settings-sheet');
       if (sheet) sheet.style.display = 'none';
       if (state.activeVideo) {
-        const videoElem = document.getElementById('html5-video-element');
-        const resumeAt = videoElem && Number.isFinite(videoElem.currentTime) ? videoElem.currentTime : 0;
-        setupPlayerPlayback(state.activeVideo, resumeAt);
+        changeVideoQuality(newQ);
         showToast(`Quality switched to ${newQ === 'auto' ? 'Auto' : `${newQ}p`}`);
       }
     });
@@ -2196,10 +2295,32 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         ? api.getStreamProxyUrl(video.direct_stream_url || video.url)
         : `${serverBase}/api/stream/${video.id}?proxy=true&device_id=${devId}&quality=360p`;
 
+      const audioElem = document.getElementById('html5-audio-element');
+      const useDualStream = !video.isExternal && !video.isOffline;
+
       let triedFallback = false;
       const startVideoSource = (srcUrl) => {
         if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
         if (!srcUrl) return;
+
+        if (useDualStream && audioElem) {
+          const audioUrl = `${serverBase}/api/stream/${video.id}?audio=true&proxy=true&device_id=${devId}`;
+          if (audioElem.src !== audioUrl) {
+            audioElem.src = audioUrl;
+            if (seekSeconds > 0) {
+              try { audioElem.currentTime = seekSeconds; } catch (_) {}
+            }
+          }
+          videoElem.muted = true;
+          audioElem.play().catch(() => {});
+        } else {
+          videoElem.muted = false;
+          if (audioElem) {
+            audioElem.pause();
+            audioElem.removeAttribute('src');
+          }
+        }
+
         if (videoElem.src !== srcUrl) {
           videoElem.src = srcUrl;
         }
@@ -2208,15 +2329,13 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         });
       };
 
-      if (!video.isExternal && window.AndroidInnerTube?.resolveForDownloadAsync) {
+      if (!video.isExternal && !useDualStream && window.AndroidInnerTube?.resolveForDownloadAsync) {
         resolveViaNativeInnerTube(video.id, 'video').then((nativeRes) => {
           if (state.activeVideo?.id !== video.id || state.playbackEngine !== 'native') return;
           if (nativeRes?.ok && nativeRes.url) {
             startVideoSource(nativeRes.url);
           } else {
-            console.warn('[Player] Direct stream unavailable, activating YouTube engine');
-            state.playbackEngine = 'youtube';
-            setupPlayerPlayback(video, seekSeconds);
+            startVideoSource(primaryStreamUrl);
           }
         });
       } else {
@@ -2255,6 +2374,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
         isUserPaused = false;
         isMiniPaused = false;
         ensureAudioKeepAlive();
+        if (useDualStream && audioElem && audioElem.src && audioElem.paused) {
+          audioElem.play().catch(() => {});
+        }
         updatePlayPauseIcons(true);
         syncNativeMediaService(true, true);
         scheduleOverlayAutoHide();
@@ -2265,6 +2387,9 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       videoElem.onplaying = onPlaying;
       videoElem.onplay = onPlaying;
       videoElem.onpause = () => {
+        if (audioElem && audioElem.src && videoElem.muted && isUserPaused) {
+          audioElem.pause();
+        }
         if (isUserPaused) {
           updatePlayPauseIcons(false);
           if (Date.now() >= _nativeHandoffLockUntil) {
@@ -2274,8 +2399,10 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
           return;
         }
         if (state.activeVideo && state.isAudioMode) {
-          // If paused by OS background transition rather than user action, immediately resume with zero gap!
-          videoElem.play().catch(() => {});
+          // In background: dedicated audio track continues playing with ZERO pause!
+          if (useDualStream && audioElem && audioElem.src && audioElem.paused) {
+            audioElem.play().catch(() => {});
+          }
           return;
         }
         updatePlayPauseIcons(false);
@@ -2287,8 +2414,28 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
       };
       videoElem.ontimeupdate = () => {
         updateSliderUI();
+        if (audioElem && audioElem.src && videoElem.muted && !videoElem.paused && !document.hidden) {
+          const diff = videoElem.currentTime - audioElem.currentTime;
+          if (Math.abs(diff) > 0.25) {
+            try { videoElem.currentTime = audioElem.currentTime; } catch (_) {}
+          }
+        }
         syncNativeMediaService(null, false);
       };
+      if (audioElem) {
+        audioElem.ontimeupdate = () => {
+          if (document.hidden && !audioElem.paused) {
+            const cur = audioElem.currentTime || 0;
+            const dur = Number.isFinite(audioElem.duration) ? audioElem.duration : (video.duration || 0);
+            if (curTimeLbl) curTimeLbl.textContent = formatDuration(cur);
+            if (durTimeLbl) durTimeLbl.textContent = formatDuration(dur);
+            if (slider && !isUserSeekingSlider && dur > 0) {
+              slider.value = String(Math.min(1000, Math.max(0, Math.round((cur / dur) * 1000))));
+            }
+            syncNativeMediaService(true, false);
+          }
+        };
+      }
       videoElem.onwaiting = () => {
         if (spinner) spinner.style.display = 'flex';
       };
@@ -2500,12 +2647,23 @@ function initPlayerControls() {
   document.getElementById('btn-st-prev')?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (videoElem && videoElem.currentTime > 4) {
-      videoElem.currentTime = Math.max(0, videoElem.currentTime - 10);
+      const targetSec = Math.max(0, videoElem.currentTime - 10);
+      videoElem.currentTime = targetSec;
+      const audioElem = document.getElementById('html5-audio-element');
+      if (audioElem && audioElem.src && videoElem.muted) {
+        try { audioElem.currentTime = targetSec; } catch (_) {}
+      }
     } else {
       const hist = getWatchHistory();
       const prevVid = hist.find((v) => v.id !== state.activeVideo?.id);
       if (prevVid) openVideoPlayer(prevVid);
-      else if (videoElem) videoElem.currentTime = 0;
+      else if (videoElem) {
+        videoElem.currentTime = 0;
+        const audioElem = document.getElementById('html5-audio-element');
+        if (audioElem && audioElem.src && videoElem.muted) {
+          try { audioElem.currentTime = 0; } catch (_) {}
+        }
+      }
     }
     scheduleOverlayAutoHide();
   });
@@ -2540,7 +2698,12 @@ function initPlayerControls() {
     e.stopPropagation();
     isUserSeekingSlider = false;
     if (videoElem && Number.isFinite(videoElem.duration)) {
-      videoElem.currentTime = (Number(seekSlider.value) / 1000) * videoElem.duration;
+      const targetSec = (Number(seekSlider.value) / 1000) * videoElem.duration;
+      videoElem.currentTime = targetSec;
+      const audioElem = document.getElementById('html5-audio-element');
+      if (audioElem && audioElem.src && videoElem.muted) {
+        try { audioElem.currentTime = targetSec; } catch (_) {}
+      }
       syncNativeMediaService(null, true);
     }
     scheduleOverlayAutoHide();

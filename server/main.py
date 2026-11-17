@@ -301,6 +301,7 @@ def extract_youtube_info_cached(video_id: str, device_id: Optional[str] = None, 
                 raise last_err
             return None
 
+        formats = info.get("formats", [])
         progressive, audio_only = _select_best_progressive_and_audio(info)
         best_vid_fmt = progressive[0] if progressive else None
         best_aud_fmt = audio_only[0] if audio_only else best_vid_fmt
@@ -310,12 +311,18 @@ def extract_youtube_info_cached(video_id: str, device_id: Optional[str] = None, 
         aud_headers = (best_aud_fmt.get("http_headers") if best_aud_fmt else None) or vid_headers
 
         if best_vid_url or best_aud_url:
+            video_formats = [
+                f for f in formats
+                if f.get("vcodec") != "none" and f.get("url") and f.get("protocol") in ("https", "http")
+            ]
+            video_formats.sort(key=lambda x: (x.get("height") or 0, x.get("tbr") or 0), reverse=True)
+
             entry = {
                 "url": best_vid_url,
                 "audio_url": best_aud_url,
                 "headers": vid_headers,
                 "audio_headers": aud_headers,
-                "resolutions": progressive,
+                "resolutions": video_formats or progressive,
                 "expires": time.time() + 1800,
                 "title": info.get("title", ""),
             }
@@ -1485,16 +1492,22 @@ def extract_direct_stream_url(
                             chosen_url = f["url"]
                             break
             else:
-                progressive = [
-                    f for f in formats
-                    if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
-                ]
+                chosen_url = None
                 if max_height:
-                    matching = [f for f in progressive if (f.get("height") or 0) <= max_height]
+                    matching = [
+                        f for f in formats
+                        if f.get("vcodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"] and (f.get("height") or 0) <= max_height
+                    ]
                     if matching:
-                        progressive = matching
-                progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
-                chosen_url = progressive[0]["url"] if progressive else None
+                        matching.sort(key=lambda x: (x.get("height") or 0, x.get("tbr") or 0), reverse=True)
+                        chosen_url = matching[0]["url"]
+                if not chosen_url:
+                    progressive = [
+                        f for f in formats
+                        if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url") and f.get("protocol") in ["https", "http"]
+                    ]
+                    progressive.sort(key=lambda x: x.get("height") or 0, reverse=True)
+                    chosen_url = progressive[0]["url"] if progressive else None
                 if not chosen_url:
                     for f in formats:
                         if f.get("url") and f.get("vcodec") != "none":
@@ -1588,6 +1601,13 @@ def _proxy_remote_stream(direct_url: str, request: Request, upstream_headers: Op
                 resp_headers[h] = val
         resp_headers.setdefault("Accept-Ranges", "bytes")
 
+        if request.method.upper() == "HEAD":
+            try:
+                first_upstream.close()
+            except Exception:
+                pass
+            return Response(status_code=first_upstream.status, headers=resp_headers)
+
         def _iter_plain():
             try:
                 while True:
@@ -1616,6 +1636,13 @@ def _proxy_remote_stream(direct_url: str, request: Request, upstream_headers: Op
     status_out = 206 if has_client_range else 200
     if has_client_range:
         resp_headers["Content-Range"] = f"bytes {req_start}-{target_end}/{total_bytes}"
+
+    if request.method.upper() == "HEAD":
+        try:
+            first_upstream.close()
+        except Exception:
+            pass
+        return Response(status_code=status_out, headers=resp_headers)
 
     def _iter_chunked_range():
         cur_pos = first_chunk_end + 1
@@ -1663,10 +1690,18 @@ def _pick_cached_stream_url(entry: Dict[str, Any], audio: bool, quality: Optiona
         if fitting:
             fitting.sort(key=lambda x: (x.get("protocol") in ("https", "http"), x.get("height") or 0), reverse=True)
             return fitting[0]["url"]
-    return entry.get("url")
+        res_list_sorted = sorted([f for f in res_list if f.get("url") and f.get("height")], key=lambda x: x.get("height", 0), reverse=True)
+        if res_list_sorted:
+            return res_list_sorted[0]["url"]
+    chosen = entry.get("url")
+    if not chosen and res_list:
+        res_list_sorted = sorted([f for f in res_list if f.get("url") and f.get("height")], key=lambda x: x.get("height", 0), reverse=True)
+        if res_list_sorted:
+            return res_list_sorted[0]["url"]
+    return chosen
 
 
-@app.get("/api/stream/{video_id}")
+@app.api_route("/api/stream/{video_id}", methods=["GET", "HEAD"])
 def stream_video_proxy(
     video_id: str,
     request: Request,
@@ -1719,7 +1754,7 @@ def stream_video_proxy(
                 try:
                     extract_youtube_info_cached(video_id, device_id=dev_id, force_refresh=True)
                     new_entry = stream_cache.get(sc_key) or stream_cache.get(video_id)
-                    refreshed = _pick_cached_stream_url(new_entry, audio, quality)
+                    refreshed = _pick_cached_stream_url(new_entry, audio, parsed_quality)
                     new_hdrs = (new_entry.get("audio_headers") if audio else new_entry.get("headers")) if new_entry else None
                     if refreshed and ".m3u8" not in refreshed:
                         return _proxy_remote_stream(refreshed, request, upstream_headers=new_hdrs)
@@ -1927,15 +1962,10 @@ def get_video_stream_info(video_id: str, request: Request, device_id: Optional[s
             "audio_url": audio_url,
             "is_short": bool((info.get("duration") and info.get("duration") <= 60) or (info.get("height", 0) > info.get("width", 0))),
             "is_age_restricted": False,
-            "available_resolutions": [
-                {
-                    "height": f.get("height"),
-                    "ext": f.get("ext"),
-                    "url": f.get("url"),
-                    "filesize": f.get("filesize") or f.get("filesize_approx")
-                }
-                for f in progressive
-            ]
+            "available_resolutions": sorted(list({
+                f.get("height") for f in formats
+                if f.get("height") and isinstance(f.get("height"), int) and f.get("vcodec") != "none" and f.get("height") >= 144
+            }), reverse=True) or [1080, 720, 480, 360]
         }
     except Exception as e:
         err_msg = str(e)
@@ -1945,16 +1975,12 @@ def get_video_stream_info(video_id: str, request: Request, device_id: Optional[s
         if fb.get("url"):
             resolutions = []
             for vs in fb.get("videoStreams", []):
-                if vs.get("url") and "m3u8" not in vs.get("url"):
-                    h = int("".join(filter(str.isdigit, vs.get("quality", "0"))) or 0)
-                    resolutions.append({
-                        "height": h or 720,
-                        "ext": vs.get("format", "mp4").lower(),
-                        "url": vs.get("url"),
-                        "filesize": None
-                    })
+                h = int("".join(filter(str.isdigit, vs.get("quality", "0"))) or 0)
+                if h and h >= 144 and h not in resolutions:
+                    resolutions.append(h)
+            resolutions.sort(reverse=True)
             if not resolutions:
-                resolutions = [{"height": 720, "ext": "mp4", "url": fb["url"], "filesize": None}]
+                resolutions = [1080, 720, 480, 360]
 
             c_name = fb.get("uploader") or "Creator"
             c_avatar = fb.get("uploaderAvatar") or resolve_channel_avatar(None, c_name)
