@@ -74,6 +74,42 @@ export function ensureAudioKeepAlive() {
   } catch (_) {}
 }
 
+// Modern Minimalist SVG Iconography (Zero Emojis)
+export const ICONS = {
+  play: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
+  prev: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2.5"/></svg>',
+  next: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2.5"/></svg>',
+  close: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  chevronDown: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+  chevronUp: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>',
+  chevronLeft: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+  chevronRight: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
+  download: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  headphones: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  dotsVertical: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>',
+  fullscreenEnter: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>',
+  fullscreenExit: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6m0 0v6m0-6l-7 7m17-11h-6m0 0V4m0 6l7-7"/></svg>',
+  volumeHigh: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>',
+  volumeMute: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
+  thumbsUp: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>',
+  thumbsDown: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>',
+  share: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>',
+  repeat: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  shorts: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M17.77 10.32l-1.2-.5a3.9 3.9 0 0 0-5.18-1.57l-.39.22V6.5A4.5 4.5 0 0 0 6.5 2C4 2 2 4 2 6.5v11A4.5 4.5 0 0 0 6.5 22c1.78 0 3.33-1.04 4.07-2.55l1.2.5a3.9 3.9 0 0 0 5.18-1.57l3.05-5.28a3.9 3.9 0 0 0-2.23-2.78zM10 14.5v-5l4.5 2.5-4.5 2.5z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  subscriptions: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M5 4h14M8 1h8"/><polygon points="10 11 15 14 10 17 10 11" fill="currentColor"/></svg>',
+  playlists: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+  youtube: '<svg viewBox="0 0 24 24" width="16" height="16" fill="#FF0000"><polygon points="7 4 19 12 7 20 7 4"/></svg>',
+  video: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M7 2v20M17 2v20M2 12h20"/></svg>',
+  link: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
+};
+
 // App State
 const state = {
   activeTab: 'home',
@@ -839,7 +875,7 @@ function loadHistoryView() {
   if (history.length === 0) {
     container.innerHTML = `
       <div style="text-align:center; padding:50px 20px; color:var(--text-gray);">
-        <div style="font-size:36px; margin-bottom:12px;">🕒</div>
+        <div style="margin-bottom:12px; color:var(--text-gray);">${ICONS.clock}</div>
         <div style="font-size:15px; font-weight:700; color:#FFF;">No watch history yet</div>
         <div style="font-size:12px; margin-top:6px; max-width:280px; margin-left:auto; margin-right:auto; line-height:18px;">
           Videos you play in MeTube will appear here and dynamically personalize your Home feed!
@@ -1892,7 +1928,7 @@ function setFullscreenLandscape(enabled) {
   const modal = document.getElementById('player-modal');
   const fsBtn = document.getElementById('btn-st-fullscreen');
   if (modal) modal.classList.toggle('fullscreen-landscape', state.fullscreenLandscape);
-  if (fsBtn) fsBtn.textContent = state.fullscreenLandscape ? '⛶' : '⛶';
+  if (fsBtn) fsBtn.innerHTML = state.fullscreenLandscape ? ICONS.fullscreenExit : ICONS.fullscreenEnter;
   try {
     window.AndroidUI?.setFullscreenOrientation?.(state.fullscreenLandscape);
     const wrapper = document.getElementById('player-media-box');
@@ -1909,8 +1945,8 @@ function updatePlayPauseIcons(isPlaying) {
   isMiniPaused = !isPlaying;
   const stBtn = document.getElementById('btn-st-playpause');
   const miniBtn = document.getElementById('btn-mini-play-pause');
-  if (stBtn) stBtn.textContent = isPlaying ? '⏸' : '▶';
-  if (miniBtn) miniBtn.textContent = isPlaying ? '⏸' : '▶';
+  if (stBtn) stBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
+  if (miniBtn) miniBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
   setMediaSessionPlaybackState(isPlaying ? 'playing' : 'paused');
 }
 
@@ -2051,7 +2087,7 @@ async function openVideoPlayer(video) {
 
   if (bgBtn) {
     bgBtn.classList.toggle('active', Boolean(state.isAudioMode));
-    bgBtn.innerHTML = '<span>🎧</span>';
+    bgBtn.innerHTML = `${ICONS.headphones}<span>${state.isAudioMode ? 'Active' : 'Background'}</span>`;
     bgBtn.title = state.isAudioMode ? 'Background Play: ON (Tap to toggle)' : 'Background Play: OFF (Tap to toggle)';
   }
   const rawResolutions = (Array.isArray(video.available_resolutions) && video.available_resolutions.length)
@@ -2223,7 +2259,7 @@ function renderQualityOptionsSheet() {
   const badgeSpan = document.getElementById('player-quality-badge');
   const qLabel = state.selectedQuality === 'auto' ? 'Auto' : `${state.selectedQuality}p`;
   if (valSpan) valSpan.textContent = qLabel;
-  if (badgeSpan) badgeSpan.textContent = `⚙ ${qLabel}`;
+  if (badgeSpan) badgeSpan.innerHTML = `${ICONS.gear} <span>${qLabel}</span>`;
   if (!container) return;
 
   const resList = state.availableResolutions && state.availableResolutions.length
@@ -2270,7 +2306,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
   if (state.playbackEngine === 'youtube' && !video.isExternal) {
     stopAllPlayback('main-youtube');
     if (videoElem) videoElem.style.display = 'none';
-    if (engineLabel) engineLabel.textContent = '⚡ YouTube';
+    if (engineLabel) engineLabel.innerHTML = `${ICONS.youtube} <span>YouTube</span>`;
     if (spinner) spinner.style.display = 'none';
     if (customOverlay) customOverlay.style.display = 'none';
     if (legacyTopbar) legacyTopbar.style.display = 'flex';
@@ -2307,7 +2343,7 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
   } else {
     // Snaptube Custom Native Player (works for YouTube + External Instagram/FB/TikTok/X URLs)
     stopAllPlayback('main-native');
-    if (engineLabel) engineLabel.textContent = '🎬 Native';
+    if (engineLabel) engineLabel.innerHTML = `${ICONS.video} <span>Native</span>`;
     if (spinner) spinner.style.display = 'flex';
     if (legacyTopbar) legacyTopbar.style.display = 'none';
     if (customOverlay) {
@@ -2846,11 +2882,11 @@ function initPlayerControls() {
     state.isAudioMode = !state.isAudioMode;
     try { localStorage.setItem('metube_bg_play', state.isAudioMode ? '1' : '0'); } catch (_) {}
     bgAudioBtn.classList.toggle('active', state.isAudioMode);
-    bgAudioBtn.innerHTML = '<span>🎧</span>';
+    bgAudioBtn.innerHTML = `${ICONS.headphones}<span>${state.isAudioMode ? 'Active' : 'Background'}</span>`;
     bgAudioBtn.title = state.isAudioMode ? 'Background Play: ON (Tap to toggle)' : 'Background Play: OFF (Tap to toggle)';
     syncNativeMediaService(null, true);
     if (state.isAudioMode) {
-      showToast('🎧 Background Play ON: Smooth gapless playback in background & recents');
+      showToast('Background Play ON: Smooth gapless playback in background & recents');
     } else {
       try { window.AndroidMediaService?.stopService?.(); } catch (_) {}
       showToast('Background Play OFF');
@@ -3380,7 +3416,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
   if (downloadsList.length === 0) {
     container.innerHTML = `
       <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
-        <div style="font-size:32px; margin-bottom:10px;">📥</div>
+        <div style="margin-bottom:10px; color:var(--text-gray);">${ICONS.download}</div>
         <div style="font-size:14px; font-weight:700; color:#FFF;">No downloads yet</div>
         <div style="font-size:11px; margin-top:4px;">Tap download on any video or paste a link to start!</div>
       </div>
@@ -3420,7 +3456,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
           <span style="font-size:10px; font-weight:800; background:#272727; color:#FFF; padding:2px 7px; border-radius:4px;">
             ${(item.format_type || 'MP4').toUpperCase()} • ${item.quality}
           </span>
-          <button class="quick-btn btn-delete-download" data-job="${item.job_id}" data-local="${item.isLocalDirect ? '1' : '0'}" title="Delete">🗑️</button>
+          <button class="quick-btn btn-delete-download" data-job="${item.job_id}" data-local="${item.isLocalDirect ? '1' : '0'}" title="Delete">${ICONS.trash}</button>
         </div>
         <div style="font-size:13px; font-weight:700; color:#FFF; line-height:17px;">${item.title}</div>
         
@@ -3451,23 +3487,23 @@ function renderDownloadsDOM(container, counter, downloadsList) {
         ${isError ? `
           <div style="margin-top:8px; font-size:11px; color:#FF5252; background:rgba(255,82,82,0.1); padding:8px 10px; border-radius:6px;">
             <div style="margin-bottom:4px;">${errText}</div>
-            ${item.video_id ? `<button class="btn-fast-dl-card" data-job="${item.job_id}" data-video-id="${item.video_id}" data-type="${item.format_type || 'video'}" style="margin-top:4px; background:#272727; color:#FFF; border:1px solid #444; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; width:100%; cursor:pointer;">🔄 Retry On Device</button>` : ''}
+            ${item.video_id ? `<button class="btn-fast-dl-card" data-job="${item.job_id}" data-video-id="${item.video_id}" data-type="${item.format_type || 'video'}" style="margin-top:4px; background:#272727; color:#FFF; border:1px solid #444; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; width:100%; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">${ICONS.refresh} <span>Retry On Device</span></button>` : ''}
           </div>
         ` : ''}
 
         ${(isCompleted && !dmActive) ? `
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid var(--border-subtle);">
             ${(dmSuccess || item.isLocalDirect) ? `
-              <span style="font-size:11px; font-weight:700; color:#4ADE80;">✓ Downloaded to MeTube</span>
-              <button class="btn-open-native" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 18px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
-                ▶ Play
+              <span style="font-size:11px; font-weight:700; color:#4ADE80; display:inline-flex; align-items:center; gap:4px;">${ICONS.check} <span>Downloaded to MeTube</span></span>
+              <button class="btn-open-native" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:8px 18px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                ${ICONS.play} <span>Play</span>
               </button>
             ` : `
-              <button class="btn-save-device" data-job="${item.job_id}" data-video-id="${item.video_id || ''}" data-type="${item.format_type || 'video'}" data-url="${fileUrl}" data-filename="${item.filename}" data-ua="${(item.userAgent || dm?.customUa || '').replace(/"/g, '&quot;')}" data-mime="${(item.mimeType || dm?.mimeType || '').replace(/"/g, '&quot;')}" style="flex:1; background:#FFC700; color:#000; border:none; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
-                <span>${dmFailed ? '🔄 Retry Download' : '💾 Save to Phone'}</span>
+              <button class="btn-save-device" data-job="${item.job_id}" data-video-id="${item.video_id || ''}" data-type="${item.format_type || 'video'}" data-url="${fileUrl}" data-filename="${item.filename}" data-ua="${(item.userAgent || dm?.customUa || '').replace(/"/g, '&quot;')}" data-mime="${(item.mimeType || dm?.mimeType || '').replace(/"/g, '&quot;')}" style="flex:1; background:#272727; color:#FFF; border:1px solid #444; padding:9px 12px; border-radius:6px; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
+                <span>${dmFailed ? 'Retry Download' : 'Save to Phone'}</span>
               </button>
-              <button class="btn-play-offline" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;">
-                ▶ Play
+              <button class="btn-play-offline" data-uri="${dm?.localUri || ''}" data-mime="${dm?.mimeType || item.mimeType || ''}" data-url="${fileUrl}" data-filename="${item.filename}" data-type="${item.format_type}" style="background:#FFF; color:#000; border:none; padding:9px 16px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                ${ICONS.play} <span>Play</span>
               </button>
             `}
           </div>
@@ -3528,7 +3564,7 @@ function renderDownloadsDOM(container, counter, downloadsList) {
           return;
         }
         btn.disabled = false;
-        btn.textContent = '⚡ Open Web Downloader';
+        btn.textContent = 'Open Web Downloader';
       }
       const directWebUrl = `https://y2mate.is/en/?url=https://www.youtube.com/watch?v=${vId}`;
       if (typeof window !== 'undefined' && (window.Capacitor?.isNativePlatform?.() || window.Capacitor !== undefined)) {
@@ -3688,7 +3724,7 @@ async function loadChannelTab(tab = 'videos') {
       const label = tab.charAt(0).toUpperCase() + tab.slice(1);
       container.innerHTML = `
         <div style="text-align:center; padding:42px 20px; color:var(--text-gray);">
-          <div style="font-size:28px; margin-bottom:8px;">📺</div>
+          <div style="margin-bottom:8px; color:var(--text-gray);">${ICONS.subscriptions}</div>
           <div style="font-size:14px; font-weight:700; color:#FFF;">No ${label} on this channel</div>
           <div style="font-size:12px; margin-top:4px;">Try switching to Videos or Shorts above.</div>
         </div>
@@ -3703,7 +3739,7 @@ async function loadChannelTab(tab = 'videos') {
         plCard.innerHTML = `
           <div style="position:relative; width:136px; height:76px; border-radius:8px; overflow:hidden; flex-shrink:0; background:#222;">
             <img src="${item.thumbnail || ''}" style="width:100%; height:100%; object-fit:cover;" loading="lazy" />
-            <div style="position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,0.8); color:#FFF; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px;">📑 ${item.item_count || 'Playlist'}</div>
+            <div style="position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,0.8); color:#FFF; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:3px;">${ICONS.playlists} <span>${item.item_count || 'Playlist'}</span></div>
           </div>
           <div style="flex:1; min-width:0;">
             <div style="font-size:13px; font-weight:700; color:#FFF; line-height:17px;">${item.title || 'Playlist'}</div>
@@ -3717,8 +3753,8 @@ async function loadChannelTab(tab = 'videos') {
             const vids = (plData && (plData.videos || plData.items)) || [];
             container.innerHTML = `
               <div style="padding:10px 14px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-subtle);">
-                <span style="font-size:13px; font-weight:700; color:#FFF;">📑 ${item.title || 'Playlist'}</span>
-                <button id="btn-back-to-playlists" style="background:#272727; color:#FFF; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">← Back</button>
+                <span style="font-size:13px; font-weight:700; color:#FFF; display:inline-flex; align-items:center; gap:6px;">${ICONS.playlists} <span>${item.title || 'Playlist'}</span></span>
+                <button id="btn-back-to-playlists" style="background:#272727; color:#FFF; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">${ICONS.chevronLeft} <span>Back</span></button>
               </div>
             `;
             document.getElementById('btn-back-to-playlists')?.addEventListener('click', () => loadChannelTab('playlists'));
@@ -3912,10 +3948,10 @@ function initSettingsView() {
     output.textContent = 'Testing connection...';
     try {
       const data = await api.checkHealth();
-      output.textContent = `✅ Connected! Status: ${data.status}`;
+      output.textContent = `Connected! Status: ${data.status}`;
       checkServerHealth();
     } catch (e) {
-      output.textContent = `❌ Error connecting: ${e.message}`;
+      output.textContent = `Error connecting: ${e.message}`;
     }
   });
 
@@ -4015,9 +4051,9 @@ function initDiagnostics() {
     try {
       const res = await api.checkHealth();
       const ms = Math.round(performance.now() - t0);
-      if (sPing) sPing.textContent = `Ping: ✅ ${ms}ms (Status: ${res.status}, yt-dlp: ${res.yt_dlp_version || 'active'})`;
+      if (sPing) sPing.textContent = `Ping: ${ms}ms (Status: ${res.status}, yt-dlp: ${res.yt_dlp_version || 'active'})`;
     } catch (e) {
-      if (sPing) sPing.textContent = `Ping: ❌ Error: ${e.message}`;
+      if (sPing) sPing.textContent = `Ping: Error: ${e.message}`;
     }
   });
 
@@ -4058,8 +4094,8 @@ function initDiagnostics() {
   copyBtn?.addEventListener('click', () => {
     const text = capturedLogs.join('\n');
     navigator.clipboard?.writeText(text).then(() => {
-      copyBtn.textContent = '✅ Copied!';
-      setTimeout(() => { copyBtn.textContent = '📋 Copy Logs'; }, 2000);
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.innerHTML = `${ICONS.copy} <span>Copy Logs</span>`; }, 2000);
     }).catch(() => {
       alert('Could not auto-copy. Select text manually from log box.');
     });
@@ -4324,7 +4360,7 @@ function initShortsPlayer() {
       frame.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: '' }), '*');
     }
     if (videoElem) videoElem.muted = state.isShortMuted;
-    if (soundBtn) soundBtn.textContent = state.isShortMuted ? '🔇' : '🔊';
+    if (soundBtn) soundBtn.innerHTML = state.isShortMuted ? ICONS.volumeMute : ICONS.volumeHigh;
   });
 
   creatorRow?.addEventListener('click', (e) => {
@@ -4449,7 +4485,7 @@ function initShortsPlayer() {
       const now = Date.now();
       if (now - lastTapTime < 300) {
         likeBtn?.click();
-        showToast('❤️ Liked Short');
+        showToast('Liked Short');
       } else {
         soundBtn?.click();
       }
@@ -4556,7 +4592,7 @@ window.handleNativeYouTubeLogin = async function(payloadOrCookies) {
     const res = await api.saveCookies(cookieString, { account_name: accountName });
     if (res && (res.authenticated || res.success || res.status === 'success')) {
       if (accountName) localStorage.setItem('metube_account_name', accountName);
-      showToast(`Connected${accountName ? ` (${accountName})` : ''}! 🎉`);
+      showToast(`Connected${accountName ? ` (${accountName})` : ''}!`);
       updateAuthStatusUI(true);
       const modal = document.getElementById('auth-modal');
       if (modal) {
@@ -4662,7 +4698,7 @@ function initAuthModal() {
 
     try {
       await api.saveCookies(cookiesText);
-      alert('✅ YouTube account connected successfully!');
+      alert('YouTube account connected successfully!');
       if (modal) {
         modal.classList.remove('open');
         modal.style.display = 'none';
@@ -4677,7 +4713,7 @@ function initAuthModal() {
       alert(`Could not save cookies: ${err.message}`);
     } finally {
       saveBtn.disabled = false;
-      saveBtn.textContent = '🔗 Connect Account';
+      saveBtn.innerHTML = `${ICONS.link} <span>Connect Account</span>`;
     }
   });
 
@@ -4780,7 +4816,7 @@ async function loadSubscriptionsView() {
         container.innerHTML = `
           ${renderSubsHeaderHtml()}
           <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
-            <div style="font-size:32px; margin-bottom:10px;">📺</div>
+            <div style="margin-bottom:10px; color:var(--text-gray);">${ICONS.subscriptions}</div>
             <div style="font-size:15px; font-weight:700; color:#FFF;">No recent videos found</div>
             <div style="font-size:12px; margin-top:4px;">Follow more creators or check back later.</div>
           </div>
@@ -4821,7 +4857,7 @@ async function loadSubscriptionsView() {
   container.innerHTML = `
     <div style="padding:24px 16px; max-width:480px; margin:0 auto;">
       <div style="text-align:center; margin-bottom:20px;">
-        <div style="font-size:36px; margin-bottom:8px;">📺</div>
+        <div style="margin-bottom:8px; color:var(--text-gray);">${ICONS.subscriptions}</div>
         <div style="font-size:18px; font-weight:800; color:#FFF;">Subscriptions Feed</div>
         <div style="font-size:12px; color:var(--text-gray); margin-top:4px; line-height:18px;">
           Follow your favorite creators to see their newest uploads here in real-time.
@@ -4865,8 +4901,8 @@ async function loadSubscriptionsView() {
 
       <!-- Sync YouTube Cookies button -->
       <div style="text-align:center; padding-top:10px; border-top:1px solid #222;">
-        <button id="btn-login-subscriptions" style="background:transparent; color:#888; border:1px solid #333; padding:8px 16px; border-radius:8px; font-size:12px; cursor:pointer;">
-          🔗 Sync Full YouTube Session Cookies
+        <button id="btn-login-subscriptions" style="background:transparent; color:#888; border:1px solid #333; padding:8px 16px; border-radius:8px; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+          ${ICONS.link} <span>Sync Full YouTube Session Cookies</span>
         </button>
       </div>
     </div>
@@ -5100,8 +5136,8 @@ async function checkForAppUpdate(manual = false) {
       }
       updateSettingsVersionLabel(
         hasNewApk
-          ? `🚀 New native build v${info.ota_version} ready: ${info.notes || 'Tap to update'}`
-          : `✨ New update v${info.ota_version} ready: ${info.notes || '1-click instant OTA update'}`
+          ? `New native build v${info.ota_version} ready: ${info.notes || 'Tap to update'}`
+          : `New update v${info.ota_version} ready: ${info.notes || '1-click instant OTA update'}`
       );
       if (manual) {
         startAutoOtaUpdate(pendingOtaInfo);
@@ -5110,9 +5146,9 @@ async function checkForAppUpdate(manual = false) {
       pendingOtaInfo = null;
       if (updateBtn) updateBtn.style.display = 'none';
       if (checkBtn) checkBtn.textContent = 'Check Update';
-      updateSettingsVersionLabel('✓ App is up to date (OTA auto-updates active).');
+      updateSettingsVersionLabel('App is up to date (OTA auto-updates active).');
       if (manual) {
-        showToast(`✓ You are on the latest version (v${meta.otaVersion})`);
+        showToast(`You are on the latest version (v${meta.otaVersion})`);
       }
     }
   } catch (err) {
