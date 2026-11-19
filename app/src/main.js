@@ -417,9 +417,15 @@ function toggleChannelSubscription(creator) {
   if (index >= 0) {
     subs.splice(index, 1);
     nowSubscribed = false;
+    if (cId) {
+      api.unsubscribe(cId).catch((err) => console.debug('Online unsubscribe sync:', err));
+    }
   } else {
     subs.unshift({ id: cId, name: cName, avatar: cAvatar });
     nowSubscribed = true;
+    if (cId) {
+      api.subscribe(cId).catch((err) => console.debug('Online subscribe sync:', err));
+    }
   }
 
   try {
@@ -716,6 +722,14 @@ function initNavigation() {
 
   closeSearchBtn?.addEventListener('click', () => {
     header?.classList.remove('search-mode-open');
+    if (state.searchQuery) {
+      state.searchQuery = '';
+      state.searchChannel = null;
+      if (searchInput) searchInput.value = '';
+      if (clearBtn) clearBtn.style.display = 'none';
+      syncNativeOverlayFlag();
+      loadFeed('all');
+    }
   });
 
   searchInput?.addEventListener('input', () => {
@@ -810,22 +824,21 @@ function initNavigation() {
     }
 
     state.searchQuery = query;
-    header?.classList.remove('search-mode-open');
-    if (banner) {
-      banner.style.display = 'flex';
-      bannerQuery.textContent = `Search results for "${query}"`;
-    }
+    // Keep search mode open so query stays visible in header search bar, just like real YouTube
+    header?.classList.add('search-mode-open');
+    if (clearBtn) clearBtn.style.display = 'flex';
     syncNativeOverlayFlag();
     loadFeedSearchResults(query);
   });
 
   exitSearchBtn?.addEventListener('click', () => {
     state.searchQuery = '';
+    state.searchChannel = null;
     searchInput.value = '';
     if (clearBtn) clearBtn.style.display = 'none';
-    if (banner) banner.style.display = 'none';
+    header?.classList.remove('search-mode-open');
     syncNativeOverlayFlag();
-    loadFeed(state.activeCategory);
+    loadFeed('all');
   });
 
   // Continuous Feed Loading / Infinite Scroll on #content-viewport
@@ -1097,6 +1110,7 @@ async function loadFeedSearchResults(query) {
   state.emptyPageStreak = 0;
   state.hasMore = true;
   state.isLoadingMore = false;
+  state.searchChannel = null;
 
   container.innerHTML = `
     <div class="spinner-box">
@@ -1108,6 +1122,7 @@ async function loadFeedSearchResults(query) {
     const res = await api.search(query, 1);
     state.videos = res.videos || [];
     state.feedNextToken = (res && res.next_token) || '';
+    state.searchChannel = (res && res.channel) || null;
     state.shorts = [];
     renderFeed();
   } catch (err) {
@@ -1202,7 +1217,62 @@ function renderFeed() {
   if (!container) return;
   container.innerHTML = '';
 
-  if (state.videos.length === 0) {
+  // 1. If this is a search result and a matching YouTube Channel was found, render Channel Card at top
+  if (state.searchQuery && state.searchChannel) {
+    const ch = state.searchChannel;
+    const isSub = isSubscribedTo(ch.channel_id, ch.title);
+    const chCard = document.createElement('div');
+    chCard.className = 'search-channel-card';
+    chCard.innerHTML = `
+      <div class="search-channel-header-row">
+        <img class="search-channel-avatar" src="${escapeHtml(ch.channel_avatar || './icon.png')}" alt="${escapeHtml(ch.title || 'Creator')}" onerror="this.src='./icon.png'" />
+        <div class="search-channel-info">
+          <div class="search-channel-title">${escapeHtml(ch.title || 'Creator')}</div>
+          <div class="search-channel-meta">${escapeHtml(ch.subscriber_count_text || ch.video_count_text || 'YouTube Channel')}</div>
+        </div>
+      </div>
+      <div class="search-channel-actions">
+        <button class="btn-channel-subscribe ${isSub ? 'subscribed' : ''}" id="btn-search-subscribe" data-channel-id="${escapeHtml(ch.channel_id || '')}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M10 20h4c0 1.1-.9 2-2 2s-2-.9-2-2zm10-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C9.63 5.36 8 7.92 8 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+          <span class="sub-text">${isSub ? 'Subscribed' : 'Subscribe'}</span>
+        </button>
+        <button class="btn-channel-action" id="btn-search-view-channel">
+          <span>View Channel</span>
+        </button>
+      </div>
+    `;
+
+    chCard.querySelector('.search-channel-header-row')?.addEventListener('click', () => {
+      openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
+    });
+    chCard.querySelector('#btn-search-view-channel')?.addEventListener('click', () => {
+      openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
+    });
+
+    const subBtn = chCard.querySelector('#btn-search-subscribe');
+    subBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nowSubbed = toggleChannelSubscription({
+        id: ch.channel_id,
+        name: ch.title,
+        avatar: ch.channel_avatar
+      });
+      subBtn.classList.toggle('subscribed', nowSubbed);
+      subBtn.querySelector('.sub-text').textContent = nowSubbed ? 'Subscribed' : 'Subscribe';
+      showToast(nowSubbed ? `Subscribed to ${ch.title}` : `Unsubscribed from ${ch.title}`);
+    });
+
+    container.appendChild(chCard);
+
+    if (state.videos.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'search-section-header';
+      heading.textContent = 'Latest videos';
+      container.appendChild(heading);
+    }
+  }
+
+  if (state.videos.length === 0 && !state.searchChannel) {
     container.innerHTML = `
       <div class="spinner-box">
         <div class="spinner"></div>
@@ -1219,7 +1289,7 @@ function renderFeed() {
     container.appendChild(createVideoCardElement(video));
   });
 
-  // Render Shorts Shelf
+  // Render Shorts Shelf (only on Home feed, not inside search results)
   if (state.shorts.length > 0 && !state.searchQuery) {
     container.appendChild(createShortsShelfElement(state.shorts));
   }
@@ -2226,6 +2296,20 @@ async function openVideoPlayer(video) {
     subBtn.style.color = isSubbed ? '#FFFFFF' : '#0F0F0F';
   }
 
+  // Reset Player Like button
+  const playerLikeBtn = document.getElementById('btn-player-like');
+  if (playerLikeBtn) {
+    playerLikeBtn.classList.remove('active');
+    playerLikeBtn.style.color = 'var(--text-white)';
+    const countElem = document.getElementById('player-like-count');
+    if (countElem) countElem.textContent = 'Like';
+  }
+
+  // Record watch history to update user's dynamic feed & account
+  if (video.id && !video.isExternal && !video.isOffline) {
+    api.recordWatch(video.id).catch((err) => console.debug('Watch history sync:', err));
+  }
+
   // Real Channel Avatar Image with auto-refreshing Fallback
   const avatarUrl = resolveAvatarUrl(video.channel_avatar, cName, video.channel_id);
   if (channelAvatarImg) {
@@ -3035,6 +3119,19 @@ function initPlayerControls() {
     subBtn.textContent = isNowSubbed ? 'Subscribed' : 'Subscribe';
     subBtn.style.background = isNowSubbed ? '#272727' : '#FFFFFF';
     subBtn.style.color = isNowSubbed ? '#FFFFFF' : '#0F0F0F';
+  });
+
+  // Like button
+  const playerLikeBtn = document.getElementById('btn-player-like');
+  playerLikeBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!state.activeVideo || !state.activeVideo.id) return;
+    const isLiked = playerLikeBtn.classList.toggle('active');
+    playerLikeBtn.style.color = isLiked ? '#FF0000' : 'var(--text-white)';
+    const countElem = document.getElementById('player-like-count');
+    if (countElem) countElem.textContent = isLiked ? 'Liked' : 'Like';
+    showToast(isLiked ? 'Added to Liked videos' : 'Removed from Liked videos');
+    api.likeVideo(state.activeVideo.id, isLiked ? 'like' : 'none').catch((err) => console.debug('Player like sync:', err));
   });
 }
 
@@ -4029,6 +4126,58 @@ function initActionsSheet() {
 }
 
 // =========================================================
+// APPEARANCE & THEME MANAGER (Light, Dark, System Default)
+// =========================================================
+function applyTheme(theme) {
+  document.body.classList.remove('theme-dark', 'theme-light', 'theme-system');
+  if (theme === 'dark') {
+    document.body.classList.add('theme-dark');
+  } else if (theme === 'light') {
+    document.body.classList.add('theme-light');
+  } else {
+    document.body.classList.add('theme-system');
+  }
+
+  // Update active state on settings theme buttons
+  document.querySelectorAll('.theme-select-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.theme === theme);
+  });
+
+  // Update meta theme-color for system bars
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia && !window.matchMedia('(prefers-color-scheme: light)').matches);
+  let metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (!metaTheme) {
+    metaTheme = document.createElement('meta');
+    metaTheme.name = 'theme-color';
+    document.head.appendChild(metaTheme);
+  }
+  metaTheme.content = isDark ? '#0F0F0F' : '#FFFFFF';
+}
+
+function initThemeManager() {
+  const currentTheme = localStorage.getItem('metube_theme') || 'system';
+  applyTheme(currentTheme);
+
+  // Wire buttons in Settings
+  document.querySelectorAll('.theme-select-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const selected = btn.dataset.theme || 'system';
+      try { localStorage.setItem('metube_theme', selected); } catch (_) {}
+      applyTheme(selected);
+      showToast(`Appearance: ${selected === 'system' ? 'Device theme' : (selected === 'dark' ? 'Dark theme' : 'Light theme')}`);
+    });
+  });
+
+  // Listen to OS theme changes if on system default
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      const active = localStorage.getItem('metube_theme') || 'system';
+      if (active === 'system') applyTheme('system');
+    });
+  }
+}
+
+// =========================================================
 // 10. SETTINGS VIEW
 // =========================================================
 function initSettingsView() {
@@ -4630,6 +4779,10 @@ function initShortsPlayer() {
     const isLiked = likeBtn.classList.toggle('active');
     likeBtn.style.color = isLiked ? '#FF0000' : '#FFF';
     showShortsCenterFeedback('liked');
+    const cur = state.shortsList[state.currentShortIndex];
+    if (cur && cur.id) {
+      api.likeVideo(cur.id, isLiked ? 'like' : 'none').catch((err) => console.debug('Short like sync:', err));
+    }
   });
 
   downloadBtn?.addEventListener('click', (e) => {
@@ -5527,6 +5680,7 @@ function startAutoOtaUpdate(info) {
 // INITIALIZATION ON PAGE LOAD
 // =========================================================
 window.addEventListener('DOMContentLoaded', () => {
+  initThemeManager();
   initSimulator();
   initNavigation();
   initPlayerControls();

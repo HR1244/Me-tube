@@ -211,6 +211,30 @@ export const api = {
     if (channels) p.set('channels', channels);
     return request(`/api/user/feed?${p.toString()}`);
   },
+  subscribe(channelId, channelName = '') {
+    return request('/api/user/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ channel_id: channelId, channel_name: channelName, device_id: getDeviceId() })
+    });
+  },
+  unsubscribe(channelId) {
+    return request('/api/user/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ channel_id: channelId, device_id: getDeviceId() })
+    });
+  },
+  likeVideo(videoId, action = 'LIKE') {
+    return request('/api/user/like', {
+      method: 'POST',
+      body: JSON.stringify({ video_id: videoId, action, device_id: getDeviceId() })
+    });
+  },
+  recordWatch(videoId, title = '', channel = '') {
+    return request('/api/user/watch', {
+      method: 'POST',
+      body: JSON.stringify({ video_id: videoId, title, channel, device_id: getDeviceId() })
+    });
+  },
   getAppVersion() {
     return request('/api/app/version', { cache: 'no-store' });
   }

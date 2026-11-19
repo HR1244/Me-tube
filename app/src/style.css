@@ -14,6 +14,15 @@
   --text-gray: #AAAAAA;
   --text-muted: #717171;
   --metube-red: #FF0000;
+  --header-bg: #0F0F0F;
+  --input-bg: #212121;
+  --input-border: rgba(255, 255, 255, 0.16);
+  --btn-sub-bg: #FFFFFF;
+  --btn-sub-text: #0F0F0F;
+  --btn-sub-active-bg: #272727;
+  --btn-sub-active-text: #AAAAAA;
+  --btn-action-bg: #272727;
+  --btn-action-text: #FFFFFF;
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   
   --safe-top: 0px;
@@ -21,6 +30,53 @@
   --safe-left: 0px;
   --safe-right: 0px;
   --sim-scale: 1;
+}
+
+/* Light Mode Theme Classes */
+body.theme-light {
+  --bg: #FFFFFF;
+  --surface: #F9F9F9;
+  --surface-card: #FFFFFF;
+  --surface-pill: #F2F2F2;
+  --border: #E5E5E5;
+  --border-subtle: #ECECEC;
+  --text-white: #0F0F0F;
+  --text-gray: #606060;
+  --text-muted: #909090;
+  --header-bg: #FFFFFF;
+  --input-bg: #F2F2F2;
+  --input-border: #DCDCDC;
+  --btn-sub-bg: #0F0F0F;
+  --btn-sub-text: #FFFFFF;
+  --btn-sub-active-bg: #F2F2F2;
+  --btn-sub-active-text: #606060;
+  --btn-action-bg: #F2F2F2;
+  --btn-action-text: #0F0F0F;
+}
+
+/* System Default Theme when OS is in Light Mode */
+@media (prefers-color-scheme: light) {
+  body:not(.theme-dark):not(.theme-light),
+  body.theme-system {
+    --bg: #FFFFFF;
+    --surface: #F9F9F9;
+    --surface-card: #FFFFFF;
+    --surface-pill: #F2F2F2;
+    --border: #E5E5E5;
+    --border-subtle: #ECECEC;
+    --text-white: #0F0F0F;
+    --text-gray: #606060;
+    --text-muted: #909090;
+    --header-bg: #FFFFFF;
+    --input-bg: #F2F2F2;
+    --input-border: #DCDCDC;
+    --btn-sub-bg: #0F0F0F;
+    --btn-sub-text: #FFFFFF;
+    --btn-sub-active-bg: #F2F2F2;
+    --btn-sub-active-text: #606060;
+    --btn-action-bg: #F2F2F2;
+    --btn-action-text: #0F0F0F;
+  }
 }
 
 * {
@@ -567,8 +623,8 @@ body.is-mobile-device .phone-home-indicator {
   display: none;
   width: 100%;
   align-items: center;
-  background: #212121;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
   border-radius: 20px;
   height: 38px;
   overflow: hidden;
@@ -1274,7 +1330,7 @@ body.is-mobile-device .phone-home-indicator {
 }
 
 .nav-item.active {
-  color: #FFFFFF;
+  color: var(--text-white);
 }
 
 .nav-item.active svg {
@@ -2639,5 +2695,135 @@ body.is-mobile-device .phone-home-indicator {
   transition: opacity 0.3s ease;
   pointer-events: none;
 }
+
+/* YouTube-style Search Channel Card */
+.search-channel-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 8px;
+}
+
+.search-channel-header-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.search-channel-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-pill);
+}
+
+.search-channel-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.search-channel-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-channel-meta {
+  font-size: 12px;
+  color: var(--text-gray);
+  line-height: 16px;
+}
+
+.search-channel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.btn-channel-subscribe {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: 18px;
+  border: none;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--btn-sub-bg);
+  color: var(--btn-sub-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-channel-subscribe.subscribed {
+  background: var(--btn-sub-active-bg);
+  color: var(--btn-sub-active-text);
+}
+
+.btn-channel-action {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: 18px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--btn-action-bg);
+  color: var(--btn-action-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.search-section-header {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-white);
+  padding: 10px 16px 6px;
+}
+
+/* Settings Appearance Theme Buttons */
+.theme-select-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-pill);
+  color: var(--text-gray);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.theme-select-btn svg {
+  stroke: currentColor;
+}
+
+.theme-select-btn.active {
+  border-color: #4285F4;
+  color: #4285F4;
+  background: rgba(66, 133, 244, 0.12);
+}
+
 
 

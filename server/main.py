@@ -1041,6 +1041,131 @@ def get_user_personalized_feed(
 
     return {"authenticated": False, "videos": []}
 
+def get_device_cookie_header(dev_id: str) -> Tuple[str, Optional[str]]:
+    """Returns (cookie_header_string, sapisid_hash_or_none) for authenticated Innertube calls."""
+    cookie_file = get_cookies_file(dev_id)
+    if not cookie_file:
+        return "", None
+    pairs = []
+    sapisid = None
+    try:
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                parts = line.strip().split("\t")
+                if len(parts) >= 7:
+                    k, v = parts[5], parts[6]
+                    pairs.append(f"{k}={v}")
+                    if k in ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID") and not sapisid:
+                        sapisid = v
+    except Exception as e:
+        logger.warning(f"Error reading cookies for {dev_id}: {e}")
+        return "", None
+
+    cookie_header = "; ".join(pairs)
+    sapisid_hash = None
+    if sapisid:
+        ts = str(int(time.time()))
+        digest = hashlib.sha1(f"{ts} {sapisid} https://www.youtube.com".encode("utf-8")).hexdigest()
+        sapisid_hash = f"SAPISIDHASH {ts}_{digest}"
+    return cookie_header, sapisid_hash
+
+def innertube_authenticated_call(endpoint: str, payload: Dict[str, Any], dev_id: str) -> Dict[str, Any]:
+    cookie_header, sapisid_hash = get_device_cookie_header(dev_id)
+    if not cookie_header:
+        return {"success": False, "error": "Not authenticated on this device"}
+    base_payload = {
+        "context": {
+            "client": {
+                "hl": "en",
+                "gl": "IN",
+                "clientName": "WEB",
+                "clientVersion": "2.20250101.00.00"
+            }
+        }
+    }
+    base_payload.update(payload)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Cookie": cookie_header,
+        "Origin": "https://www.youtube.com",
+        "Referer": "https://www.youtube.com/"
+    }
+    if sapisid_hash:
+        headers["Authorization"] = sapisid_hash
+        headers["X-Origin"] = "https://www.youtube.com"
+    req = urllib.request.Request(
+        f"https://www.youtube.com/youtubei/v1/{endpoint.lstrip('/')}",
+        data=json.dumps(base_payload).encode("utf-8"),
+        headers=headers
+    )
+    with urllib.request.urlopen(req, timeout=8) as res:
+        return json.loads(res.read().decode("utf-8", errors="ignore"))
+
+class SubscribePayload(BaseModel):
+    channel_id: str
+    channel_name: Optional[str] = None
+    device_id: Optional[str] = None
+
+class LikePayload(BaseModel):
+    video_id: str
+    action: str = "LIKE"
+    device_id: Optional[str] = None
+
+class WatchPayload(BaseModel):
+    video_id: str
+    title: Optional[str] = None
+    channel: Optional[str] = None
+    device_id: Optional[str] = None
+
+@app.post("/api/user/subscribe")
+def user_subscribe(payload: SubscribePayload, request: Request):
+    dev_id = extract_device_id(request, payload.device_id)
+    with query_cache_lock:
+        query_cache.pop(f"user_feed_{dev_id}", None)
+        query_cache.pop(f"trending_all_1_0", None)
+    res = {}
+    try:
+        res = innertube_authenticated_call("subscription/subscribe", {"channelIds": [payload.channel_id]}, dev_id)
+    except Exception as e:
+        logger.warning(f"Subscribe innertube warning for {dev_id}: {e}")
+    return {"success": True, "subscribed": True, "channel_id": payload.channel_id, "channel_name": payload.channel_name, "response": res}
+
+@app.post("/api/user/unsubscribe")
+def user_unsubscribe(payload: SubscribePayload, request: Request):
+    dev_id = extract_device_id(request, payload.device_id)
+    with query_cache_lock:
+        query_cache.pop(f"user_feed_{dev_id}", None)
+        query_cache.pop(f"trending_all_1_0", None)
+    res = {}
+    try:
+        res = innertube_authenticated_call("subscription/unsubscribe", {"channelIds": [payload.channel_id]}, dev_id)
+    except Exception as e:
+        logger.warning(f"Unsubscribe innertube warning for {dev_id}: {e}")
+    return {"success": True, "subscribed": False, "channel_id": payload.channel_id, "response": res}
+
+@app.post("/api/user/like")
+def user_like_video(payload: LikePayload, request: Request):
+    dev_id = extract_device_id(request, payload.device_id)
+    action = payload.action.upper()
+    endpoint = "like/removelike" if action == "REMOVE" else ("like/dislike" if action == "DISLIKE" else "like/like")
+    res = {}
+    try:
+        res = innertube_authenticated_call(endpoint, {"target": {"videoId": payload.video_id}}, dev_id)
+    except Exception as e:
+        logger.warning(f"Like innertube warning for {dev_id}: {e}")
+    return {"success": True, "action": action, "video_id": payload.video_id, "response": res}
+
+@app.post("/api/user/watch")
+def user_record_watch(payload: WatchPayload, request: Request):
+    dev_id = extract_device_id(request, payload.device_id)
+    with query_cache_lock:
+        query_cache.pop(f"user_feed_{dev_id}", None)
+        query_cache.pop(f"trending_all_1_0", None)
+    return {"success": True, "recorded": True, "video_id": payload.video_id}
+
 video_creator_cache: Dict[str, Dict[str, str]] = {}
 
 def resolve_video_creator_meta(video_id: str) -> Dict[str, str]:
@@ -1161,6 +1286,7 @@ def innertube_search_paged(
     videos: List[Dict[str, Any]] = []
     next_token: Optional[str] = None
     seen_ids = set()
+    matching_channel: Optional[Dict[str, Any]] = None
 
     try:
         data = innertube_request("search", payload, timeout=6)
@@ -1258,6 +1384,23 @@ def innertube_search_paged(
                             if len(videos) >= limit:
                                 break
                 else:
+                    cr = it.get("channelRenderer")
+                    if cr and not matching_channel:
+                        c_id = cr.get("channelId") or ""
+                        c_title = cr.get("title", {}).get("simpleText") or "".join(r.get("text", "") for r in cr.get("title", {}).get("runs", []))
+                        sub_text = cr.get("subscriberCountText", {}).get("simpleText") or cr.get("videoCountText", {}).get("simpleText") or ""
+                        video_count = cr.get("videoCountText", {}).get("simpleText") or ""
+                        c_thumbs = cr.get("thumbnail", {}).get("thumbnails", [])
+                        c_avatar = c_thumbs[-1].get("url") if c_thumbs else ""
+                        if c_avatar.startswith("//"): c_avatar = "https:" + c_avatar
+                        matching_channel = {
+                            "channel_id": c_id,
+                            "title": c_title or "Creator",
+                            "channel_avatar": c_avatar,
+                            "subscriber_count_text": sub_text,
+                            "video_count_text": video_count
+                        }
+
                     vr = it.get("videoRenderer")
                     if vr:
                         parsed = _parse_video_renderer(vr)
@@ -1292,7 +1435,7 @@ def innertube_search_paged(
     if videos and enrich_limit > 0:
         enrich_items_avatars(videos, max_enrich=enrich_limit)
 
-    return {"videos": videos, "next_token": next_token}
+    return {"videos": videos, "next_token": next_token, "channel": matching_channel}
 
 def innertube_search(query: str, limit: int = 25, only_shorts: bool = False) -> List[Dict[str, Any]]:
     return innertube_search_paged(query=query, limit=limit, only_shorts=only_shorts, enrich_limit=8).get("videos", [])
@@ -1918,8 +2061,9 @@ def search_videos(
             paged = innertube_search_paged(query=search_query, limit=25, only_shorts=False)
 
         videos = paged.get("videos", [])
-        if videos:
-            result = {"query": clean_q, "page": page, "next_token": paged.get("next_token"), "videos": videos}
+        matching_channel = paged.get("channel")
+        if videos or matching_channel:
+            result = {"query": clean_q, "page": page, "next_token": paged.get("next_token"), "videos": videos, "channel": matching_channel}
             set_cached(cache_key, result, ttl=300)
             return result
     except Exception as ie:
