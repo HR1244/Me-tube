@@ -803,6 +803,14 @@ function initNavigation() {
     const query = (searchInput.value || '').trim();
     if (!query) return;
 
+    // Immediately dismiss mobile keyboard and edit handle
+    searchInput?.blur();
+    try {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Keyboard) {
+        window.Capacitor.Plugins.Keyboard.hide();
+      }
+    } catch (_) {}
+
     // Direct YouTube Link or Video ID paste detection
     const directVideoId = extractYouTubeVideoId(query);
     if (directVideoId) {
@@ -829,6 +837,16 @@ function initNavigation() {
     if (clearBtn) clearBtn.style.display = 'flex';
     syncNativeOverlayFlag();
     loadFeedSearchResults(query);
+  });
+
+  const searchSubmitBtn = searchForm?.querySelector('.search-submit-btn');
+  searchSubmitBtn?.addEventListener('click', () => {
+    searchInput?.blur();
+    try {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Keyboard) {
+        window.Capacitor.Plugins.Keyboard.hide();
+      }
+    } catch (_) {}
   });
 
   exitSearchBtn?.addEventListener('click', () => {
@@ -1112,9 +1130,18 @@ async function loadFeedSearchResults(query) {
   state.isLoadingMore = false;
   state.searchChannel = null;
 
+  if (typeof switchTab === 'function' && state.activeTab !== 'home') {
+    switchTab('home');
+  }
+  const viewport = document.getElementById('content-viewport');
+  if (viewport) {
+    viewport.scrollTop = 0;
+  }
+
   container.innerHTML = `
-    <div class="spinner-box">
+    <div class="spinner-box" style="padding: 60px 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;">
       <div class="spinner"></div>
+      <div style="font-size: 13px; color: var(--text-gray); font-weight: 500;">Searching YouTube...</div>
     </div>
   `;
 
@@ -1127,8 +1154,9 @@ async function loadFeedSearchResults(query) {
     renderFeed();
   } catch (err) {
     container.innerHTML = `
-      <div class="spinner-box">
-        <button id="btn-retry-search" style="background:var(--metube-red); color:#FFF; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer;">Retry Search</button>
+      <div class="spinner-box" style="flex-direction: column; gap: 12px; padding: 40px 20px;">
+        <div style="font-size: 14px; color: var(--text-gray); font-weight: 600;">Unable to load search results</div>
+        <button id="btn-retry-search" style="padding: 8px 18px; border-radius: 18px; background: var(--surface-pill); border: 1px solid var(--border); color: var(--text-white); font-weight: 700; cursor: pointer;">Retry Search</button>
       </div>
     `;
     document.getElementById('btn-retry-search')?.addEventListener('click', () => loadFeedSearchResults(query));
@@ -2296,8 +2324,9 @@ async function openVideoPlayer(video) {
   state.isSubscribed = isSubbed;
   if (subBtn) {
     subBtn.textContent = isSubbed ? 'Subscribed' : 'Subscribe';
-    subBtn.style.background = isSubbed ? '#272727' : '#FFFFFF';
-    subBtn.style.color = isSubbed ? '#FFFFFF' : '#0F0F0F';
+    subBtn.classList.toggle('subscribed', isSubbed);
+    subBtn.style.background = '';
+    subBtn.style.color = '';
   }
 
   // Reset Player Like button
@@ -2321,7 +2350,11 @@ async function openVideoPlayer(video) {
     attachAvatarHandlers(channelAvatarImg, cName, video.channel_id);
   }
 
-  if (descElem) descElem.textContent = video.description || '';
+  if (descElem) {
+    const desc = (video.description || '').trim();
+    descElem.textContent = desc;
+    descElem.style.display = desc ? 'block' : 'none';
+  }
 
   // Show loading spinner immediately
   const prevSpinner = document.getElementById('player-video-spinner');
@@ -2358,6 +2391,7 @@ async function openVideoPlayer(video) {
       }
       if (details.description && descElem) {
         descElem.textContent = details.description;
+        descElem.style.display = 'block';
       }
       if (details.channel_avatar && !video.channel_avatar && channelAvatarImg) {
         channelAvatarImg.src = resolveAvatarUrl(details.channel_avatar, details.channel || cName, details.channel_id || video.channel_id);
@@ -3121,8 +3155,9 @@ function initPlayerControls() {
     });
     state.isSubscribed = isNowSubbed;
     subBtn.textContent = isNowSubbed ? 'Subscribed' : 'Subscribe';
-    subBtn.style.background = isNowSubbed ? '#272727' : '#FFFFFF';
-    subBtn.style.color = isNowSubbed ? '#FFFFFF' : '#0F0F0F';
+    subBtn.classList.toggle('subscribed', isNowSubbed);
+    subBtn.style.background = '';
+    subBtn.style.color = '';
   });
 
   // Like button
