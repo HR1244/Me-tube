@@ -1219,56 +1219,60 @@ function renderFeed() {
 
   // 1. If this is a search result and a matching YouTube Channel was found, render Channel Card at top
   if (state.searchQuery && state.searchChannel) {
-    const ch = state.searchChannel;
-    const isSub = isSubscribedTo(ch.channel_id, ch.title);
-    const chCard = document.createElement('div');
-    chCard.className = 'search-channel-card';
-    chCard.innerHTML = `
-      <div class="search-channel-header-row">
-        <img class="search-channel-avatar" src="${escapeHtml(ch.channel_avatar || './icon.png')}" alt="${escapeHtml(ch.title || 'Creator')}" onerror="this.src='./icon.png'" />
-        <div class="search-channel-info">
-          <div class="search-channel-title">${escapeHtml(ch.title || 'Creator')}</div>
-          <div class="search-channel-meta">${escapeHtml(ch.subscriber_count_text || ch.video_count_text || 'YouTube Channel')}</div>
+    try {
+      const ch = state.searchChannel;
+      const isSub = isChannelSubscribed(ch.channel_id, ch.title);
+      const chCard = document.createElement('div');
+      chCard.className = 'search-channel-card';
+      chCard.innerHTML = `
+        <div class="search-channel-header-row">
+          <img class="search-channel-avatar" src="${escapeHtml(ch.channel_avatar || './icon.png')}" alt="${escapeHtml(ch.title || 'Creator')}" onerror="this.src='./icon.png'" />
+          <div class="search-channel-info">
+            <div class="search-channel-title">${escapeHtml(ch.title || 'Creator')}</div>
+            <div class="search-channel-meta">${escapeHtml(ch.subscriber_count_text || ch.video_count_text || 'YouTube Channel')}</div>
+          </div>
         </div>
-      </div>
-      <div class="search-channel-actions">
-        <button class="btn-channel-subscribe ${isSub ? 'subscribed' : ''}" id="btn-search-subscribe" data-channel-id="${escapeHtml(ch.channel_id || '')}">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M10 20h4c0 1.1-.9 2-2 2s-2-.9-2-2zm10-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C9.63 5.36 8 7.92 8 11v5l-2 2v1h16v-1l-2-2z"/></svg>
-          <span class="sub-text">${isSub ? 'Subscribed' : 'Subscribe'}</span>
-        </button>
-        <button class="btn-channel-action" id="btn-search-view-channel">
-          <span>View Channel</span>
-        </button>
-      </div>
-    `;
+        <div class="search-channel-actions">
+          <button class="btn-channel-subscribe ${isSub ? 'subscribed' : ''}" id="btn-search-subscribe" data-channel-id="${escapeHtml(ch.channel_id || '')}">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M10 20h4c0 1.1-.9 2-2 2s-2-.9-2-2zm10-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C9.63 5.36 8 7.92 8 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+            <span class="sub-text">${isSub ? 'Subscribed' : 'Subscribe'}</span>
+          </button>
+          <button class="btn-channel-action" id="btn-search-view-channel">
+            <span>View Channel</span>
+          </button>
+        </div>
+      `;
 
-    chCard.querySelector('.search-channel-header-row')?.addEventListener('click', () => {
-      openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
-    });
-    chCard.querySelector('#btn-search-view-channel')?.addEventListener('click', () => {
-      openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
-    });
-
-    const subBtn = chCard.querySelector('#btn-search-subscribe');
-    subBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const nowSubbed = toggleChannelSubscription({
-        id: ch.channel_id,
-        name: ch.title,
-        avatar: ch.channel_avatar
+      chCard.querySelector('.search-channel-header-row')?.addEventListener('click', () => {
+        openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
       });
-      subBtn.classList.toggle('subscribed', nowSubbed);
-      subBtn.querySelector('.sub-text').textContent = nowSubbed ? 'Subscribed' : 'Subscribe';
-      showToast(nowSubbed ? `Subscribed to ${ch.title}` : `Unsubscribed from ${ch.title}`);
-    });
+      chCard.querySelector('#btn-search-view-channel')?.addEventListener('click', () => {
+        openChannelExplorer({ channel: ch.title, channel_id: ch.channel_id, channel_avatar: ch.channel_avatar });
+      });
 
-    container.appendChild(chCard);
+      const subBtn = chCard.querySelector('#btn-search-subscribe');
+      subBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nowSubbed = toggleChannelSubscription({
+          id: ch.channel_id,
+          name: ch.title,
+          avatar: ch.channel_avatar
+        });
+        subBtn.classList.toggle('subscribed', nowSubbed);
+        subBtn.querySelector('.sub-text').textContent = nowSubbed ? 'Subscribed' : 'Subscribe';
+        showToast(nowSubbed ? `Subscribed to ${ch.title}` : `Unsubscribed from ${ch.title}`);
+      });
 
-    if (state.videos.length > 0) {
-      const heading = document.createElement('div');
-      heading.className = 'search-section-header';
-      heading.textContent = 'Latest videos';
-      container.appendChild(heading);
+      container.appendChild(chCard);
+
+      if (state.videos.length > 0) {
+        const heading = document.createElement('div');
+        heading.className = 'search-section-header';
+        heading.textContent = 'Latest videos';
+        container.appendChild(heading);
+      }
+    } catch (chErr) {
+      console.warn('Channel card render error:', chErr);
     }
   }
 

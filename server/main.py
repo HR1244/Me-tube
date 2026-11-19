@@ -13,7 +13,7 @@ import hashlib
 import urllib.request
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 # Ensure JS challenge runtimes (Deno / QuickJS) are discoverable even if service PATH is minimal

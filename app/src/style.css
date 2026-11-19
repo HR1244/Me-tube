@@ -54,6 +54,65 @@ body.theme-light {
   --btn-action-text: #0F0F0F;
 }
 
+/* Light Mode overrides for Shorts, Player, and Components */
+body.theme-light #shorts-modal {
+  background: #FFFFFF !important;
+}
+body.theme-light .shorts-safe-stage {
+  background: #FFFFFF !important;
+}
+body.theme-light .shorts-top-header span {
+  color: #0F0F0F !important;
+  text-shadow: none !important;
+}
+body.theme-light #btn-shorts-sound,
+body.theme-light #btn-close-shorts {
+  background: rgba(255, 255, 255, 0.88) !important;
+  color: #0F0F0F !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+body.theme-light .shorts-circle-action {
+  background: rgba(255, 255, 255, 0.88) !important;
+  color: #0F0F0F !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+body.theme-light .shorts-creator-pill {
+  background: rgba(255, 255, 255, 0.88) !important;
+  color: #0F0F0F !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+body.theme-light .shorts-pill-name {
+  color: #0F0F0F !important;
+}
+body.theme-light .player-modal:not(.shorts-fullscreen-modal) {
+  background: #FFFFFF !important;
+}
+body.theme-light .player-top-bar {
+  background: #FFFFFF !important;
+  border-bottom: 1px solid #ECECEC !important;
+  color: #0F0F0F !important;
+}
+body.theme-light .btn-yt-action-pill {
+  background: #F2F2F2 !important;
+  color: #0F0F0F !important;
+  border: 1px solid #E5E5E5 !important;
+}
+body.theme-light .btn-sub-white {
+  background: #0F0F0F !important;
+  color: #FFFFFF !important;
+}
+body.theme-light .btn-sub-white.subscribed {
+  background: #F2F2F2 !important;
+  color: #606060 !important;
+  border: 1px solid #E5E5E5 !important;
+}
+body.theme-light .short-thumb-wrapper {
+  background: #F2F2F2 !important;
+}
+
 /* System Default Theme when OS is in Light Mode */
 @media (prefers-color-scheme: light) {
   body:not(.theme-dark):not(.theme-light),
@@ -76,6 +135,77 @@ body.theme-light {
     --btn-sub-active-text: #606060;
     --btn-action-bg: #F2F2F2;
     --btn-action-text: #0F0F0F;
+  }
+  body:not(.theme-dark):not(.theme-light) #shorts-modal,
+  body.theme-system #shorts-modal {
+    background: #FFFFFF !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .shorts-safe-stage,
+  body.theme-system .shorts-safe-stage {
+    background: #FFFFFF !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .shorts-top-header span,
+  body.theme-system .shorts-top-header span {
+    color: #0F0F0F !important;
+    text-shadow: none !important;
+  }
+  body:not(.theme-dark):not(.theme-light) #btn-shorts-sound,
+  body.theme-system #btn-shorts-sound,
+  body:not(.theme-dark):not(.theme-light) #btn-close-shorts,
+  body.theme-system #btn-close-shorts {
+    background: rgba(255, 255, 255, 0.88) !important;
+    color: #0F0F0F !important;
+    border: 1px solid rgba(0, 0, 0, 0.12) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .shorts-circle-action,
+  body.theme-system .shorts-circle-action {
+    background: rgba(255, 255, 255, 0.88) !important;
+    color: #0F0F0F !important;
+    border: 1px solid rgba(0, 0, 0, 0.12) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .shorts-creator-pill,
+  body.theme-system .shorts-creator-pill {
+    background: rgba(255, 255, 255, 0.88) !important;
+    color: #0F0F0F !important;
+    border: 1px solid rgba(0, 0, 0, 0.12) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .shorts-pill-name,
+  body.theme-system .shorts-pill-name {
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .player-modal:not(.shorts-fullscreen-modal),
+  body.theme-system .player-modal:not(.shorts-fullscreen-modal) {
+    background: #FFFFFF !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .player-top-bar,
+  body.theme-system .player-top-bar {
+    background: #FFFFFF !important;
+    border-bottom: 1px solid #ECECEC !important;
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-yt-action-pill,
+  body.theme-system .btn-yt-action-pill {
+    background: #F2F2F2 !important;
+    color: #0F0F0F !important;
+    border: 1px solid #E5E5E5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-sub-white,
+  body.theme-system .btn-sub-white {
+    background: #0F0F0F !important;
+    color: #FFFFFF !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-sub-white.subscribed,
+  body.theme-system .btn-sub-white.subscribed {
+    background: #F2F2F2 !important;
+    color: #606060 !important;
+    border: 1px solid #E5E5E5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .short-thumb-wrapper,
+  body.theme-system .short-thumb-wrapper {
+    background: #F2F2F2 !important;
   }
 }
 
@@ -1203,15 +1333,15 @@ body.is-mobile-device .phone-home-indicator {
   left: 0;
   right: 0;
   height: 52px;
-  background: #181818;
-  border-top: 1px solid #2a2a2a;
-  border-bottom: 1px solid #0f0f0f;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
   z-index: 250;
-  box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.15);
   cursor: pointer;
   animation: slideUpMini 0.22s ease-out;
 }
@@ -1236,7 +1366,7 @@ body.is-mobile-device .phone-home-indicator {
   border-radius: 4px;
   object-fit: cover;
   flex-shrink: 0;
-  background: #222;
+  background: var(--surface-pill);
 }
 
 .mini-player-info {
@@ -1250,7 +1380,7 @@ body.is-mobile-device .phone-home-indicator {
 .mini-player-title {
   font-size: 12px;
   font-weight: 700;
-  color: #FFFFFF;
+  color: var(--text-white);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1274,7 +1404,7 @@ body.is-mobile-device .phone-home-indicator {
 .mini-player-btn {
   background: transparent;
   border: none;
-  color: #FFFFFF;
+  color: var(--text-white);
   font-size: 16px;
   cursor: pointer;
   padding: 8px;
