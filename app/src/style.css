@@ -490,7 +490,36 @@ body.is-mobile-device .phone-home-indicator {
 .icon-button svg {
   width: 22px;
   height: 22px;
+}
+
+/* Fill icons keep fill, stroked icons stay clean and hollow */
+.icon-button svg:not([stroke]):not([fill="none"]) {
   fill: currentColor;
+}
+
+.icon-button svg[stroke],
+.icon-button svg[fill="none"],
+#btn-open-search svg,
+.search-submit-btn svg,
+.search-back-btn svg,
+#btn-header-notifications svg,
+#btn-header-update svg {
+  fill: none !important;
+  stroke: currentColor !important;
+}
+
+/* Explicitly ensure Search Magnifying Glass is a hollow circle with stick, NOT an ice cream */
+#btn-open-search svg circle,
+.search-submit-btn svg circle {
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 2.2px !important;
+}
+
+#btn-open-search svg line,
+.search-submit-btn svg line {
+  stroke: currentColor !important;
+  stroke-width: 2.2px !important;
 }
 
 /* Brand & Custom Logo */
@@ -2432,4 +2461,183 @@ body.is-mobile-device .phone-home-indicator {
 .shorts-action-btn:active {
   transform: scale(0.95);
 }
+
+/* =========================================================
+   Cold Start Splash Screen (Smooth Fade-Out, Zero Distraction)
+   ========================================================= */
+.metube-splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #0F0F0F;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.38s ease, visibility 0.38s ease;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.metube-splash-screen.splash-hidden {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.splash-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.splash-logo-wrap {
+  position: relative;
+  width: 86px;
+  height: 86px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.splash-logo-img {
+  width: 80px;
+  height: 80px;
+  border-radius: 20px;
+  object-fit: contain;
+  box-shadow: 0 10px 30px rgba(255, 0, 0, 0.28);
+  animation: splashPulse 2s infinite ease-in-out;
+}
+
+@keyframes splashPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 8px 24px rgba(255, 0, 0, 0.25);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 14px 36px rgba(255, 0, 0, 0.45);
+  }
+}
+
+.splash-brand-title {
+  font-size: 24px;
+  font-weight: 800;
+  color: #FFFFFF;
+  letter-spacing: -0.5px;
+  margin-bottom: 24px;
+  font-family: -apple-system, BlinkMacSystemFont, "Roboto", "Segoe UI", sans-serif;
+}
+
+.splash-loader-bar {
+  width: 140px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.splash-loader-fill {
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(90deg, #FF0000, #FF5252);
+  border-radius: 2px;
+  position: absolute;
+  left: 0;
+  animation: splashLoadAnim 1.2s infinite ease-in-out;
+}
+
+@keyframes splashLoadAnim {
+  0% {
+    left: -40%;
+    width: 30%;
+  }
+  50% {
+    left: 30%;
+    width: 60%;
+  }
+  100% {
+    left: 100%;
+    width: 30%;
+  }
+}
+
+/* =========================================================
+   Authentic Notifications Sheet Modal
+   ========================================================= */
+.notifications-sheet {
+  background: #181818;
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border: 1px solid #282828;
+  border-bottom: none;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.notifications-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #222;
+  transition: background 0.15s;
+}
+
+.notifications-item:last-child {
+  border-bottom: none;
+}
+
+.notif-icon-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  background: #272727;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #FFF;
+}
+
+.notif-text-wrap {
+  flex: 1;
+}
+
+.notif-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #FFF;
+  margin-bottom: 2px;
+}
+
+.notif-desc {
+  font-size: 11px;
+  color: var(--text-gray);
+  line-height: 16px;
+}
+
+.notif-time {
+  font-size: 10px;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Shorts Instant Poster Backdrop */
+.shorts-poster-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.9);
+  z-index: 10;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
 

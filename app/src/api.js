@@ -110,7 +110,7 @@ export const api = {
     return request('/api/health');
   },
   getTrending(category = 'all', page = 1, nextToken = '') {
-    const p = new URLSearchParams({ category, page: String(page) });
+    const p = new URLSearchParams({ category, page: String(page), device_id: getDeviceId() });
     if (nextToken) p.set('next_token', nextToken);
     return request(`/api/trending?${p.toString()}`);
   },
@@ -181,7 +181,7 @@ export const api = {
     return `${getServerUrl()}/api/stream-proxy?url=${encodeURIComponent(directUrl)}`;
   },
   getShorts(page = 1, { nextToken = '', interests = '', seen = '', seed = '' } = {}) {
-    const p = new URLSearchParams({ page: String(page) });
+    const p = new URLSearchParams({ page: String(page), device_id: getDeviceId() });
     if (nextToken) p.set('next_token', nextToken);
     if (interests) p.set('interests', interests);
     if (seen) p.set('seen', seen);

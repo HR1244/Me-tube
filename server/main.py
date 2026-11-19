@@ -874,7 +874,7 @@ def save_user_cookies(payload: CookiePayload, request: Request):
     save_user_meta(dev_id, meta)
     # Invalidate cached extractions for this device so new session cookies apply immediately
     with query_cache_lock:
-        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:")]:
+        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:") or k == f"user_feed_{dev_id}"]:
             query_cache.pop(k, None)
     logger.info(f"Updated isolated YouTube cookies for device {dev_id} ({meta['account_name']})")
     return {"success": True, "status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
@@ -915,25 +915,30 @@ def get_user_personalized_feed(
 ):
     """Fetches ONLY this device's subscriptions & personalized videos when authenticated or given followed channels."""
     dev_id = extract_device_id(request, device_id)
+    cache_key = f"user_feed_{dev_id}"
+    cached = get_cached(cache_key)
+    if cached and not channels:
+        return cached
+
     cookie_file = get_cookies_file(dev_id)
 
-    # 1. If device cookies exist, extract official personalized subscriptions feed
+    # 1. If device cookies exist, extract official personalized subscriptions & watch history
     if cookie_file:
         opts = get_base_ydl_opts(dev_id)
         opts["extract_flat"] = True
-        opts["playlist_items"] = "1-30"
+        opts["playlist_items"] = "1-25"
+        clean_results = []
+        seen_ids = set()
         try:
             with SafeYoutubeDL(opts) as ydl:
-                res = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
-                entries = res.get("entries", []) if res else []
-                if entries:
-                    clean_results = []
-                    for item in entries[:30]:
-                        if not item:
+                # 1a. Subscriptions feed
+                try:
+                    res_subs = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
+                    for item in (res_subs.get("entries", []) if res_subs else [])[:20]:
+                        if not item or not item.get("id") or item["id"] in seen_ids:
                             continue
-                        v_id = item.get("id")
-                        if not v_id:
-                            continue
+                        seen_ids.add(item["id"])
+                        v_id = item["id"]
                         dur = item.get("duration") or 0
                         thumbs = item.get("thumbnails") or []
                         thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
@@ -951,8 +956,41 @@ def get_user_personalized_feed(
                             "thumbnail": thumbnail,
                             "url": f"https://www.youtube.com/watch?v={v_id}"
                         })
-                    if clean_results:
-                        return {"authenticated": True, "videos": clean_results}
+                except Exception as e_subs:
+                    logger.warning(f"User cookie subscriptions extraction warning for {dev_id}: {e_subs}")
+
+                # 1b. Watch history recommendations
+                try:
+                    res_hist = ydl.extract_info("https://www.youtube.com/feed/history", download=False)
+                    for item in (res_hist.get("entries", []) if res_hist else [])[:15]:
+                        if not item or not item.get("id") or item["id"] in seen_ids:
+                            continue
+                        seen_ids.add(item["id"])
+                        v_id = item["id"]
+                        dur = item.get("duration") or 0
+                        thumbs = item.get("thumbnails") or []
+                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                        c_name = item.get("uploader") or item.get("channel") or "Watched Creator"
+                        c_id = item.get("channel_id") or ""
+                        clean_results.append({
+                            "id": v_id,
+                            "title": item.get("title") or "Untitled",
+                            "channel": c_name,
+                            "channel_id": c_id,
+                            "channel_avatar": resolve_channel_avatar(c_id, c_name),
+                            "duration": dur,
+                            "duration_string": str(item.get("duration_string") or ""),
+                            "view_count": item.get("view_count") or 0,
+                            "thumbnail": thumbnail,
+                            "url": f"https://www.youtube.com/watch?v={v_id}"
+                        })
+                except Exception as e_hist:
+                    logger.warning(f"User cookie history extraction warning for {dev_id}: {e_hist}")
+
+            if clean_results:
+                out = {"authenticated": True, "videos": clean_results}
+                set_cached(cache_key, out, ttl=300)
+                return out
         except Exception as e:
             logger.warning(f"User cookie subscriptions feed error for {dev_id}: {e}")
 
@@ -1796,11 +1834,26 @@ def _filter_feed_spam(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @app.get("/api/trending")
 def get_trending(
+    request: Request,
     category: str = Query("all", description="all, shorts, music, gaming, tech, news, podcasts"),
     page: int = Query(1, description="Page number for continuous infinite feed"),
-    next_token: Optional[str] = Query(None, description="Innertube continuation token")
+    next_token: Optional[str] = Query(None, description="Innertube continuation token"),
+    device_id: Optional[str] = Query(None)
 ):
     cat = category.lower()
+    dev_id = extract_device_id(request, device_id)
+
+    # If authenticated device requests Home feed (page 1), automatically serve their authentic personalized feed!
+    if cat == "all" and page == 1 and not next_token and get_cookies_file(dev_id):
+        user_feed = get_user_personalized_feed(request, device_id=dev_id)
+        if user_feed and user_feed.get("videos"):
+            return {
+                "category": category,
+                "page": 1,
+                "next_token": None,
+                "videos": user_feed["videos"]
+            }
+
     if cat == "shorts":
         res = get_shorts_feed(page=page, next_token=next_token)
         return {"category": category, "page": page, "next_token": res.get("next_token"), "videos": res.get("shorts", [])}

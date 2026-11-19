@@ -600,9 +600,37 @@ function initNavigation() {
     loadFeed('all');
   });
 
-  // Header Notifications shortcut
-  document.getElementById('btn-header-notifications')?.addEventListener('click', () => {
-    showToast('You are all caught up! Zero ads active.');
+  // Header Notifications shortcut: Open authentic notifications modal & clear badge dot
+  const notifModal = document.getElementById('notifications-modal');
+  const closeNotifBtn = document.getElementById('btn-close-notif-modal');
+  const clearNotifsBtn = document.getElementById('btn-clear-notifs');
+  const notifDot = document.getElementById('header-notif-dot');
+
+  const openNotifs = () => {
+    if (notifDot) notifDot.style.display = 'none';
+    if (notifModal) {
+      notifModal.style.display = 'flex';
+      notifModal.classList.add('open');
+      syncNativeOverlayFlag();
+    }
+  };
+
+  const closeNotifs = () => {
+    if (notifModal) {
+      notifModal.classList.remove('open');
+      notifModal.style.display = 'none';
+      syncNativeOverlayFlag();
+    }
+  };
+
+  document.getElementById('btn-header-notifications')?.addEventListener('click', openNotifs);
+  closeNotifBtn?.addEventListener('click', closeNotifs);
+  clearNotifsBtn?.addEventListener('click', () => {
+    showToast('Notifications marked as read');
+    closeNotifs();
+  });
+  notifModal?.addEventListener('click', (e) => {
+    if (e.target === notifModal) closeNotifs();
   });
 
   // Header Downloads shortcut
@@ -960,7 +988,13 @@ async function loadFeed(category = 'all') {
   }
 
   try {
-    // Watch-History-Driven Dynamic Personalization:
+    // 1. Authenticated User Personalized Feed: Subscriptions & Watch History
+    const hasAccount = Boolean(localStorage.getItem('metube_account_name')) || Boolean(localStorage.getItem('metube_user_authenticated'));
+    const userFeedPromise = (hasAccount || category === 'all' || category === 'subs')
+      ? api.getUserFeed().catch(() => null)
+      : Promise.resolve(null);
+
+    // 2. Watch-History-Driven Dynamic Personalization:
     // If on "all" category, personalize using recent watch interests!
     const interestKw = (category === 'all' && !state.searchQuery) ? getRecentInterestKeywords() : null;
 
@@ -1000,15 +1034,38 @@ async function loadFeed(category = 'all') {
       trendingPromise = api.getTrending(category, 1);
     }
 
-    const [trendingRes, shortsRes] = await Promise.all([
+    const [trendingRes, shortsRes, userFeedRes] = await Promise.all([
       trendingPromise,
       category === 'all' || category === 'shorts'
         ? api.getShorts(1, { interests: interestKw || '', seed: Date.now() })
             .catch(() => api.getTrending('shorts', 1).catch(() => ({ videos: [] })))
-        : Promise.resolve({ videos: [] })
+        : Promise.resolve({ videos: [] }),
+      userFeedPromise
     ]);
 
-    state.videos = (trendingRes && trendingRes.videos) || [];
+    let finalVideos = [];
+    const seen = new Set();
+
+    // Prioritize authentic personalized feed videos (user's real YouTube account subscriptions & recommendations)
+    if (userFeedRes && userFeedRes.videos && userFeedRes.videos.length > 0) {
+      for (const v of userFeedRes.videos) {
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          finalVideos.push(v);
+        }
+      }
+    }
+
+    // Blend with trending/general recommendations
+    const genericVideos = (trendingRes && trendingRes.videos) || [];
+    for (const v of genericVideos) {
+      if (!seen.has(v.id) && finalVideos.length < 40) {
+        seen.add(v.id);
+        finalVideos.push(v);
+      }
+    }
+
+    state.videos = finalVideos.length > 0 ? finalVideos : genericVideos;
     state.feedNextToken = (trendingRes && trendingRes.next_token) || '';
     state.shorts = (shortsRes && (shortsRes.shorts || shortsRes.videos)) || [];
 
@@ -1171,7 +1228,21 @@ function renderFeed() {
   remainingVideos.forEach((video) => {
     container.appendChild(createVideoCardElement(video));
   });
+
+  // Fade out cold-start splash screen smoothly now that feed has rendered
+  dismissSplashScreen();
 }
+
+export function dismissSplashScreen() {
+  const splash = document.getElementById('metube-splash-screen');
+  if (splash && !splash.classList.contains('splash-hidden')) {
+    splash.classList.add('splash-hidden');
+    setTimeout(() => {
+      try { splash.remove(); } catch (_) {}
+    }, 450);
+  }
+}
+window.dismissSplashScreen = dismissSplashScreen;
 
 function createVideoCardElement(video) {
   const durationText = video.duration_string || formatDuration(video.duration);
@@ -4181,6 +4252,11 @@ export function closeShortsReel() {
     embedContainer.innerHTML = '';
     embedContainer.style.display = 'none';
   }
+  const poster = document.getElementById('shorts-poster-bg');
+  if (poster) {
+    poster.style.display = 'none';
+    poster.removeAttribute('src');
+  }
   const spinner = document.getElementById('shorts-spinner');
   if (spinner) spinner.style.display = 'none';
 
@@ -4320,6 +4396,22 @@ function openShortsModal(short) {
     attachAvatarHandlers(avatarImg, cName, currentShort.channel_id);
   }
 
+  // Instant visual feedback: display high-res poster backdrop immediately (0ms visual)
+  const posterImg = document.getElementById('shorts-poster-bg');
+  if (posterImg) {
+    const thumb = currentShort.thumbnail || `https://i.ytimg.com/vi/${currentShort.id}/hqdefault.jpg`;
+    posterImg.src = thumb;
+    posterImg.style.display = 'block';
+    posterImg.style.opacity = '1';
+  }
+
+  // Pre-fetch next short's thumbnail in background memory cache for instant swiping
+  const nextShort = state.shortsList[idx + 1];
+  if (nextShort) {
+    const preImg = new Image();
+    preImg.src = nextShort.thumbnail || `https://i.ytimg.com/vi/${nextShort.id}/hqdefault.jpg`;
+  }
+
   const launchShortsEmbed = () => {
     if (!isShortsActive()) return;
     if (state.shortsList[state.currentShortIndex]?.id !== currentShort.id) return;
@@ -4340,17 +4432,29 @@ function openShortsModal(short) {
     if (embedContainer) {
       embedContainer.style.display = 'block';
       const muteParam = state.isShortMuted ? 1 : 0;
-      // Clean YouTube embed with pointer-events:none so gestures pass to gesture surface
-      embedContainer.innerHTML = `
-        <iframe 
-          id="shorts-embed-player"
-          src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3&enablejsapi=1&mute=${muteParam}"
-          title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
-          frameborder="0"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          style="width:100%; height:100%; border:none; pointer-events:none;"
-        ></iframe>
-      `;
+      const existingIframe = document.getElementById('shorts-embed-player');
+      if (existingIframe && existingIframe.contentWindow) {
+        existingIframe.title = (currentShort.title || 'Short').replace(/"/g, '&quot;');
+        // Seamless instant video transition using IFrame API (no page or script reload!)
+        existingIframe.contentWindow.postMessage(JSON.stringify({
+          event: 'command',
+          func: 'loadVideoById',
+          args: [currentShort.id, 0]
+        }), '*');
+        existingIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+      } else {
+        // Clean YouTube embed with pointer-events:none so gestures pass to gesture surface
+        embedContainer.innerHTML = `
+          <iframe 
+            id="shorts-embed-player"
+            src="https://www.youtube-nocookie.com/embed/${currentShort.id}?autoplay=1&playsinline=1&controls=0&loop=1&playlist=${currentShort.id}&modestbranding=1&rel=0&iv_load_policy=3&enablejsapi=1&mute=${muteParam}"
+            title="${(currentShort.title || 'Short').replace(/"/g, '&quot;')}"
+            frameborder="0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            style="width:100%; height:100%; border:none; pointer-events:none;"
+          ></iframe>
+        `;
+      }
     }
   };
 
@@ -4689,6 +4793,8 @@ window.handleNativeYouTubeLogin = async function(payloadOrCookies) {
     const res = await api.saveCookies(cookieString, { account_name: accountName });
     if (res && (res.authenticated || res.success || res.status === 'success')) {
       if (accountName) localStorage.setItem('metube_account_name', accountName);
+      localStorage.removeItem('metube_feed_cache_all');
+      localStorage.removeItem('metube_feed_cache_subs');
       showToast(`Connected${accountName ? ` (${accountName})` : ''}!`);
       updateAuthStatusUI(true);
       const modal = document.getElementById('auth-modal');
@@ -4698,7 +4804,7 @@ window.handleNativeYouTubeLogin = async function(payloadOrCookies) {
       }
       syncNativeOverlayFlag();
       loadSubscriptionsView();
-      loadFeed(state.activeCategory || 'all');
+      loadFeed('all');
     }
   } catch (err) {
     showToast('Could not sync account: ' + err.message);
@@ -4940,6 +5046,65 @@ async function loadSubscriptionsView() {
     }
     return;
   }
+
+  // Check if user has connected official YouTube account: load their authentic subscriptions feed directly!
+  try {
+    container.innerHTML = `
+      <div class="spinner-box">
+        <div class="spinner"></div>
+      </div>
+    `;
+    const userFeed = await api.getUserFeed();
+    if (userFeed && userFeed.videos && userFeed.videos.length > 0) {
+      const extractedChannels = [];
+      const seenCh = new Set();
+      for (const v of userFeed.videos) {
+        if (v.channel && !seenCh.has(v.channel)) {
+          seenCh.add(v.channel);
+          extractedChannels.push({ name: v.channel, id: v.channel_id || '', avatar: v.channel_avatar || '' });
+        }
+      }
+
+      const activeSubs = extractedChannels.length > 0 ? extractedChannels : subs;
+      const renderSubsHeaderHtml = () => `
+        <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
+          <span style="font-size:13px; font-weight:700; color:#FFF;">${activeSubs.length} Subscriptions</span>
+          <div style="display:flex; gap:8px;">
+            <button id="btn-sync-cookies-quick" style="background:#222; color:#aaa; border:1px solid #333; padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync A/C</button>
+          </div>
+        </div>
+        <div class="subs-channels-row" style="display:flex; gap:14px; overflow-x:auto; padding:12px 14px; border-bottom:1px solid #222; scrollbar-width:none; -webkit-overflow-scrolling:touch;">
+          ${activeSubs.map((s, idx) => {
+            const aUrl = resolveAvatarUrl(s.avatar, s.name, s.id);
+            return `
+              <div class="sub-channel-pill" data-idx="${idx}" style="display:flex; flex-direction:column; align-items:center; width:64px; flex-shrink:0; cursor:pointer;">
+                <div style="position:relative; width:48px; height:48px; border-radius:50%; padding:2px; background:linear-gradient(45deg, #FF0000, #990000); margin-bottom:4px; box-shadow:0 2px 6px rgba(0,0,0,0.5);">
+                  <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" onerror="this.onerror=null;this.src='${getSvgAvatarDataUrl(s.name)}';" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
+                </div>
+                <span style="font-size:11px; font-weight:600; color:#FFF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      container.innerHTML = `${renderSubsHeaderHtml()}`;
+      document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
+      container.querySelectorAll('.sub-channel-pill').forEach((pill) => {
+        const idx = Number(pill.dataset.idx);
+        const s = activeSubs[idx];
+        if (!s) return;
+        pill.addEventListener('click', () => {
+          openChannelExplorer({ channel: s.name, channel_id: s.id, channel_avatar: s.avatar });
+        });
+      });
+
+      userFeed.videos.forEach((video) => {
+        container.appendChild(createVideoCardElement(video));
+      });
+      return;
+    }
+  } catch (_) {}
 
   // If user has NO subscriptions yet: Render clean onboarding
   const suggestedCreators = [
@@ -5390,6 +5555,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Load initial feed
   loadFeed('all');
+
+  // Cold Start Splash Screen Safety Fallback: Ensure splash fades out within 1.2s max
+  setTimeout(dismissSplashScreen, 1200);
 
   // Check for initial URL query parameter or deep link (e.g. ?v=... or ?url=...)
   try {
