@@ -206,6 +206,76 @@ body.theme-light .preset-card-option.selected .radio-indicator {
 body.theme-light .preset-card-option.selected .radio-indicator::after {
   background: #0F0F0F !important;
 }
+body.theme-light .btn-start-download {
+  background: #0F0F0F !important;
+  color: #FFFFFF !important;
+}
+body.theme-light .preset-size-tag {
+  background: #EAEAEA !important;
+  color: #0F0F0F !important;
+}
+body.theme-light .sheet-footer {
+  border-top: 1px solid #ECECEC !important;
+}
+body.theme-light .sheet-action-item-btn {
+  background: #F4F4F4 !important;
+  border: 1px solid #E5E5E5 !important;
+  color: #0F0F0F !important;
+}
+body.theme-light .sheet-action-item-btn:active {
+  background: #ECECEC !important;
+}
+body.theme-light .auth-card-box {
+  background: #F4F4F4 !important;
+  border: 1px solid #E5E5E5 !important;
+}
+body.theme-light .auth-card-title {
+  color: #0F0F0F !important;
+}
+body.theme-light .auth-card-badge {
+  background: #E5E5E5 !important;
+  color: #606060 !important;
+}
+body.theme-light .auth-cookies-textarea {
+  background: #F9F9F9 !important;
+  color: #0F0F0F !important;
+  border: 1px solid #E5E5E5 !important;
+}
+body.theme-light .auth-tip-box {
+  background: #F8F9FA !important;
+  color: #606060 !important;
+  border: 1px solid #E5E5E5 !important;
+}
+body.theme-light .btn-switch-auth-account {
+  background: #F2F2F2 !important;
+  color: #2563EB !important;
+  border: 1px solid #DBEAFE !important;
+}
+body.theme-light .btn-logout-auth {
+  background: #FEE2E2 !important;
+  color: #DC2626 !important;
+  border: 1px solid #FCA5A5 !important;
+}
+body.theme-light .notifications-sheet {
+  background: #FFFFFF !important;
+  border: 1px solid #ECECEC !important;
+  border-bottom: none !important;
+}
+body.theme-light .notifications-item {
+  border-bottom: 1px solid #F0F0F0 !important;
+}
+body.theme-light .notif-icon-circle {
+  background: #F4F4F4 !important;
+  color: #0F0F0F !important;
+}
+body.theme-light .notif-title {
+  color: #0F0F0F !important;
+}
+body.theme-light #btn-clear-notifs {
+  background: #F4F4F4 !important;
+  color: #606060 !important;
+  border: 1px solid #E5E5E5 !important;
+}
 
 /* System Default Theme when OS is in Light Mode */
 @media (prefers-color-scheme: light) {
@@ -425,6 +495,93 @@ body.theme-light .preset-card-option.selected .radio-indicator::after {
   body:not(.theme-dark):not(.theme-light) .preset-card-option.selected .radio-indicator::after,
   body.theme-system .preset-card-option.selected .radio-indicator::after {
     background: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-start-download,
+  body.theme-system .btn-start-download {
+    background: #0F0F0F !important;
+    color: #FFFFFF !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .preset-size-tag,
+  body.theme-system .preset-size-tag {
+    background: #EAEAEA !important;
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .sheet-footer,
+  body.theme-system .sheet-footer {
+    border-top: 1px solid #ECECEC !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .sheet-action-item-btn,
+  body.theme-system .sheet-action-item-btn {
+    background: #F4F4F4 !important;
+    border: 1px solid #E5E5E5 !important;
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .sheet-action-item-btn:active,
+  body.theme-system .sheet-action-item-btn:active {
+    background: #ECECEC !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .auth-card-box,
+  body.theme-system .auth-card-box {
+    background: #F4F4F4 !important;
+    border: 1px solid #E5E5E5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .auth-card-title,
+  body.theme-system .auth-card-title {
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .auth-card-badge,
+  body.theme-system .auth-card-badge {
+    background: #E5E5E5 !important;
+    color: #606060 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .auth-cookies-textarea,
+  body.theme-system .auth-cookies-textarea {
+    background: #F9F9F9 !important;
+    color: #0F0F0F !important;
+    border: 1px solid #E5E5E5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .auth-tip-box,
+  body.theme-system .auth-tip-box {
+    background: #F8F9FA !important;
+    color: #606060 !important;
+    border: 1px solid #E5E5E5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-switch-auth-account,
+  body.theme-system .btn-switch-auth-account {
+    background: #F2F2F2 !important;
+    color: #2563EB !important;
+    border: 1px solid #DBEAFE !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .btn-logout-auth,
+  body.theme-system .btn-logout-auth {
+    background: #FEE2E2 !important;
+    color: #DC2626 !important;
+    border: 1px solid #FCA5A5 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .notifications-sheet,
+  body.theme-system .notifications-sheet {
+    background: #FFFFFF !important;
+    border: 1px solid #ECECEC !important;
+    border-bottom: none !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .notifications-item,
+  body.theme-system .notifications-item {
+    border-bottom: 1px solid #F0F0F0 !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .notif-icon-circle,
+  body.theme-system .notif-icon-circle {
+    background: #F4F4F4 !important;
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) .notif-title,
+  body.theme-system .notif-title {
+    color: #0F0F0F !important;
+  }
+  body:not(.theme-dark):not(.theme-light) #btn-clear-notifs,
+  body.theme-system #btn-clear-notifs {
+    background: #F4F4F4 !important;
+    color: #606060 !important;
+    border: 1px solid #E5E5E5 !important;
   }
 }
 
@@ -2611,6 +2768,99 @@ body.theme-light .nav-item.active .nav-you-avatar-initial {
   justify-content: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.sheet-action-item-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #222222;
+  border: 1px solid #2e2e2e;
+  color: #FFFFFF;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sheet-action-item-btn:active {
+  background: #333333;
+}
+
+.auth-card-box {
+  background: #181818;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #333333;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.auth-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+.auth-card-desc {
+  font-size: 11px;
+  color: var(--text-gray);
+  margin-top: 2px;
+}
+.auth-card-badge {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: #333333;
+  color: #AAAAAA;
+  font-weight: 700;
+}
+.auth-cookies-textarea {
+  width: 100%;
+  background: #111111;
+  color: #EEEEEE;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.auth-tip-box {
+  background: #141414;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #888888;
+  line-height: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #262626;
+}
+.btn-switch-auth-account {
+  background: #262626;
+  color: #60A5FA;
+  border: 1px solid #3A3A3A;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-logout-auth {
+  background: #282828;
+  color: #FF5252;
+  border: 1px solid #444444;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  display: none;
 }
 
 /* =========================================================
