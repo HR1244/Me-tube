@@ -146,8 +146,13 @@ const state = {
   isLoadingFeed: false,
   isLoadingMore: false,
   hasMore: true,
-  playbackEngine: 'youtube'
+  playbackEngine: 'youtube',
+  activeFeedSessionToken: 0,
+  activeSearchSessionToken: 0
 };
+
+let currentFeedSessionToken = 0;
+let currentSearchSessionToken = 0;
 
 // Formatting helpers
 function formatViews(views) {
@@ -962,8 +967,10 @@ function loadHistoryView() {
 function selectCategory(category) {
   state.activeCategory = category;
   state.searchQuery = '';
-  document.getElementById('search-banner').style.display = 'none';
-  document.getElementById('search-input').value = '';
+  const banner = document.getElementById('search-banner');
+  if (banner) banner.style.display = 'none';
+  const searchInp = document.getElementById('search-input');
+  if (searchInp) searchInp.value = '';
 
   document.querySelectorAll('.cat-pill').forEach((p) => {
     p.classList.toggle('active', p.dataset.cat === category);
@@ -978,7 +985,11 @@ function selectCategory(category) {
 // =========================================================
 async function loadFeed(category = 'all') {
   if (state.isLoadingFeed) return;
+  if (state.searchQuery) return; // Do not overwrite active search results!
   state.isLoadingFeed = true;
+
+  const thisFeedToken = ++currentFeedSessionToken;
+  state.activeFeedSessionToken = thisFeedToken;
 
   const container = document.getElementById('videos-feed-list');
   if (!container) {
@@ -999,7 +1010,7 @@ async function loadFeed(category = 'all') {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed.videos && parsed.videos.length > 0) {
+        if (parsed.videos && parsed.videos.length > 0 && !state.searchQuery && state.activeFeedSessionToken === thisFeedToken) {
           state.videos = parsed.videos;
           state.shorts = parsed.shorts || [];
           renderFeed();
@@ -1009,8 +1020,8 @@ async function loadFeed(category = 'all') {
     } catch (_) {}
   }
 
-  // Show spinner only if no cache exists yet
-  if (!hadCache) {
+  // Show spinner only if no cache exists yet and search is not active
+  if (!hadCache && !state.searchQuery) {
     container.innerHTML = `
       <div class="spinner-box">
         <div class="spinner"></div>
@@ -1074,6 +1085,12 @@ async function loadFeed(category = 'all') {
       userFeedPromise
     ]);
 
+    // Check if feed was superseded by search or a newer category request
+    if (state.searchQuery || state.activeFeedSessionToken !== thisFeedToken) {
+      state.isLoadingFeed = false;
+      return;
+    }
+
     let finalVideos = [];
     const seen = new Set();
 
@@ -1096,6 +1113,11 @@ async function loadFeed(category = 'all') {
       }
     }
 
+    if (state.searchQuery || state.activeFeedSessionToken !== thisFeedToken) {
+      state.isLoadingFeed = false;
+      return;
+    }
+
     state.videos = finalVideos.length > 0 ? finalVideos : genericVideos;
     state.feedNextToken = (trendingRes && trendingRes.next_token) || '';
     state.shorts = (shortsRes && (shortsRes.shorts || shortsRes.videos)) || [];
@@ -1109,6 +1131,9 @@ async function loadFeed(category = 'all') {
 
     renderFeed();
   } catch (err) {
+    if (state.searchQuery || state.activeFeedSessionToken !== thisFeedToken) {
+      return;
+    }
     container.innerHTML = `
       <div class="spinner-box">
         <button id="btn-retry-feed" style="background:var(--metube-red); color:#FFF; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer;">Retry</button>
@@ -1116,13 +1141,22 @@ async function loadFeed(category = 'all') {
     `;
     document.getElementById('btn-retry-feed')?.addEventListener('click', () => loadFeed(category));
   } finally {
-    state.isLoadingFeed = false;
+    if (state.activeFeedSessionToken === thisFeedToken) {
+      state.isLoadingFeed = false;
+    }
   }
 }
 
 async function loadFeedSearchResults(query) {
   const container = document.getElementById('videos-feed-list');
   if (!container) return;
+
+  const thisSearchToken = ++currentSearchSessionToken;
+  state.activeSearchSessionToken = thisSearchToken;
+  // Cancel / invalidate any in-flight loadFeed requests immediately!
+  state.activeFeedSessionToken = ++currentFeedSessionToken;
+  state.isLoadingFeed = false;
+
   state.feedPage = 1;
   state.feedNextToken = '';
   state.emptyPageStreak = 0;
@@ -1138,21 +1172,27 @@ async function loadFeedSearchResults(query) {
     viewport.scrollTop = 0;
   }
 
+  // Only show the clean spinner icon, NO text (as requested by user)
   container.innerHTML = `
-    <div class="spinner-box" style="padding: 60px 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;">
+    <div class="spinner-box" style="padding: 60px 20px; display: flex; align-items: center; justify-content: center;">
       <div class="spinner"></div>
-      <div style="font-size: 13px; color: var(--text-gray); font-weight: 500;">Searching YouTube...</div>
     </div>
   `;
 
   try {
     const res = await api.search(query, 1);
+    if (state.activeSearchSessionToken !== thisSearchToken || state.searchQuery !== query) {
+      return;
+    }
     state.videos = res.videos || [];
     state.feedNextToken = (res && res.next_token) || '';
     state.searchChannel = (res && res.channel) || null;
     state.shorts = [];
     renderFeed();
   } catch (err) {
+    if (state.activeSearchSessionToken !== thisSearchToken || state.searchQuery !== query) {
+      return;
+    }
     container.innerHTML = `
       <div class="spinner-box" style="flex-direction: column; gap: 12px; padding: 40px 20px;">
         <div style="font-size: 14px; color: var(--text-gray); font-weight: 600;">Unable to load search results</div>
@@ -1305,6 +1345,15 @@ function renderFeed() {
   }
 
   if (state.videos.length === 0 && !state.searchChannel) {
+    if (state.searchQuery) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:60px 20px; color:var(--text-gray);">
+          <div style="font-size:15px; font-weight:700; color:var(--text-white); margin-bottom:6px;">No results found</div>
+          <div style="font-size:12px;">Try different keywords or check spelling</div>
+        </div>
+      `;
+      return;
+    }
     container.innerHTML = `
       <div class="spinner-box">
         <div class="spinner"></div>
@@ -5465,8 +5514,15 @@ window.handleAndroidBack = function() {
     syncNativeOverlayFlag();
     return true;
   }
-  if (state.searchQuery) {
-    document.getElementById('btn-exit-search')?.click();
+  if (state.searchQuery || document.getElementById('metube-header')?.classList.contains('search-mode-open')) {
+    const closeBtn = document.getElementById('btn-close-search');
+    if (closeBtn) closeBtn.click();
+    else {
+      state.searchQuery = '';
+      state.searchChannel = null;
+      document.getElementById('metube-header')?.classList.remove('search-mode-open');
+      loadFeed('all');
+    }
     syncNativeOverlayFlag();
     return true;
   }
