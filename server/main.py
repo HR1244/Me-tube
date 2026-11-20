@@ -835,212 +835,6 @@ def get_channel_avatar_endpoint(
 
     return RedirectResponse(url=resolved, status_code=302, headers={"Cache-Control": "public, max-age=3600"})
 
-class CookiePayload(BaseModel):
-    cookies: str
-    device_id: Optional[str] = None
-    account_name: Optional[str] = None
-    account_email: Optional[str] = None
-    account_avatar: Optional[str] = None
-
-@app.post("/api/auth/cookies")
-def save_user_cookies(payload: CookiePayload, request: Request):
-    """Saves per-device YouTube cookies cleanly isolated from all other devices."""
-    dev_id = extract_device_id(request, payload.device_id)
-    raw = payload.cookies.strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty cookies provided")
-
-    if "Netscape" not in raw and "\t" not in raw:
-        lines = ["# Netscape HTTP Cookie File", "# https://curl.haxx.se/rfc/cookie_spec.html"]
-        for item in raw.split(";"):
-            item = item.strip()
-            if "=" in item:
-                k, v = item.split("=", 1)
-                lines.append(f".youtube.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
-                lines.append(f".google.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
-        formatted = "\n".join(lines) + "\n"
-    else:
-        formatted = raw
-
-    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
-    dev_cookie_file.write_text(formatted, encoding="utf-8")
-    meta = {
-        "device_id": dev_id,
-        "account_name": payload.account_name or "YouTube Account",
-        "account_email": payload.account_email or "",
-        "account_avatar": payload.account_avatar or "",
-        "updated_at": time.time(),
-    }
-    save_user_meta(dev_id, meta)
-    # Invalidate cached extractions for this device so new session cookies apply immediately
-    with query_cache_lock:
-        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:") or k == f"user_feed_{dev_id}"]:
-            query_cache.pop(k, None)
-    logger.info(f"Updated isolated YouTube cookies for device {dev_id} ({meta['account_name']})")
-    return {"success": True, "status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
-
-@app.get("/api/auth/status")
-def get_auth_status(request: Request, device_id: Optional[str] = None):
-    dev_id = extract_device_id(request, device_id)
-    has_cookies = bool(get_cookies_file(dev_id))
-    meta = get_user_meta(dev_id) if has_cookies else {}
-    return {
-        "authenticated": has_cookies,
-        "device_id": dev_id,
-        "account_name": meta.get("account_name", "YouTube Account") if has_cookies else "",
-        "account_email": meta.get("account_email", "") if has_cookies else "",
-        "account_avatar": meta.get("account_avatar", "") if has_cookies else "",
-        "source": f"device:{dev_id}" if has_cookies else "none"
-    }
-
-@app.post("/api/auth/logout")
-def logout_auth(request: Request, device_id: Optional[str] = None):
-    dev_id = extract_device_id(request, device_id)
-    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
-    if dev_cookie_file.exists():
-        dev_cookie_file.unlink()
-    meta_file = USER_META_DIR / f"{dev_id}.json"
-    if meta_file.exists():
-        meta_file.unlink()
-    with query_cache_lock:
-        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:")]:
-            query_cache.pop(k, None)
-    return {"success": True, "status": "success", "authenticated": False, "device_id": dev_id}
-
-@app.get("/api/user/feed")
-def get_user_personalized_feed(
-    request: Request,
-    channels: Optional[str] = Query(None, description="Comma-separated creator channel names or handles"),
-    device_id: Optional[str] = Query(None)
-):
-    """Fetches ONLY this device's subscriptions & personalized videos when authenticated or given followed channels."""
-    dev_id = extract_device_id(request, device_id)
-    cache_key = f"user_feed_{dev_id}"
-    cached = get_cached(cache_key)
-    if cached and not channels:
-        return cached
-
-    cookie_file = get_cookies_file(dev_id)
-
-    # 1. If device cookies exist, extract official personalized subscriptions & watch history
-    if cookie_file:
-        opts = get_base_ydl_opts(dev_id)
-        opts["extract_flat"] = True
-        opts["playlist_items"] = "1-25"
-        clean_results = []
-        seen_ids = set()
-        try:
-            with SafeYoutubeDL(opts) as ydl:
-                # 1a. Subscriptions feed
-                try:
-                    res_subs = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
-                    for item in (res_subs.get("entries", []) if res_subs else [])[:20]:
-                        if not item or not item.get("id") or item["id"] in seen_ids:
-                            continue
-                        seen_ids.add(item["id"])
-                        v_id = item["id"]
-                        dur = item.get("duration") or 0
-                        thumbs = item.get("thumbnails") or []
-                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
-                        c_name = item.get("uploader") or item.get("channel") or "Subscribed Creator"
-                        c_id = item.get("channel_id") or ""
-                        clean_results.append({
-                            "id": v_id,
-                            "title": item.get("title") or "Untitled",
-                            "channel": c_name,
-                            "channel_id": c_id,
-                            "channel_avatar": resolve_channel_avatar(c_id, c_name),
-                            "duration": dur,
-                            "duration_string": str(item.get("duration_string") or ""),
-                            "view_count": item.get("view_count") or 0,
-                            "thumbnail": thumbnail,
-                            "url": f"https://www.youtube.com/watch?v={v_id}"
-                        })
-                except Exception as e_subs:
-                    logger.warning(f"User cookie subscriptions extraction warning for {dev_id}: {e_subs}")
-
-                # 1b. Watch history recommendations
-                try:
-                    res_hist = ydl.extract_info("https://www.youtube.com/feed/history", download=False)
-                    for item in (res_hist.get("entries", []) if res_hist else [])[:15]:
-                        if not item or not item.get("id") or item["id"] in seen_ids:
-                            continue
-                        seen_ids.add(item["id"])
-                        v_id = item["id"]
-                        dur = item.get("duration") or 0
-                        thumbs = item.get("thumbnails") or []
-                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
-                        c_name = item.get("uploader") or item.get("channel") or "Watched Creator"
-                        c_id = item.get("channel_id") or ""
-                        clean_results.append({
-                            "id": v_id,
-                            "title": item.get("title") or "Untitled",
-                            "channel": c_name,
-                            "channel_id": c_id,
-                            "channel_avatar": resolve_channel_avatar(c_id, c_name),
-                            "duration": dur,
-                            "duration_string": str(item.get("duration_string") or ""),
-                            "view_count": item.get("view_count") or 0,
-                            "thumbnail": thumbnail,
-                            "url": f"https://www.youtube.com/watch?v={v_id}"
-                        })
-                except Exception as e_hist:
-                    logger.warning(f"User cookie history extraction warning for {dev_id}: {e_hist}")
-
-            if clean_results:
-                out = {"authenticated": True, "videos": clean_results}
-                set_cached(cache_key, out, ttl=300)
-                return out
-        except Exception as e:
-            logger.warning(f"User cookie subscriptions feed error for {dev_id}: {e}")
-
-    # 2. Extract uploads from this user's followed creator channels
-    if channels:
-        ch_list = [c.strip() for c in channels.split(",") if c.strip()][:8]
-        if ch_list:
-            clean_results = []
-            seen_ids = set()
-            opts = get_base_ydl_opts(dev_id)
-            opts["extract_flat"] = True
-            opts["playlist_items"] = "1-4"
-            with SafeYoutubeDL(opts) as ydl:
-                for c in ch_list:
-                    try:
-                        clean_c = c if c.startswith("@") or c.startswith("UC") else f"@{c.replace(' ', '')}"
-                        target = f"https://www.youtube.com/{clean_c}/videos"
-                        res = ydl.extract_info(target, download=False)
-                        entries = res.get("entries", []) if res else []
-                        for item in entries[:3]:
-                            if not item:
-                                continue
-                            v_id = item.get("id")
-                            if not v_id or v_id in seen_ids:
-                                continue
-                            seen_ids.add(v_id)
-                            dur = item.get("duration") or 0
-                            thumbs = item.get("thumbnails") or []
-                            thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
-                            c_name = item.get("uploader") or item.get("channel") or c
-                            c_id = item.get("channel_id") or ""
-                            clean_results.append({
-                                "id": v_id,
-                                "title": item.get("title") or "Untitled",
-                                "channel": c_name,
-                                "channel_id": c_id,
-                                "channel_avatar": resolve_channel_avatar(c_id, c_name),
-                                "duration": dur,
-                                "duration_string": str(item.get("duration_string") or ""),
-                                "view_count": item.get("view_count") or 0,
-                                "thumbnail": thumbnail,
-                                "url": f"https://www.youtube.com/watch?v={v_id}"
-                            })
-                    except Exception:
-                        continue
-            if clean_results:
-                return {"authenticated": True, "videos": clean_results}
-
-    return {"authenticated": False, "videos": []}
-
 def get_device_cookie_header(dev_id: str) -> Tuple[str, Optional[str]]:
     """Returns (cookie_header_string, sapisid_hash_or_none) for authenticated Innertube calls."""
     cookie_file = get_cookies_file(dev_id)
@@ -1104,6 +898,358 @@ def innertube_authenticated_call(endpoint: str, payload: Dict[str, Any], dev_id:
     with urllib.request.urlopen(req, timeout=8) as res:
         return json.loads(res.read().decode("utf-8", errors="ignore"))
 
+canonical_channel_id_cache: Dict[str, str] = {}
+
+def resolve_canonical_channel_id(ch_id_or_name: str) -> str:
+    """Resolves any handle or creator name into their canonical 24-character UC... channel ID."""
+    if not ch_id_or_name:
+        return ""
+    clean = ch_id_or_name.strip()
+    if clean.startswith("UC") and len(clean) == 24:
+        return clean
+    if clean in canonical_channel_id_cache:
+        return canonical_channel_id_cache[clean]
+
+    # Try navigation/resolve_url
+    try:
+        url_target = f"https://www.youtube.com/{clean if clean.startswith('@') else f'@{clean.replace(' ', '')}'}"
+        res = innertube_request("navigation/resolve_url", {"url": url_target}, timeout=3)
+        ep = res.get("endpoint", {}).get("browseEndpoint", {})
+        browse_id = ep.get("browseId", "")
+        if browse_id.startswith("UC") and len(browse_id) == 24:
+            canonical_channel_id_cache[clean] = browse_id
+            return browse_id
+    except Exception as e:
+        logger.debug(f"resolve_url failed for {clean}: {e}")
+
+    # Fallback to search channelRenderer
+    try:
+        data = innertube_request("search", {"query": clean, "params": "EgIQAg=="}, timeout=3)
+        sections = (
+            data.get("contents", {})
+            .get("twoColumnSearchResultsRenderer", {})
+            .get("primaryContents", {})
+            .get("sectionListRenderer", {})
+            .get("contents", [])
+        )
+        for sec in sections:
+            for it in sec.get("itemSectionRenderer", {}).get("contents", []):
+                cr = it.get("channelRenderer")
+                if cr:
+                    cid = cr.get("channelId") or cr.get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId", "")
+                    if cid.startswith("UC") and len(cid) == 24:
+                        canonical_channel_id_cache[clean] = cid
+                        return cid
+    except Exception as e:
+        logger.debug(f"channelRenderer search failed for {clean}: {e}")
+
+    return clean
+
+def extract_user_profile_from_cookies(dev_id: str) -> Dict[str, str]:
+    """Extracts genuine Google account avatar, name, handle from Innertube account_menu or guide."""
+    res = {}
+    try:
+        data = innertube_authenticated_call("account/account_menu", {}, dev_id)
+        actions = data.get("actions", [])
+        for act in actions:
+            header = act.get("openPopupAction", {}).get("popup", {}).get("multiPageMenuRenderer", {}).get("header", {})
+            renderer = header.get("activeAccountHeaderRenderer", {})
+            if renderer:
+                name = renderer.get("accountName", {}).get("simpleText") or ""
+                handle = ""
+                runs = renderer.get("channelHandle", {}).get("runs", [])
+                if runs:
+                    handle = runs[0].get("text", "")
+                if not handle:
+                    handle = renderer.get("channelHandle", {}).get("simpleText", "")
+                email = renderer.get("email", {}).get("simpleText", "")
+                thumbs = renderer.get("accountPhoto", {}).get("thumbnails", [])
+                avatar = thumbs[-1].get("url", "") if thumbs else ""
+                if avatar.startswith("//"):
+                    avatar = "https:" + avatar
+                if avatar:
+                    res["account_avatar"] = avatar
+                if name:
+                    res["account_name"] = name
+                if email:
+                    res["account_email"] = email
+                if handle:
+                    res["account_handle"] = handle
+                return res
+    except Exception as e:
+        logger.debug(f"Innertube account_menu failed for {dev_id}: {e}")
+
+    try:
+        data = innertube_authenticated_call("guide", {}, dev_id)
+        txt = json.dumps(data)
+        matches = re.findall(r'https?://(?:yt3\.ggpht\.com|lh3\.googleusercontent\.com)/[A-Za-z0-9_-]{12,}', txt)
+        if matches:
+            res["account_avatar"] = matches[0]
+    except Exception as e:
+        logger.debug(f"Innertube guide failed for {dev_id}: {e}")
+
+    return res
+
+class CookiePayload(BaseModel):
+    cookies: str
+    device_id: Optional[str] = None
+    account_name: Optional[str] = None
+    account_email: Optional[str] = None
+    account_avatar: Optional[str] = None
+
+@app.post("/api/auth/cookies")
+def save_user_cookies(payload: CookiePayload, request: Request):
+    """Saves per-device YouTube cookies cleanly isolated from all other devices."""
+    dev_id = extract_device_id(request, payload.device_id)
+    raw = payload.cookies.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty cookies provided")
+
+    if "Netscape" not in raw and "\t" not in raw:
+        lines = ["# Netscape HTTP Cookie File", "# https://curl.haxx.se/rfc/cookie_spec.html"]
+        for item in raw.split(";"):
+            item = item.strip()
+            if "=" in item:
+                k, v = item.split("=", 1)
+                lines.append(f".youtube.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
+                lines.append(f".google.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}")
+        formatted = "\n".join(lines) + "\n"
+    else:
+        formatted = raw
+
+    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
+    dev_cookie_file.write_text(formatted, encoding="utf-8")
+    meta = {
+        "device_id": dev_id,
+        "account_name": payload.account_name or "YouTube Account",
+        "account_email": payload.account_email or "",
+        "account_avatar": payload.account_avatar or "",
+        "updated_at": time.time(),
+    }
+    if not meta.get("account_avatar") or meta.get("account_name") in ("", "YouTube Account"):
+        try:
+            profile = extract_user_profile_from_cookies(dev_id)
+            if profile:
+                meta.update(profile)
+        except Exception as e:
+            logger.debug(f"profile extraction on save error: {e}")
+    save_user_meta(dev_id, meta)
+    # Invalidate cached extractions for this device so new session cookies apply immediately
+    with query_cache_lock:
+        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:") or k == f"user_feed_{dev_id}"]:
+            query_cache.pop(k, None)
+    logger.info(f"Updated isolated YouTube cookies for device {dev_id} ({meta['account_name']})")
+    return {"success": True, "status": "success", "authenticated": True, "device_id": dev_id, **meta, "message": "YouTube account connected cleanly!"}
+
+@app.get("/api/auth/status")
+def get_auth_status(request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
+    has_cookies = bool(get_cookies_file(dev_id))
+    meta = get_user_meta(dev_id) if has_cookies else {}
+    if has_cookies and (not meta.get("account_avatar") or meta.get("account_name") in ("", "YouTube Account")):
+        try:
+            profile = extract_user_profile_from_cookies(dev_id)
+            if profile:
+                meta.update(profile)
+                save_user_meta(dev_id, meta)
+        except Exception as e:
+            logger.debug(f"profile extraction error for {dev_id}: {e}")
+    return {
+        "authenticated": has_cookies,
+        "device_id": dev_id,
+        "account_name": meta.get("account_name", "YouTube Account") if has_cookies else "",
+        "account_email": meta.get("account_email", "") if has_cookies else "",
+        "account_avatar": meta.get("account_avatar", "") if has_cookies else "",
+        "source": f"device:{dev_id}" if has_cookies else "none"
+    }
+
+@app.post("/api/auth/logout")
+def logout_auth(request: Request, device_id: Optional[str] = None):
+    dev_id = extract_device_id(request, device_id)
+    dev_cookie_file = COOKIES_DIR / f"{dev_id}.txt"
+    if dev_cookie_file.exists():
+        dev_cookie_file.unlink()
+    meta_file = USER_META_DIR / f"{dev_id}.json"
+    if meta_file.exists():
+        meta_file.unlink()
+    with query_cache_lock:
+        for k in [k for k in query_cache.keys() if k.startswith(f"ytinfo:{dev_id}:")]:
+            query_cache.pop(k, None)
+    return {"success": True, "status": "success", "authenticated": False, "device_id": dev_id}
+
+@app.get("/api/user/feed")
+def get_user_personalized_feed(
+    request: Request,
+    channels: Optional[str] = Query(None, description="Comma-separated creator channel names or handles"),
+    device_id: Optional[str] = Query(None)
+):
+    """Fetches this device's subscriptions & personalized videos when authenticated or given followed channels."""
+    dev_id = extract_device_id(request, device_id)
+    cache_key = f"user_feed_{dev_id}"
+    cached = get_cached(cache_key)
+    if cached and not channels:
+        return cached
+
+    cookie_file = get_cookies_file(dev_id)
+    clean_results = []
+    seen_ids = set()
+    subscribed_channels = []
+    seen_channels = set()
+
+    # Read persistent subscriptions from user meta
+    meta = get_user_meta(dev_id)
+    for s in meta.get("subscriptions", []):
+        c_name = s.get("name") or ""
+        c_id = s.get("id") or ""
+        if (c_name or c_id) and (c_name not in seen_channels and c_id not in seen_channels):
+            if c_name: seen_channels.add(c_name)
+            if c_id: seen_channels.add(c_id)
+            subscribed_channels.append({
+                "id": c_id,
+                "name": c_name or c_id,
+                "avatar": s.get("avatar") or resolve_channel_avatar(c_id, c_name)
+            })
+
+    # 1. If device cookies exist, extract official personalized subscriptions & watch history
+    if cookie_file:
+        opts = get_base_ydl_opts(dev_id)
+        opts["extract_flat"] = True
+        opts["playlist_items"] = "1-25"
+        try:
+            with SafeYoutubeDL(opts) as ydl:
+                # 1a. Subscriptions feed
+                try:
+                    res_subs = ydl.extract_info("https://www.youtube.com/feed/subscriptions", download=False)
+                    for item in (res_subs.get("entries", []) if res_subs else [])[:25]:
+                        if not item or not item.get("id") or item["id"] in seen_ids:
+                            continue
+                        seen_ids.add(item["id"])
+                        v_id = item["id"]
+                        dur = item.get("duration") or 0
+                        thumbs = item.get("thumbnails") or []
+                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                        c_name = item.get("uploader") or item.get("channel") or "Subscribed Creator"
+                        c_id = item.get("channel_id") or ""
+                        avatar = resolve_channel_avatar(c_id, c_name)
+
+                        if c_name and c_name not in seen_channels and c_id not in seen_channels:
+                            if c_name: seen_channels.add(c_name)
+                            if c_id: seen_channels.add(c_id)
+                            subscribed_channels.append({
+                                "id": c_id,
+                                "name": c_name,
+                                "avatar": avatar
+                            })
+
+                        clean_results.append({
+                            "id": v_id,
+                            "title": item.get("title") or "Untitled",
+                            "channel": c_name,
+                            "channel_id": c_id,
+                            "channel_avatar": avatar,
+                            "duration": dur,
+                            "duration_string": str(item.get("duration_string") or ""),
+                            "view_count": item.get("view_count") or 0,
+                            "thumbnail": thumbnail,
+                            "url": f"https://www.youtube.com/watch?v={v_id}"
+                        })
+                except Exception as e_subs:
+                    logger.warning(f"User cookie subscriptions extraction warning for {dev_id}: {e_subs}")
+
+                # 1b. Watch history recommendations
+                try:
+                    res_hist = ydl.extract_info("https://www.youtube.com/feed/history", download=False)
+                    for item in (res_hist.get("entries", []) if res_hist else [])[:15]:
+                        if not item or not item.get("id") or item["id"] in seen_ids:
+                            continue
+                        seen_ids.add(item["id"])
+                        v_id = item["id"]
+                        dur = item.get("duration") or 0
+                        thumbs = item.get("thumbnails") or []
+                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                        c_name = item.get("uploader") or item.get("channel") or "Watched Creator"
+                        c_id = item.get("channel_id") or ""
+                        clean_results.append({
+                            "id": v_id,
+                            "title": item.get("title") or "Untitled",
+                            "channel": c_name,
+                            "channel_id": c_id,
+                            "channel_avatar": resolve_channel_avatar(c_id, c_name),
+                            "duration": dur,
+                            "duration_string": str(item.get("duration_string") or ""),
+                            "view_count": item.get("view_count") or 0,
+                            "thumbnail": thumbnail,
+                            "url": f"https://www.youtube.com/watch?v={v_id}"
+                        })
+                except Exception as e_hist:
+                    logger.warning(f"User cookie history extraction warning for {dev_id}: {e_hist}")
+
+        except Exception as e:
+            logger.warning(f"User cookie subscriptions feed error for {dev_id}: {e}")
+
+    # 2. Extract uploads from followed creator channels (requested or saved)
+    extra_channels = []
+    if channels:
+        extra_channels = [c.strip() for c in channels.split(",") if c.strip()][:8]
+
+    if extra_channels:
+        opts = get_base_ydl_opts(dev_id)
+        opts["extract_flat"] = True
+        opts["playlist_items"] = "1-4"
+        with SafeYoutubeDL(opts) as ydl:
+            for c in extra_channels:
+                try:
+                    clean_c = c if c.startswith("@") or c.startswith("UC") else f"@{c.replace(' ', '')}"
+                    target = f"https://www.youtube.com/{clean_c}/videos"
+                    res = ydl.extract_info(target, download=False)
+                    entries = res.get("entries", []) if res else []
+                    for item in entries[:3]:
+                        if not item:
+                            continue
+                        v_id = item.get("id")
+                        if not v_id or v_id in seen_ids:
+                            continue
+                        seen_ids.add(v_id)
+                        dur = item.get("duration") or 0
+                        thumbs = item.get("thumbnails") or []
+                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
+                        c_name = item.get("uploader") or item.get("channel") or c
+                        c_id = item.get("channel_id") or ""
+                        avatar = resolve_channel_avatar(c_id, c_name)
+
+                        if c_name and c_name not in seen_channels and c_id not in seen_channels:
+                            if c_name: seen_channels.add(c_name)
+                            if c_id: seen_channels.add(c_id)
+                            subscribed_channels.append({
+                                "id": c_id,
+                                "name": c_name,
+                                "avatar": avatar
+                            })
+
+                        clean_results.append({
+                            "id": v_id,
+                            "title": item.get("title") or "Untitled",
+                            "channel": c_name,
+                            "channel_id": c_id,
+                            "channel_avatar": avatar,
+                            "duration": dur,
+                            "duration_string": str(item.get("duration_string") or ""),
+                            "view_count": item.get("view_count") or 0,
+                            "thumbnail": thumbnail,
+                            "url": f"https://www.youtube.com/watch?v={v_id}"
+                        })
+                except Exception:
+                    continue
+
+    out = {
+        "authenticated": bool(cookie_file),
+        "videos": clean_results,
+        "subscribed_channels": subscribed_channels
+    }
+    if clean_results and not channels:
+        set_cached(cache_key, out, ttl=300)
+    return out
+
 class SubscribePayload(BaseModel):
     channel_id: str
     channel_name: Optional[str] = None
@@ -1123,28 +1269,54 @@ class WatchPayload(BaseModel):
 @app.post("/api/user/subscribe")
 def user_subscribe(payload: SubscribePayload, request: Request):
     dev_id = extract_device_id(request, payload.device_id)
+    canonical_id = resolve_canonical_channel_id(payload.channel_id or payload.channel_name or "")
+    target_id = canonical_id if (canonical_id.startswith("UC") and len(canonical_id) == 24) else payload.channel_id
+    c_name = payload.channel_name or payload.channel_id or "Creator"
+
+    # Persist in user meta
+    meta = get_user_meta(dev_id)
+    subs = meta.get("subscriptions", [])
+    if not any(s.get("id") == target_id or s.get("name") == c_name for s in subs):
+        subs.insert(0, {
+            "id": target_id,
+            "name": c_name,
+            "avatar": resolve_channel_avatar(target_id, c_name)
+        })
+        meta["subscriptions"] = subs[:100]
+        save_user_meta(dev_id, meta)
+
     with query_cache_lock:
         query_cache.pop(f"user_feed_{dev_id}", None)
         query_cache.pop(f"trending_all_1_0", None)
     res = {}
     try:
-        res = innertube_authenticated_call("subscription/subscribe", {"channelIds": [payload.channel_id]}, dev_id)
+        res = innertube_authenticated_call("subscription/subscribe", {"channelIds": [target_id]}, dev_id)
     except Exception as e:
         logger.warning(f"Subscribe innertube warning for {dev_id}: {e}")
-    return {"success": True, "subscribed": True, "channel_id": payload.channel_id, "channel_name": payload.channel_name, "response": res}
+    return {"success": True, "subscribed": True, "channel_id": target_id, "channel_name": c_name, "response": res}
 
 @app.post("/api/user/unsubscribe")
 def user_unsubscribe(payload: SubscribePayload, request: Request):
     dev_id = extract_device_id(request, payload.device_id)
+    canonical_id = resolve_canonical_channel_id(payload.channel_id or payload.channel_name or "")
+    target_id = canonical_id if (canonical_id.startswith("UC") and len(canonical_id) == 24) else payload.channel_id
+    c_name = payload.channel_name or payload.channel_id or ""
+
+    # Remove from user meta
+    meta = get_user_meta(dev_id)
+    subs = meta.get("subscriptions", [])
+    meta["subscriptions"] = [s for s in subs if s.get("id") != target_id and (not c_name or s.get("name") != c_name)]
+    save_user_meta(dev_id, meta)
+
     with query_cache_lock:
         query_cache.pop(f"user_feed_{dev_id}", None)
         query_cache.pop(f"trending_all_1_0", None)
     res = {}
     try:
-        res = innertube_authenticated_call("subscription/unsubscribe", {"channelIds": [payload.channel_id]}, dev_id)
+        res = innertube_authenticated_call("subscription/unsubscribe", {"channelIds": [target_id]}, dev_id)
     except Exception as e:
         logger.warning(f"Unsubscribe innertube warning for {dev_id}: {e}")
-    return {"success": True, "subscribed": False, "channel_id": payload.channel_id, "response": res}
+    return {"success": True, "subscribed": False, "channel_id": target_id, "response": res}
 
 @app.post("/api/user/like")
 def user_like_video(payload: LikePayload, request: Request):

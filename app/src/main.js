@@ -422,15 +422,11 @@ function toggleChannelSubscription(creator) {
   if (index >= 0) {
     subs.splice(index, 1);
     nowSubscribed = false;
-    if (cId) {
-      api.unsubscribe(cId).catch((err) => console.debug('Online unsubscribe sync:', err));
-    }
+    api.unsubscribe(cId || cName, cName).catch((err) => console.debug('Online unsubscribe sync:', err));
   } else {
     subs.unshift({ id: cId, name: cName, avatar: cAvatar });
     nowSubscribed = true;
-    if (cId) {
-      api.subscribe(cId).catch((err) => console.debug('Online subscribe sync:', err));
-    }
+    api.subscribe(cId || cName, cName).catch((err) => console.debug('Online subscribe sync:', err));
   }
 
   try {
@@ -485,7 +481,7 @@ function getRecentInterestKeywords() {
   const history = getWatchHistory();
   if (history.length === 0) return null;
   const keywords = [];
-  const recent = history.slice(0, 6);
+  const recent = history.slice(0, 10);
   for (const item of recent) {
     if (item.channel && item.channel !== 'Creator' && item.channel !== 'Unknown Channel') {
       keywords.push(item.channel);
@@ -494,13 +490,13 @@ function getRecentInterestKeywords() {
       const words = item.title
         .replace(/[^\w\s]/gi, '')
         .split(/\s+/)
-        .filter((w) => w.length > 3 && !['official', 'video', 'full', 'song', 'music', 'best', '2025', '2026', 'trending'].includes(w.toLowerCase()));
+        .filter((w) => w.length > 3 && !['official', 'video', 'full', 'song', 'music', 'best', '2025', '2026', 'trending', 'shorts'].includes(w.toLowerCase()));
       if (words.length > 0) {
         keywords.push(words.slice(0, 2).join(' '));
       }
     }
   }
-  return keywords.length > 0 ? keywords[Math.floor(Math.random() * keywords.length)] : null;
+  return keywords.length > 0 ? keywords[Math.floor(Math.random() * Math.min(keywords.length, 6))] : null;
 }
 
 // =========================================================
@@ -597,6 +593,7 @@ async function checkServerHealth() {
 // 3. NAVIGATION & TABS
 // =========================================================
 function initNavigation() {
+  updateNavYouAvatar();
   // Bottom Tab Buttons
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -4950,6 +4947,28 @@ function openAuthModal() {
 let authStatusInFlight = null;
 let lastAuthStatusAt = 0;
 
+function updateNavYouAvatar(avatarUrl = '', accountName = '') {
+  const container = document.getElementById('nav-you-avatar-container');
+  if (!container) return;
+  const cachedAvatar = avatarUrl || localStorage.getItem('metube_account_avatar') || '';
+  const cachedName = accountName || localStorage.getItem('metube_account_name') || '';
+
+  if (cachedAvatar && /^https?:\/\//i.test(cachedAvatar)) {
+    const escName = (cachedName || 'You').replace(/"/g, '&quot;');
+    const initial = (cachedName.trim()[0] || 'Y').toUpperCase();
+    container.innerHTML = `
+      <img class="nav-you-avatar-img" src="${cachedAvatar}" alt="${escName}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.outerHTML='<div class=\\'nav-you-avatar-initial\\'>${initial}</div>';" />
+    `;
+  } else if (cachedName) {
+    const initial = (cachedName.trim()[0] || 'Y').toUpperCase();
+    container.innerHTML = `<div class="nav-you-avatar-initial">${initial}</div>`;
+  } else {
+    container.innerHTML = `
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    `;
+  }
+}
+
 async function updateAuthStatusUI(force = false) {
   if (authStatusInFlight) return authStatusInFlight;
   const now = Date.now();
@@ -4969,7 +4988,11 @@ async function updateAuthStatusUI(force = false) {
       const res = await api.getAuthStatus();
       if (res.authenticated) {
         const acctName = res.account_name || localStorage.getItem('metube_account_name') || 'YouTube';
+        const acctAvatar = res.account_avatar || localStorage.getItem('metube_account_avatar') || '';
         localStorage.setItem('metube_account_name', acctName);
+        if (acctAvatar) {
+          localStorage.setItem('metube_account_avatar', acctAvatar);
+        }
         if (badge) {
           badge.textContent = 'Connected';
           badge.style.background = '#00C853';
@@ -4981,12 +5004,19 @@ async function updateAuthStatusUI(force = false) {
         if (settingsAcLabel) settingsAcLabel.textContent = `Connected: ${acctName} (isolated to this device)`;
         if (settingsSignoutBtn) settingsSignoutBtn.style.display = 'inline-block';
         if (headerAvatar) {
-          headerAvatar.textContent = acctName[0]?.toUpperCase() || 'Y';
-          headerAvatar.style.background = '#00C853';
+          if (acctAvatar) {
+            headerAvatar.innerHTML = `<img src="${acctAvatar}" referrerpolicy="no-referrer" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" onerror="this.onerror=null;this.parentNode.textContent='${acctName[0]?.toUpperCase() || 'Y'}';" />`;
+            headerAvatar.style.background = 'transparent';
+          } else {
+            headerAvatar.textContent = acctName[0]?.toUpperCase() || 'Y';
+            headerAvatar.style.background = '#00C853';
+          }
           headerAvatar.style.borderColor = '#00E676';
         }
+        updateNavYouAvatar(acctAvatar, acctName);
       } else {
         localStorage.removeItem('metube_account_name');
+        localStorage.removeItem('metube_account_avatar');
         if (badge) {
           badge.textContent = 'Disconnected';
           badge.style.background = '#333';
@@ -5002,6 +5032,7 @@ async function updateAuthStatusUI(force = false) {
           headerAvatar.style.background = 'var(--metube-red, #FF0000)';
           headerAvatar.style.borderColor = 'transparent';
         }
+        updateNavYouAvatar('', '');
       }
     } catch (err) {
       if (badge) badge.textContent = 'Unknown';
@@ -5200,38 +5231,68 @@ async function loadSubscriptionsView() {
   const container = document.getElementById('subscriptions-feed-list');
   if (!container) return;
 
-  const subs = getSubscriptions();
+  container.innerHTML = `
+    <div class="spinner-box">
+      <div class="spinner"></div>
+    </div>
+  `;
 
-  // If user has subscribed to channels
-  if (subs.length > 0) {
+  try {
+    const localSubs = getSubscriptions();
+    const localChannelsStr = localSubs.map((s) => s.name || s.id).filter(Boolean).join(',');
+
+    // Fetch account subscriptions feed (+ merge with local followed channels)
+    const feed = await api.getUserFeed(localChannelsStr);
+    const feedVideos = (feed && Array.isArray(feed.videos)) ? feed.videos : [];
+    const serverSubs = (feed && Array.isArray(feed.subscribed_channels)) ? feed.subscribed_channels : [];
+
+    // Merge authentic account subscriptions + local subscriptions
+    const allSubsMap = new Map();
+    // 1. Add server/authentic subscriptions
+    serverSubs.forEach((s) => {
+      const key = (s.name || s.id || '').trim().toLowerCase();
+      if (key) allSubsMap.set(key, s);
+    });
+    // 2. Also extract channels from feed videos
+    feedVideos.forEach((v) => {
+      if (v.channel) {
+        const key = v.channel.trim().toLowerCase();
+        if (key && !allSubsMap.has(key)) {
+          allSubsMap.set(key, { name: v.channel, id: v.channel_id || '', avatar: v.channel_avatar || '' });
+        }
+      }
+    });
+    // 3. Add local subscriptions
+    localSubs.forEach((s) => {
+      const key = (s.name || s.id || '').trim().toLowerCase();
+      if (key && !allSubsMap.has(key)) {
+        allSubsMap.set(key, s);
+      }
+    });
+
+    const mergedSubs = Array.from(allSubsMap.values());
+
     const renderSubsHeaderHtml = () => `
-      <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
-        <span style="font-size:13px; font-weight:700; color:#FFF;">${subs.length} Following</span>
+      <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-subtle, #222);">
+        <span style="font-size:13px; font-weight:700; color:var(--text-white, #FFF);">${mergedSubs.length} Subscriptions</span>
         <div style="display:flex; gap:8px;">
-          <button id="btn-add-more-subs" style="background:#222; color:#FFF; border:1px solid #444; padding:6px 12px; border-radius:16px; font-size:12px; font-weight:700; cursor:pointer;">+ Add Channel</button>
-          <button id="btn-sync-cookies-quick" style="background:#222; color:#aaa; border:1px solid #333; padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync</button>
+          <button id="btn-add-more-subs" style="background:var(--bg-card, #222); color:var(--text-white, #FFF); border:1px solid var(--border-subtle, #444); padding:6px 12px; border-radius:16px; font-size:12px; font-weight:700; cursor:pointer;">+ Add Channel</button>
+          <button id="btn-sync-cookies-quick" style="background:var(--bg-card, #222); color:var(--text-gray, #aaa); border:1px solid var(--border-subtle, #333); padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync A/C</button>
         </div>
       </div>
       <!-- Authentic YouTube Subscribed Channels Story Bar -->
-      <div class="subs-channels-row" style="display:flex; gap:14px; overflow-x:auto; padding:12px 14px; border-bottom:1px solid #222; scrollbar-width:none; -webkit-overflow-scrolling:touch;">
-        ${subs.map((s, idx) => {
+      <div class="subs-channels-row" style="display:flex; gap:14px; overflow-x:auto; padding:12px 14px; border-bottom:1px solid var(--border-subtle, #222); scrollbar-width:none; -webkit-overflow-scrolling:touch;">
+        ${mergedSubs.map((s, idx) => {
           const aUrl = resolveAvatarUrl(s.avatar, s.name, s.id);
           return `
             <div class="sub-channel-pill" data-idx="${idx}" style="display:flex; flex-direction:column; align-items:center; width:64px; flex-shrink:0; cursor:pointer;">
               <div style="position:relative; width:48px; height:48px; border-radius:50%; padding:2px; background:linear-gradient(45deg, #FF0000, #990000); margin-bottom:4px; box-shadow:0 2px 6px rgba(0,0,0,0.5);">
                 <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" onerror="this.onerror=null;this.src='${getSvgAvatarDataUrl(s.name)}';" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
               </div>
-              <span style="font-size:11px; font-weight:600; color:#FFF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
+              <span style="font-size:11px; font-weight:600; color:var(--text-white, #FFF); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
             </div>
           `;
         }).join('')}
-      </div>
-    `;
-
-    container.innerHTML = `
-      ${renderSubsHeaderHtml()}
-      <div class="spinner-box">
-        <div class="spinner"></div>
       </div>
     `;
 
@@ -5240,7 +5301,7 @@ async function loadSubscriptionsView() {
       document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
       container.querySelectorAll('.sub-channel-pill').forEach((pill) => {
         const idx = Number(pill.dataset.idx);
-        const s = subs[idx];
+        const s = mergedSubs[idx];
         if (!s) return;
         const img = pill.querySelector('.sub-pill-avatar');
         if (img) attachAvatarHandlers(img, s.name, s.id);
@@ -5249,197 +5310,126 @@ async function loadSubscriptionsView() {
         });
       });
     };
-    wireSubsHeaderEvents();
 
-    try {
-      const channelNames = subs.map((s) => s.name || s.id).join(',');
-      const feed = await api.getUserFeed(channelNames);
-      const videos = feed && feed.videos ? feed.videos : [];
-
-      if (videos.length === 0) {
-        container.innerHTML = `
-          ${renderSubsHeaderHtml()}
-          <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
-            <div style="margin-bottom:10px; color:var(--text-gray);">${ICONS.subscriptions}</div>
-            <div style="font-size:15px; font-weight:700; color:#FFF;">No recent videos found</div>
-            <div style="font-size:12px; margin-top:4px;">Follow more creators or check back later.</div>
-          </div>
-        `;
-        wireSubsHeaderEvents();
-        return;
-      }
+    if (mergedSubs.length === 0) {
+      const suggestedCreators = [
+        { name: 'MrBeast', id: 'UCX6OQ3DkcsbYNE6H8uQQuVA' },
+        { name: 'MKBHD', id: 'UCBJycsmduvYEL83R_U4JriQ' },
+        { name: 'Veritasium', id: 'UCHnyfMqiRRG1u-2MsSQLbXA' },
+        { name: 'Fireship', id: 'UCvjgXvBlbQiydffZU7m1_aw' },
+        { name: 'Kurzgesagt', id: 'UCsXVk37bltHxD1rDPwtNM8Q' },
+        { name: 'Lofi Girl', id: 'UCSJ4gkVC6NrvII8umztf0Ow' }
+      ];
 
       container.innerHTML = `
-        ${renderSubsHeaderHtml()}
-      `;
-      wireSubsHeaderEvents();
-
-      videos.forEach((video) => {
-        container.appendChild(createVideoCardElement(video));
-      });
-    } catch (err) {
-      container.innerHTML = `
-        <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:12px;">
-          Could not load subscriptions feed. <button id="btn-retry-subs" style="margin-left:6px; background:#333; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Retry</button>
-        </div>
-      `;
-      document.getElementById('btn-retry-subs')?.addEventListener('click', loadSubscriptionsView);
-    }
-    return;
-  }
-
-  // Check if user has connected official YouTube account: load their authentic subscriptions feed directly!
-  try {
-    container.innerHTML = `
-      <div class="spinner-box">
-        <div class="spinner"></div>
-      </div>
-    `;
-    const userFeed = await api.getUserFeed();
-    if (userFeed && userFeed.videos && userFeed.videos.length > 0) {
-      const extractedChannels = [];
-      const seenCh = new Set();
-      for (const v of userFeed.videos) {
-        if (v.channel && !seenCh.has(v.channel)) {
-          seenCh.add(v.channel);
-          extractedChannels.push({ name: v.channel, id: v.channel_id || '', avatar: v.channel_avatar || '' });
-        }
-      }
-
-      const activeSubs = extractedChannels.length > 0 ? extractedChannels : subs;
-      const renderSubsHeaderHtml = () => `
-        <div style="padding:12px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222;">
-          <span style="font-size:13px; font-weight:700; color:#FFF;">${activeSubs.length} Subscriptions</span>
-          <div style="display:flex; gap:8px;">
-            <button id="btn-sync-cookies-quick" style="background:#222; color:#aaa; border:1px solid #333; padding:6px 10px; border-radius:16px; font-size:11px; cursor:pointer;">Sync A/C</button>
+        <div style="padding:24px 16px; max-width:480px; margin:0 auto;">
+          <div style="text-align:center; margin-bottom:20px;">
+            <div style="margin-bottom:8px; color:var(--text-gray);">${ICONS.subscriptions}</div>
+            <div style="font-size:18px; font-weight:800; color:var(--text-white, #FFF);">Subscriptions Feed</div>
+            <div style="font-size:12px; color:var(--text-gray); margin-top:4px; line-height:18px;">
+              Sign in with your Google account to sync all your YouTube subscriptions, or follow creators below.
+            </div>
           </div>
-        </div>
-        <div class="subs-channels-row" style="display:flex; gap:14px; overflow-x:auto; padding:12px 14px; border-bottom:1px solid #222; scrollbar-width:none; -webkit-overflow-scrolling:touch;">
-          ${activeSubs.map((s, idx) => {
-            const aUrl = resolveAvatarUrl(s.avatar, s.name, s.id);
-            return `
-              <div class="sub-channel-pill" data-idx="${idx}" style="display:flex; flex-direction:column; align-items:center; width:64px; flex-shrink:0; cursor:pointer;">
-                <div style="position:relative; width:48px; height:48px; border-radius:50%; padding:2px; background:linear-gradient(45deg, #FF0000, #990000); margin-bottom:4px; box-shadow:0 2px 6px rgba(0,0,0,0.5);">
-                  <img class="sub-pill-avatar" data-idx="${idx}" src="${aUrl}" onerror="this.onerror=null;this.src='${getSvgAvatarDataUrl(s.name)}';" alt="${s.name}" referrerpolicy="no-referrer" style="width:100%; height:100%; border-radius:50%; object-fit:cover; background:#181818; display:block;" />
+
+          <div style="text-align:center; margin-bottom:20px;">
+            <button id="btn-subs-empty-login" style="background:var(--metube-red, #FF0000); color:#FFF; border:none; padding:10px 24px; border-radius:20px; font-weight:700; font-size:13px; cursor:pointer;">
+              Sign In to YouTube
+            </button>
+          </div>
+
+          <!-- Quick Add Channel Input -->
+          <form id="form-sub-add" style="display:flex; gap:8px; margin-bottom:24px;">
+            <input 
+              id="input-sub-handle" 
+              type="text" 
+              placeholder="Type creator name (e.g. @MrBeast, @mkbhd)..." 
+              style="flex:1; background:var(--bg-card, #1C1C1C); border:1px solid var(--border-subtle, #333); color:var(--text-white, #FFF); padding:10px 14px; border-radius:10px; font-size:13px; outline:none;" 
+            />
+            <button type="submit" style="background:var(--metube-red, #FF0000); color:#FFF; border:none; padding:10px 16px; border-radius:10px; font-weight:700; font-size:13px; cursor:pointer; white-space:nowrap;">
+              + Follow
+            </button>
+          </form>
+
+          <!-- Suggested Creators List -->
+          <div style="font-size:13px; font-weight:700; color:var(--text-white, #FFF); margin-bottom:12px;">Suggested Creators:</div>
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:24px;">
+            ${suggestedCreators.map(c => {
+              const aUrl = resolveAvatarUrl(null, c.name, c.id);
+              return `
+                <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card, #181818); padding:10px 12px; border-radius:10px; border:1px solid var(--border-subtle, #282828);">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <img class="suggested-avatar-img" data-name="${c.name}" data-id="${c.id}" src="${aUrl}" alt="${c.name}" referrerpolicy="no-referrer" style="width:40px; height:40px; border-radius:50%; object-fit:cover; background:#222;" />
+                    <div>
+                      <div style="font-size:13px; font-weight:700; color:var(--text-white, #FFF);">${c.name}</div>
+                      <div style="font-size:11px; color:var(--text-gray);">YouTube Creator</div>
+                    </div>
+                  </div>
+                  <button class="btn-follow-suggested" data-name="${c.name}" data-id="${c.id}" style="background:#FFFFFF; color:#0F0F0F; border:none; padding:6px 14px; border-radius:16px; font-weight:700; font-size:12px; cursor:pointer;">
+                    Follow
+                  </button>
                 </div>
-                <span style="font-size:11px; font-weight:600; color:#FFF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62px; text-align:center;">${s.name}</span>
-              </div>
-            `;
-          }).join('')}
+              `;
+            }).join('')}
+          </div>
         </div>
       `;
 
-      container.innerHTML = `${renderSubsHeaderHtml()}`;
-      document.getElementById('btn-sync-cookies-quick')?.addEventListener('click', openAuthModal);
-      container.querySelectorAll('.sub-channel-pill').forEach((pill) => {
-        const idx = Number(pill.dataset.idx);
-        const s = activeSubs[idx];
-        if (!s) return;
-        pill.addEventListener('click', () => {
-          openChannelExplorer({ channel: s.name, channel_id: s.id, channel_avatar: s.avatar });
-        });
+      container.querySelectorAll('.suggested-avatar-img').forEach((img) => {
+        attachAvatarHandlers(img, img.dataset.name, img.dataset.id);
       });
 
-      userFeed.videos.forEach((video) => {
-        container.appendChild(createVideoCardElement(video));
+      document.getElementById('btn-subs-empty-login')?.addEventListener('click', openAuthModal);
+
+      document.getElementById('form-sub-add')?.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('input-sub-handle');
+        const val = (input?.value || '').trim();
+        if (!val) return;
+        toggleChannelSubscription({ name: val });
+        showToast(`Followed ${val}`);
+        loadSubscriptionsView();
+      });
+
+      container.querySelectorAll('.btn-follow-suggested').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const name = btn.dataset.name;
+          const id = btn.dataset.id;
+          const avatar = btn.dataset.avatar;
+          toggleChannelSubscription({ id, name, avatar });
+          showToast(`Followed ${name}`);
+          loadSubscriptionsView();
+        });
       });
       return;
     }
-  } catch (_) {}
 
-  // If user has NO subscriptions yet: Render clean onboarding
-  const suggestedCreators = [
-    { name: 'MrBeast', id: 'UCX6OQ3DkcsbYNE6H8uQQuVA' },
-    { name: 'MKBHD', id: 'UCBJycsmduvYEL83R_U4JriQ' },
-    { name: 'Veritasium', id: 'UCHnyfMqiRRG1u-2MsSQLbXA' },
-    { name: 'Fireship', id: 'UCvjgXvBlbQiydffZU7m1_aw' },
-    { name: 'Kurzgesagt', id: 'UCsXVk37bltHxD1rDPwtNM8Q' },
-    { name: 'Lofi Girl', id: 'UCSJ4gkVC6NrvII8umztf0Ow' }
-  ];
-
-  container.innerHTML = `
-    <div style="padding:24px 16px; max-width:480px; margin:0 auto;">
-      <div style="text-align:center; margin-bottom:20px;">
-        <div style="margin-bottom:8px; color:var(--text-gray);">${ICONS.subscriptions}</div>
-        <div style="font-size:18px; font-weight:800; color:#FFF;">Subscriptions Feed</div>
-        <div style="font-size:12px; color:var(--text-gray); margin-top:4px; line-height:18px;">
-          Follow your favorite creators to see their newest uploads here in real-time.
+    if (feedVideos.length === 0) {
+      container.innerHTML = `
+        ${renderSubsHeaderHtml()}
+        <div style="text-align:center; padding:40px 20px; color:var(--text-gray);">
+          <div style="margin-bottom:10px; color:var(--text-gray);">${ICONS.subscriptions}</div>
+          <div style="font-size:15px; font-weight:700; color:var(--text-white, #FFF);">No recent uploads right now</div>
+          <div style="font-size:12px; margin-top:4px;">Check back later or follow more creators.</div>
         </div>
-      </div>
+      `;
+      wireSubsHeaderEvents();
+      return;
+    }
 
-      <!-- Quick Add Channel Input -->
-      <form id="form-sub-add" style="display:flex; gap:8px; margin-bottom:24px;">
-        <input 
-          id="input-sub-handle" 
-          type="text" 
-          placeholder="Type creator name (e.g. @MrBeast, @mkbhd)..." 
-          style="flex:1; background:#1C1C1C; border:1px solid #333; color:#FFF; padding:10px 14px; border-radius:10px; font-size:13px; outline:none;" 
-        />
-        <button type="submit" style="background:var(--metube-red, #FF0000); color:#FFF; border:none; padding:10px 16px; border-radius:10px; font-weight:700; font-size:13px; cursor:pointer; white-space:nowrap;">
-          + Follow
-        </button>
-      </form>
+    container.innerHTML = renderSubsHeaderHtml();
+    wireSubsHeaderEvents();
 
-      <!-- Suggested Creators List -->
-      <div style="font-size:13px; font-weight:700; color:#FFF; margin-bottom:12px;">Suggested Creators:</div>
-      <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:24px;">
-        ${suggestedCreators.map(c => {
-          const aUrl = resolveAvatarUrl(null, c.name, c.id);
-          return `
-            <div style="display:flex; align-items:center; justify-content:space-between; background:#181818; padding:10px 12px; border-radius:10px; border:1px solid #282828;">
-              <div style="display:flex; align-items:center; gap:12px;">
-                <img class="suggested-avatar-img" data-name="${c.name}" data-id="${c.id}" src="${aUrl}" alt="${c.name}" referrerpolicy="no-referrer" style="width:40px; height:40px; border-radius:50%; object-fit:cover; background:#222;" />
-                <div>
-                  <div style="font-size:13px; font-weight:700; color:#FFF;">${c.name}</div>
-                  <div style="font-size:11px; color:var(--text-gray);">YouTube Creator</div>
-                </div>
-              </div>
-              <button class="btn-follow-suggested" data-name="${c.name}" data-id="${c.id}" style="background:#FFFFFF; color:#0F0F0F; border:none; padding:6px 14px; border-radius:16px; font-weight:700; font-size:12px; cursor:pointer;">
-                Follow
-              </button>
-            </div>
-          `;
-        }).join('')}
-      </div>
-
-      <!-- Sync YouTube Cookies button -->
-      <div style="text-align:center; padding-top:10px; border-top:1px solid #222;">
-        <button id="btn-login-subscriptions" style="background:transparent; color:#888; border:1px solid #333; padding:8px 16px; border-radius:8px; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
-          ${ICONS.link} <span>Sync Full YouTube Session Cookies</span>
-        </button>
-      </div>
-    </div>
-  `;
-
-  // Attach avatar handlers for suggested creators so they auto-refresh or fallback cleanly
-  container.querySelectorAll('.suggested-avatar-img').forEach((img) => {
-    attachAvatarHandlers(img, img.dataset.name, img.dataset.id);
-  });
-
-  // Form submit handler
-  document.getElementById('form-sub-add')?.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const input = document.getElementById('input-sub-handle');
-    const val = (input?.value || '').trim();
-    if (!val) return;
-    toggleChannelSubscription({ name: val });
-    showToast(`Followed ${val}`);
-    loadSubscriptionsView();
-  });
-
-  // Suggested follow buttons handler
-  container.querySelectorAll('.btn-follow-suggested').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const name = btn.dataset.name;
-      const id = btn.dataset.id;
-      const avatar = btn.dataset.avatar;
-      toggleChannelSubscription({ id, name, avatar });
-      showToast(`Followed ${name}`);
-      loadSubscriptionsView();
+    feedVideos.forEach((video) => {
+      container.appendChild(createVideoCardElement(video));
     });
-  });
-
-  document.getElementById('btn-login-subscriptions')?.addEventListener('click', openAuthModal);
+  } catch (err) {
+    container.innerHTML = `
+      <div style="text-align:center; padding:30px; color:var(--text-gray); font-size:12px;">
+        Could not load subscriptions feed. <button id="btn-retry-subs" style="margin-left:6px; background:#333; color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Retry</button>
+      </div>
+    `;
+    document.getElementById('btn-retry-subs')?.addEventListener('click', loadSubscriptionsView);
+  }
 }
 
 // =========================================================

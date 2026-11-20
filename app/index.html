@@ -351,8 +351,10 @@
               <button class="nav-item" data-tab="downloads" title="Downloads">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </button>
-              <button class="nav-item" data-tab="settings" title="You">
-                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              <button class="nav-item" data-tab="settings" id="nav-item-you" title="You">
+                <div class="nav-you-avatar-box" id="nav-you-avatar-container">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </div>
               </button>
             </nav>
 
@@ -896,7 +898,7 @@
             </div>
 
             <!-- Fullscreen Vertical YouTube Shorts Reel Viewer Modal (System-Insets Protected) -->
-            <div class="player-modal shorts-fullscreen-modal" id="shorts-modal" style="display:none; background:#000; z-index:9998; overflow:hidden;">
+            <div class="player-modal shorts-fullscreen-modal" id="shorts-modal" style="display:none; z-index:9998; overflow:hidden;">
               <div class="shorts-safe-stage">
                 <!-- Shorts Header Controls -->
                 <div class="shorts-top-header">
@@ -917,7 +919,7 @@
                 <!-- YouTube Shorts Poster Pre-warming & Embed Container -->
                 <img id="shorts-poster-bg" class="shorts-poster-backdrop" alt="Short preview" style="display:none;" />
                 <div id="shorts-embed-container" class="shorts-media-layer" style="pointer-events:none; z-index:40;"></div>
-                <video id="shorts-video-element" playsinline webkit-playsinline loop class="shorts-media-layer" style="display:none; width:100%; height:100%; object-fit:cover; background:#000;"></video>
+                <video id="shorts-video-element" playsinline webkit-playsinline loop class="shorts-media-layer" style="display:none; width:100%; height:100%; object-fit:cover;"></video>
                 <div id="shorts-spinner" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; z-index:50; pointer-events:none;"><div class="spinner"></div></div>
 
                 <!-- Animated Feedback Badge (Play/Pause/Like Flash) -->

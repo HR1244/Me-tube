@@ -217,10 +217,10 @@ export const api = {
       body: JSON.stringify({ channel_id: channelId, channel_name: channelName, device_id: getDeviceId() })
     });
   },
-  unsubscribe(channelId) {
+  unsubscribe(channelId, channelName = '') {
     return request('/api/user/unsubscribe', {
       method: 'POST',
-      body: JSON.stringify({ channel_id: channelId, device_id: getDeviceId() })
+      body: JSON.stringify({ channel_id: channelId, channel_name: channelName, device_id: getDeviceId() })
     });
   },
   likeVideo(videoId, action = 'LIKE') {
