@@ -3241,6 +3241,7 @@ function openDownloadModal(video) {
   channel.textContent = video.channel || 'Creator';
   confirmText.textContent = `Download ${state.selectedFormat.label}`;
 
+  modal.style.display = 'flex';
   modal.classList.add('open');
   syncNativeOverlayFlag();
 
@@ -3270,9 +3271,19 @@ function initDownloadModal() {
   const confirmBtn = document.getElementById('btn-confirm-download');
   const confirmText = document.getElementById('download-confirm-text');
 
-  document.getElementById('btn-close-download-modal')?.addEventListener('click', () => {
+  const closeDownload = () => {
     modal.classList.remove('open');
+    setTimeout(() => {
+      if (!modal.classList.contains('open')) {
+        modal.style.display = 'none';
+      }
+    }, 220);
     syncNativeOverlayFlag();
+  };
+
+  document.getElementById('btn-close-download-modal')?.addEventListener('click', closeDownload);
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) closeDownload();
   });
 
   // Select format options
