@@ -1697,28 +1697,33 @@ export function updateMediaSession(video) {
 
 export function minimizeToMiniPlayer() {
   const modal = document.getElementById('player-modal');
-  const miniBar = document.getElementById('mini-player-bar');
   setFullscreenLandscape(false);
-  if (modal) modal.classList.remove('open');
-  if (miniBar && state.activeVideo) {
-    miniBar.style.display = 'flex';
-    const videoElem = document.getElementById('html5-video-element');
-    const playing = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : (!isMiniPaused && !isUserPaused);
-    updatePlayPauseIcons(playing);
-    syncNativeMediaService(playing, true);
-  }
+  if (!modal || !state.activeVideo) return;
+
+  // Float seamlessly to bottom-right corner matching authentic YouTube
+  modal.classList.add('mini-floating');
+  modal.classList.add('open');
+
+  const videoElem = document.getElementById('html5-video-element');
+  const playing = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : (!isMiniPaused && !isUserPaused);
+  updatePlayPauseIcons(playing);
+  syncNativeMediaService(playing, true);
   syncNativeOverlayFlag();
 }
 
 export function expandFromMiniPlayer() {
   const modal = document.getElementById('player-modal');
-  const miniBar = document.getElementById('mini-player-bar');
-  if (miniBar) miniBar.style.display = 'none';
-  if (modal) modal.classList.add('open');
+  if (!modal) return;
+  modal.classList.remove('mini-floating');
+  modal.classList.add('open');
   syncNativeOverlayFlag();
 }
 
 export function hideMiniPlayer() {
+  const modal = document.getElementById('player-modal');
+  if (modal) {
+    modal.classList.remove('mini-floating');
+  }
   const miniBar = document.getElementById('mini-player-bar');
   if (miniBar) miniBar.style.display = 'none';
 }
@@ -2199,8 +2204,14 @@ function updatePlayPauseIcons(isPlaying) {
   isMiniPaused = !isPlaying;
   const stBtn = document.getElementById('btn-st-playpause');
   const miniBtn = document.getElementById('btn-mini-play-pause');
+  const floatPlay = document.getElementById('mini-float-play-icon');
+  const floatPause = document.getElementById('mini-float-pause-icon');
   if (stBtn) stBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
   if (miniBtn) miniBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
+  if (floatPlay && floatPause) {
+    floatPlay.style.display = isPlaying ? 'none' : 'block';
+    floatPause.style.display = isPlaying ? 'block' : 'none';
+  }
   setMediaSessionPlaybackState(isPlaying ? 'playing' : 'paused');
 }
 
@@ -2326,6 +2337,7 @@ async function openVideoPlayer(video) {
   const bgBtn = document.getElementById('btn-bg-audio');
 
   if (modal) {
+    modal.classList.remove('mini-floating');
     modal.style.display = 'flex';
     modal.classList.add('open');
   }
@@ -2334,6 +2346,17 @@ async function openVideoPlayer(video) {
   if (overlayTitleElem) overlayTitleElem.textContent = safeTitle;
   if (topbarTitleElem) topbarTitleElem.textContent = safeTitle;
   if (viewsElem) viewsElem.textContent = video.isExternal ? (video.channel || 'Universal Link Media') : formatViews(video.view_count);
+
+  const commentCountElem = document.getElementById('player-comments-count');
+  const commentSnippetElem = document.getElementById('player-comment-snippet');
+  if (commentCountElem) {
+    const rawCount = video.view_count ? Math.max(14, Math.round(video.view_count / 1200)) : 240;
+    commentCountElem.textContent = formatViews(rawCount);
+  }
+  if (commentSnippetElem) {
+    const safeSnippet = video.channel ? `Great breakdown from ${video.channel}! Watching this on repeat.` : 'Awesome explanation!';
+    commentSnippetElem.textContent = safeSnippet;
+  }
 
   const cName = video.channel || 'Creator';
   if (channelNameElem) channelNameElem.textContent = cName;
@@ -2952,6 +2975,34 @@ function initPlayerControls() {
 
   document.getElementById('btn-minimize-player')?.addEventListener('click', () => {
     minimizeToMiniPlayer();
+  });
+
+  // Floating Mini-Player Click & Action Handlers
+  modal?.addEventListener('click', (e) => {
+    if (!modal.classList.contains('mini-floating')) return;
+
+    if (e.target.closest('#btn-mini-float-close')) {
+      e.stopPropagation();
+      stopAllPlayback();
+      hideMiniPlayer();
+      modal.classList.remove('open');
+      syncNativeOverlayFlag();
+      return;
+    }
+
+    if (e.target.closest('#btn-mini-float-playpause')) {
+      e.stopPropagation();
+      const isPlaying = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : (!isMiniPaused && !isUserPaused);
+      if (isPlaying) {
+        pauseCurrentPlayback();
+      } else {
+        resumeCurrentPlayback();
+      }
+      return;
+    }
+
+    // Tapping anywhere else on the floating card expands it back to fullscreen smoothly!
+    expandFromMiniPlayer();
   });
 
   document.getElementById('btn-close-player')?.addEventListener('click', () => {
@@ -5773,12 +5824,111 @@ function startAutoOtaUpdate(info) {
 }
 
 // =========================================================
+// YOUTUBE AUTHENTIC PULL-TO-REFRESH
+// =========================================================
+function initPullToRefresh() {
+  const viewport = document.getElementById('content-viewport');
+  const spinner = document.getElementById('yt-pull-spinner');
+  if (!viewport || !spinner) return;
+
+  let startY = 0;
+  let currentY = 0;
+  let isPulling = false;
+  let isRefreshing = false;
+  const PULL_THRESHOLD = 70;
+
+  viewport.addEventListener('touchstart', (e) => {
+    if (isRefreshing) return;
+    if (viewport.scrollTop <= 2) {
+      startY = e.touches[0].clientY;
+      currentY = startY;
+      isPulling = true;
+    } else {
+      isPulling = false;
+    }
+  }, { passive: true });
+
+  viewport.addEventListener('touchmove', (e) => {
+    if (!isPulling || isRefreshing) return;
+    currentY = e.touches[0].clientY;
+    const diff = currentY - startY;
+
+    if (diff > 8 && viewport.scrollTop <= 2) {
+      const pull = Math.min(100, (diff - 8) * 0.42);
+      const progress = Math.min(1, pull / PULL_THRESHOLD);
+      const rotation = pull * 3.6;
+
+      spinner.style.display = 'flex';
+      spinner.style.transition = 'none';
+      spinner.style.transform = `translateX(-50%) translateY(${pull}px) scale(${0.5 + progress * 0.5})`;
+      spinner.style.opacity = String(progress);
+
+      const icon = spinner.querySelector('.yt-pull-arrow-icon');
+      if (icon) {
+        icon.style.transform = `rotate(${rotation}deg)`;
+      }
+    } else {
+      spinner.style.opacity = '0';
+      spinner.style.transform = 'translateX(-50%) translateY(0px) scale(0.5)';
+    }
+  }, { passive: true });
+
+  const finishRefresh = async () => {
+    isRefreshing = true;
+    spinner.classList.add('refreshing');
+    spinner.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1)';
+    spinner.style.transform = `translateX(-50%) translateY(${PULL_THRESHOLD}px) scale(1)`;
+    spinner.style.opacity = '1';
+
+    try {
+      if (state.activeTab === 'home') {
+        await loadFeed(state.activeCategory || 'all');
+      } else if (state.activeTab === 'subscriptions') {
+        await loadPersonalizedSubscriptionsFeed();
+      } else if (state.activeTab === 'history') {
+        loadHistoryView();
+      }
+    } catch (_) {}
+
+    setTimeout(() => {
+      spinner.style.transition = 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.25s ease';
+      spinner.style.transform = 'translateX(-50%) translateY(0px) scale(0.3)';
+      spinner.style.opacity = '0';
+      setTimeout(() => {
+        spinner.classList.remove('refreshing');
+        spinner.style.display = 'none';
+        isRefreshing = false;
+      }, 260);
+    }, 450);
+  };
+
+  viewport.addEventListener('touchend', () => {
+    if (!isPulling || isRefreshing) return;
+    isPulling = false;
+    const diff = currentY - startY;
+    const pull = (diff - 8) * 0.42;
+
+    if (diff > 8 && pull >= PULL_THRESHOLD && viewport.scrollTop <= 2) {
+      finishRefresh();
+    } else {
+      spinner.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s ease';
+      spinner.style.transform = 'translateX(-50%) translateY(0px) scale(0.5)';
+      spinner.style.opacity = '0';
+      setTimeout(() => {
+        if (!isRefreshing) spinner.style.display = 'none';
+      }, 230);
+    }
+  }, { passive: true });
+}
+
+// =========================================================
 // INITIALIZATION ON PAGE LOAD
 // =========================================================
 window.addEventListener('DOMContentLoaded', () => {
   initThemeManager();
   initSimulator();
   initNavigation();
+  initPullToRefresh();
   initPlayerControls();
   initDownloadModal();
   initChannelModal();
