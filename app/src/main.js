@@ -806,6 +806,9 @@ function initNavigation() {
     if (!query) return;
 
     // Immediately dismiss mobile keyboard and edit handle
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
     searchInput?.blur();
     try {
       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Keyboard) {
@@ -843,6 +846,9 @@ function initNavigation() {
 
   const searchSubmitBtn = searchForm?.querySelector('.search-submit-btn');
   searchSubmitBtn?.addEventListener('click', () => {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
     searchInput?.blur();
     try {
       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Keyboard) {
@@ -1402,7 +1408,7 @@ function createVideoCardElement(video) {
 
   card.innerHTML = `
     <div class="video-thumb-container">
-      <img class="video-thumb-img" src="${video.thumbnail}" alt="${video.title}" loading="lazy" />
+      <img class="video-thumb-img" src="${video.thumbnail}" alt="${video.title}" loading="lazy" decoding="async" />
       ${durationText ? `<span class="badge-duration">${durationText}</span>` : ''}
     </div>
     <div class="video-info-row">
@@ -1412,6 +1418,7 @@ function createVideoCardElement(video) {
           src="${avatarUrl}" 
           alt="${channelName}"
           loading="lazy"
+          decoding="async"
           referrerpolicy="no-referrer"
         />
       </div>
@@ -1494,7 +1501,7 @@ function createShortsShelfElement(shortsList) {
       ${shortsList.map((short) => `
         <div class="short-card" data-short-id="${short.id}">
           <div class="short-thumb-wrapper">
-            <img class="short-thumb-img" src="${short.thumbnail}" alt="${short.title}" loading="lazy" />
+            <img class="short-thumb-img" src="${short.thumbnail}" alt="${short.title}" loading="lazy" decoding="async" />
             <div class="short-card-overlay">
               <button class="short-more-btn" title="Options">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="#FFF"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
@@ -2951,7 +2958,7 @@ function renderSuggestedVideos(videos) {
 
     card.innerHTML = `
       <div class="suggested-thumb-box">
-        <img class="suggested-thumb-img" src="${video.thumbnail}" alt="${video.title}" loading="lazy" />
+        <img class="suggested-thumb-img" src="${video.thumbnail}" alt="${video.title}" loading="lazy" decoding="async" />
         ${durationText ? `<span class="suggested-duration-badge">${durationText}</span>` : ''}
       </div>
       <div class="suggested-info-box">
@@ -2985,7 +2992,6 @@ let suppressMiniClick = false;
 function initPlayerDragMinimize() {
   const modal = document.getElementById('player-modal');
   const dragOverlay = document.getElementById('player-video-drag-overlay') || document.getElementById('player-drag-handle-zone');
-  const mediaBox = document.getElementById('player-media-box');
   const detailsScroll = document.querySelector('.player-details-scroll');
   if (!modal) return;
 
@@ -3001,6 +3007,11 @@ function initPlayerDragMinimize() {
   let miniStartY = 0;
   let isMiniSwiping = false;
   let miniSwipeLocked = false;
+
+  let dragRafId = null;
+  let miniRafId = null;
+  let pendingDragState = null;
+  let pendingMiniState = null;
 
   function onTouchStart(e) {
     if (!modal.classList.contains('open')) return;
@@ -3049,9 +3060,17 @@ function initPlayerDragMinimize() {
 
       if (isMiniSwiping && diffX > 0) {
         if (e.cancelable) e.preventDefault();
-        modal.style.transition = 'none';
-        modal.style.transform = `translateX(${diffX}px)`;
-        modal.style.opacity = `${Math.max(0.15, 1 - diffX / 190)}`;
+        pendingMiniState = { diffX, opacity: Math.max(0.15, 1 - diffX / 190) };
+        if (!miniRafId) {
+          miniRafId = requestAnimationFrame(() => {
+            if (pendingMiniState && isMiniSwiping && modal.classList.contains('mini-floating')) {
+              modal.style.transition = 'none';
+              modal.style.transform = `translateX(${pendingMiniState.diffX}px)`;
+              modal.style.opacity = `${pendingMiniState.opacity}`;
+            }
+            miniRafId = null;
+          });
+        }
       }
       return;
     }
@@ -3093,14 +3112,31 @@ function initPlayerDragMinimize() {
       const translateY = diffY;
       const borderRadius = Math.round(progress * 14);
 
-      modal.style.transition = 'none';
-      modal.style.transformOrigin = 'bottom right';
-      modal.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
-      modal.style.borderRadius = `${borderRadius}px`;
+      pendingDragState = { translateX, translateY, scale, borderRadius };
+      if (!dragRafId) {
+        dragRafId = requestAnimationFrame(() => {
+          if (pendingDragState && isDraggingDown) {
+            modal.style.transition = 'none';
+            modal.style.transformOrigin = 'bottom right';
+            modal.style.transform = `translate3d(${pendingDragState.translateX}px, ${pendingDragState.translateY}px, 0) scale(${pendingDragState.scale})`;
+            modal.style.borderRadius = `${pendingDragState.borderRadius}px`;
+          }
+          dragRafId = null;
+        });
+      }
     }
   }
 
   function onTouchEnd(e) {
+    if (dragRafId) {
+      cancelAnimationFrame(dragRafId);
+      dragRafId = null;
+    }
+    if (miniRafId) {
+      cancelAnimationFrame(miniRafId);
+      miniRafId = null;
+    }
+
     // 1. MINI-PLAYER SWIPE-TO-DISMISS END
     if (modal.classList.contains('mini-floating')) {
       if (isMiniSwiping) {
@@ -3167,14 +3203,11 @@ function initPlayerDragMinimize() {
     }
   }
 
-  // Attach touch listeners
-  const touchTargets = [dragOverlay, mediaBox, detailsScroll, modal].filter(Boolean);
-  touchTargets.forEach(el => {
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    el.addEventListener('touchend', onTouchEnd, { passive: true });
-    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
-  });
+  // Attach touch listeners once to modal (bubbling captures all child gestures with zero duplication)
+  modal.addEventListener('touchstart', onTouchStart, { passive: true });
+  modal.addEventListener('touchmove', onTouchMove, { passive: false });
+  modal.addEventListener('touchend', onTouchEnd, { passive: true });
+  modal.addEventListener('touchcancel', onTouchEnd, { passive: true });
 }
 
 function initPlayerControls() {
