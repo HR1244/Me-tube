@@ -55,43 +55,68 @@ body.theme-light {
 }
 
 /* Light Mode overrides for Shorts, Player, and Components */
-body.theme-light #shorts-modal {
+body.theme-light #shorts-modal,
+body.theme-system #shorts-modal,
+body:not(.theme-dark):not(.theme-light) #shorts-modal {
   background: #FFFFFF !important;
 }
 
-body.theme-light .shorts-safe-stage {
+body.theme-light .shorts-safe-stage,
+body.theme-system .shorts-safe-stage,
+body:not(.theme-dark):not(.theme-light) .shorts-safe-stage {
   background: #FFFFFF !important;
 }
 
-body.theme-light .shorts-top-header span {
+body.theme-light .shorts-top-header span,
+body.theme-system .shorts-top-header span {
   color: #0F0F0F !important;
   text-shadow: none !important;
 }
 
 body.theme-light #btn-shorts-sound,
-body.theme-light #btn-close-shorts {
-  background: rgba(255, 255, 255, 0.88) !important;
+body.theme-light #btn-close-shorts,
+body.theme-system #btn-shorts-sound,
+body.theme-system #btn-close-shorts {
+  background: #FFFFFF !important;
   color: #0F0F0F !important;
   border: 1px solid rgba(0, 0, 0, 0.12) !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
 }
 
-body.theme-light .shorts-circle-action {
-  background: rgba(255, 255, 255, 0.88) !important;
+body.theme-light #btn-shorts-sound svg,
+body.theme-light #btn-close-shorts svg,
+body.theme-system #btn-shorts-sound svg,
+body.theme-system #btn-close-shorts svg {
+  stroke: #0F0F0F !important;
+  color: #0F0F0F !important;
+}
+
+body.theme-light .shorts-circle-action,
+body.theme-system .shorts-circle-action {
+  background: #FFFFFF !important;
   color: #0F0F0F !important;
   border: 1px solid rgba(0, 0, 0, 0.12) !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
 }
 
-body.theme-light .shorts-creator-pill {
-  background: rgba(255, 255, 255, 0.88) !important;
+body.theme-light .shorts-circle-action svg,
+body.theme-system .shorts-circle-action svg {
+  stroke: #0F0F0F !important;
+  color: #0F0F0F !important;
+}
+
+body.theme-light .shorts-creator-pill,
+body.theme-system .shorts-creator-pill {
+  background: #FFFFFF !important;
   color: #0F0F0F !important;
   border: 1px solid rgba(0, 0, 0, 0.12) !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
 }
 
-body.theme-light .shorts-pill-name {
+body.theme-light .shorts-pill-name,
+body.theme-system .shorts-pill-name {
   color: #0F0F0F !important;
+  font-weight: 700 !important;
 }
 
 body.theme-light .player-modal,
@@ -100,8 +125,42 @@ body.theme-light .shorts-fullscreen-modal,
 body.theme-light .shorts-safe-stage,
 body.theme-light .shorts-media-layer,
 body.theme-light #shorts-video-element,
-body.theme-light #shorts-embed-container {
+body.theme-light #shorts-embed-container,
+body.theme-light #shorts-embed-player,
+body.theme-light #shorts-poster-bg,
+body.theme-light .shorts-poster-backdrop,
+body.theme-system .player-modal,
+body.theme-system #shorts-modal,
+body.theme-system .shorts-fullscreen-modal,
+body.theme-system .shorts-safe-stage,
+body.theme-system .shorts-media-layer,
+body.theme-system #shorts-video-element,
+body.theme-system #shorts-embed-container,
+body.theme-system #shorts-embed-player,
+body.theme-system #shorts-poster-bg,
+body.theme-system .shorts-poster-backdrop {
   background: #FFFFFF !important;
+}
+
+body.theme-light .shorts-shelf,
+body.theme-system .shorts-shelf {
+  background: transparent !important;
+  border-top-color: #ECECEC !important;
+  border-bottom-color: #ECECEC !important;
+}
+
+body.theme-light .shorts-shelf-title,
+body.theme-system .shorts-shelf-title {
+  color: #0F0F0F !important;
+}
+
+body.theme-light .shorts-shelf-dots,
+body.theme-system .shorts-shelf-dots {
+  color: #606060 !important;
+}
+
+#btn-player-settings-pill {
+  display: none !important;
 }
 
 body.theme-light .player-top-bar {
@@ -2352,14 +2411,22 @@ body.theme-light .nav-item.active .nav-you-avatar-initial {
   padding-top: max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 0px);
 }
 
-.player-drag-handle-zone {
+.player-video-drag-overlay {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 52px;
-  z-index: 32;
+  height: calc(100% - 46px);
+  z-index: 25;
   touch-action: none;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.player-modal.mini-floating .player-video-drag-overlay,
+.player-modal.fullscreen-landscape .player-video-drag-overlay {
+  display: none !important;
 }
 
 /* =========================================================
@@ -2583,8 +2650,13 @@ body.theme-system .yt-pull-spinner {
 }
 
 @keyframes ytPullSpin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .player-modal.fullscreen-landscape .player-top-bar,

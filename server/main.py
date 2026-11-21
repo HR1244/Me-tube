@@ -1080,8 +1080,8 @@ def logout_auth(request: Request, device_id: Optional[str] = None):
 @app.get("/api/user/feed")
 def get_user_personalized_feed(
     request: Request,
-    channels: Optional[str] = Query(None, description="Comma-separated creator channel names or handles"),
-    device_id: Optional[str] = Query(None)
+    channels: Optional[str] = None,
+    device_id: Optional[str] = None
 ):
     """Fetches this device's subscriptions & personalized videos when authenticated or given followed channels."""
     dev_id = extract_device_id(request, device_id)
@@ -1189,7 +1189,7 @@ def get_user_personalized_feed(
 
     # 2. Extract uploads from followed creator channels (requested or saved)
     extra_channels = []
-    if channels:
+    if isinstance(channels, str) and channels.strip():
         extra_channels = [c.strip() for c in channels.split(",") if c.strip()][:8]
 
     if extra_channels:
@@ -2430,23 +2430,32 @@ def get_video_stream_info(video_id: str, request: Request, device_id: Optional[s
             "available_resolutions": []
         }
 
+_browse_id_cache: Dict[str, str] = {}
+
 def _resolve_browse_id(clean_id: str) -> Optional[str]:
+    if not clean_id:
+        return None
+    k = clean_id.strip().lower()
+    if k in _browse_id_cache:
+        return _browse_id_cache[k]
     if clean_id.startswith("UC") and len(clean_id) >= 20:
+        _browse_id_cache[k] = clean_id
         return clean_id
     try:
         if clean_id.startswith("http://") or clean_id.startswith("https://"):
-            nav = innertube_request("navigation/resolve_url", {"url": clean_id}, timeout=4)
+            nav = innertube_request("navigation/resolve_url", {"url": clean_id}, timeout=3)
         elif clean_id.startswith("@"):
-            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/{clean_id}"}, timeout=4)
+            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/{clean_id}"}, timeout=3)
         else:
-            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/@{clean_id.replace(' ', '')}"}, timeout=4)
+            nav = innertube_request("navigation/resolve_url", {"url": f"https://www.youtube.com/@{clean_id.replace(' ', '')}"}, timeout=3)
         bid = nav.get("endpoint", {}).get("browseEndpoint", {}).get("browseId")
         if bid and bid.startswith("UC"):
+            _browse_id_cache[k] = bid
             return bid
     except Exception:
         pass
     try:
-        data = innertube_request("search", {"query": clean_id.lstrip("@"), "params": "EgIQAg=="}, timeout=4)
+        data = innertube_request("search", {"query": clean_id.lstrip("@"), "params": "EgIQAg=="}, timeout=3)
         sections = (
             data.get("contents", {})
             .get("twoColumnSearchResultsRenderer", {})
@@ -2458,6 +2467,7 @@ def _resolve_browse_id(clean_id: str) -> Optional[str]:
             for it in sec.get("itemSectionRenderer", {}).get("contents", []):
                 cr = it.get("channelRenderer")
                 if cr and cr.get("channelId"):
+                    _browse_id_cache[k] = cr["channelId"]
                     return cr["channelId"]
     except Exception:
         pass

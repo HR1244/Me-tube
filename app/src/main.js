@@ -2984,16 +2984,18 @@ let suppressMiniClick = false;
 
 function initPlayerDragMinimize() {
   const modal = document.getElementById('player-modal');
-  const dragHandle = document.getElementById('player-drag-handle-zone');
+  const dragOverlay = document.getElementById('player-video-drag-overlay') || document.getElementById('player-drag-handle-zone');
   const mediaBox = document.getElementById('player-media-box');
   const detailsScroll = document.querySelector('.player-details-scroll');
   if (!modal) return;
 
   let startY = 0;
   let startX = 0;
+  let touchStartTime = 0;
   let isDraggingDown = false;
   let directionLocked = false;
   let isFromDetails = false;
+  let isFromVideoOverlay = false;
 
   let miniStartX = 0;
   let miniStartY = 0;
@@ -3017,10 +3019,12 @@ function initPlayerDragMinimize() {
     const touch = e.touches[0];
     startY = touch.clientY;
     startX = touch.clientX;
+    touchStartTime = Date.now();
     isDraggingDown = false;
     directionLocked = false;
 
-    // Check if touch originates inside detailsScroll
+    // Check if touch originates inside video drag overlay or detailsScroll
+    isFromVideoOverlay = Boolean(dragOverlay && (dragOverlay === e.target || dragOverlay.contains(e.target)));
     isFromDetails = Boolean(detailsScroll && (detailsScroll === e.target || detailsScroll.contains(e.target)));
   }
 
@@ -3054,7 +3058,7 @@ function initPlayerDragMinimize() {
 
     if (state.fullscreenLandscape) return;
 
-    // 2. FULL PLAYER DRAG-DOWN TO MINIMIZE
+    // 2. FULL PLAYER DRAG-DOWN TO MINIMIZE (Works on Video AND below video)
     const touch = e.touches[0];
     const diffY = touch.clientY - startY;
     const diffX = touch.clientX - startX;
@@ -3062,15 +3066,16 @@ function initPlayerDragMinimize() {
     if (!directionLocked) {
       if (Math.abs(diffY) > 8 || Math.abs(diffX) > 8) {
         directionLocked = true;
-        if (diffY > 10 && diffY > Math.abs(diffX) * 1.1) {
-          // If starting from scrollable details, only drag down if at the very top
+        if (diffY > 10 && diffY > Math.abs(diffX) * 1.05) {
           if (isFromDetails) {
+            // Dragging below video: only minimize if scrolled to very top
             if (detailsScroll && detailsScroll.scrollTop <= 2) {
               isDraggingDown = true;
             } else {
               isDraggingDown = false;
             }
           } else {
+            // Dragging directly on the video
             isDraggingDown = true;
           }
         } else {
@@ -3149,11 +3154,21 @@ function initPlayerDragMinimize() {
           modal.style.transformOrigin = '';
         }, 230);
       }
+      return;
+    }
+
+    // 3. SINGLE-TAP ON VIDEO OVERLAY (Toggles Play/Pause)
+    if (isFromVideoOverlay && !directionLocked) {
+      const elapsed = Date.now() - touchStartTime;
+      const movedDist = Math.hypot(e.changedTouches[0].clientX - startX, e.changedTouches[0].clientY - startY);
+      if (elapsed < 320 && movedDist < 14) {
+        toggleMiniPlayPause();
+      }
     }
   }
 
   // Attach touch listeners
-  const touchTargets = [dragHandle, mediaBox, detailsScroll, modal].filter(Boolean);
+  const touchTargets = [dragOverlay, mediaBox, detailsScroll, modal].filter(Boolean);
   touchTargets.forEach(el => {
     el.addEventListener('touchstart', onTouchStart, { passive: true });
     el.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -4243,6 +4258,19 @@ async function loadChannelTab(tab = 'videos') {
   });
 
   if (!container || !video) return;
+
+  // Immediate 0ms Header Rendering from existing video metadata
+  const cName = video.channel || video.title || 'Creator';
+  const cId = video.channel_id || '';
+  if (titleName) titleName.textContent = cName;
+  if (topName) topName.textContent = cName;
+  if (statsLine && (!statsLine.textContent || statsLine.textContent.includes('Official Channel'))) {
+    statsLine.textContent = `@${cName.replace(/\s+/g, '')} • Official Channel`;
+  }
+  if (avatarBigImg && (!avatarBigImg.src || avatarBigImg.src.includes('data:image'))) {
+    avatarBigImg.src = resolveAvatarUrl(video.channel_avatar, cName, cId);
+  }
+
   container.innerHTML = `<div class="spinner-box"><div class="spinner"></div></div>`;
 
   const lookup = video.channel_id || video.channel || '';
@@ -4892,6 +4920,10 @@ function openShortsModal(short) {
 
   modal.style.display = 'block';
   modal.classList.add('open');
+  const isLightTheme = document.body.classList.contains('theme-light') ||
+    (document.body.classList.contains('theme-system') && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+  modal.style.background = isLightTheme ? '#FFFFFF' : '#000000';
+  if (embedContainer) embedContainer.style.background = isLightTheme ? '#FFFFFF' : '#000000';
   syncNativeOverlayFlag();
 
   const cName = currentShort.channel || 'Creator';

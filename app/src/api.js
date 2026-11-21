@@ -65,7 +65,7 @@ export async function request(endpoint, options = {}, retries = 2) {
     const res = await fetch(url, config);
     if (!res.ok) {
       if ((res.status === 502 || res.status === 503 || res.status === 504) && retries > 0) {
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 400));
         return request(endpoint, options, retries - 1);
       }
       let errMessage = `Server error ${res.status}`;
@@ -83,7 +83,7 @@ export async function request(endpoint, options = {}, retries = 2) {
     return res.json();
   } catch (err) {
     if (retries > 0 && (err.name === 'TypeError' || err.message.includes('fetch'))) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 400));
       return request(endpoint, options, retries - 1);
     }
     throw err;
@@ -105,25 +105,72 @@ export function startServerKeepAlive() {
   }, 3 * 60 * 1000);
 }
 
+// High-Speed In-Memory Cache with TTL
+const _apiCache = new Map();
+function getCacheItem(key, maxAgeMs = 300000) {
+  const item = _apiCache.get(key);
+  if (!item) return null;
+  if (Date.now() - item.ts > maxAgeMs) {
+    _apiCache.delete(key);
+    return null;
+  }
+  return item.data;
+}
+function setCacheItem(key, data) {
+  if (_apiCache.size > 200) {
+    const firstKey = _apiCache.keys().next().value;
+    _apiCache.delete(firstKey);
+  }
+  _apiCache.set(key, { data, ts: Date.now() });
+}
+
 export const api = {
   checkHealth() {
     return request('/api/health');
   },
-  getTrending(category = 'all', page = 1, nextToken = '') {
+  async getTrending(category = 'all', page = 1, nextToken = '') {
+    const key = `trend_${category}_${page}_${nextToken}`;
+    if (page === 1 && !nextToken) {
+      const cached = getCacheItem(key, 180000);
+      if (cached) return cached;
+    }
     const p = new URLSearchParams({ category, page: String(page), device_id: getDeviceId() });
     if (nextToken) p.set('next_token', nextToken);
-    return request(`/api/trending?${p.toString()}`);
+    const res = await request(`/api/trending?${p.toString()}`);
+    if (page === 1 && !nextToken && res && res.videos?.length) {
+      setCacheItem(key, res);
+    }
+    return res;
   },
-  search(q, page = 1, nextToken = '') {
+  async search(q, page = 1, nextToken = '') {
+    const key = `search_${(q || '').toLowerCase().trim()}_${page}_${nextToken}`;
+    if (page === 1 && !nextToken) {
+      const cached = getCacheItem(key, 240000);
+      if (cached) return cached;
+    }
     const p = new URLSearchParams({ q, page: String(page) });
     if (nextToken) p.set('next_token', nextToken);
-    return request(`/api/search?${p.toString()}`);
+    const res = await request(`/api/search?${p.toString()}`);
+    if (page === 1 && !nextToken && res && (res.videos?.length || res.channel)) {
+      setCacheItem(key, res);
+    }
+    return res;
   },
-  getVideo(id) {
-    return request(`/api/video/${encodeURIComponent(id)}?device_id=${encodeURIComponent(getDeviceId())}`);
+  async getVideo(id) {
+    const key = `vid_${id}`;
+    const cached = getCacheItem(key, 900000);
+    if (cached) return cached;
+    const res = await request(`/api/video/${encodeURIComponent(id)}?device_id=${encodeURIComponent(getDeviceId())}`);
+    if (res && res.id) setCacheItem(key, res);
+    return res;
   },
-  getChannel(channelId, tab = 'videos', limit = 30) {
-    return request(`/api/channel?id=${encodeURIComponent(channelId)}&tab=${encodeURIComponent(tab)}&limit=${limit}`);
+  async getChannel(channelId, tab = 'videos', limit = 30) {
+    const key = `ch_${(channelId || '').toLowerCase()}_${tab}_${limit}`;
+    const cached = getCacheItem(key, 600000);
+    if (cached) return cached;
+    const res = await request(`/api/channel?id=${encodeURIComponent(channelId)}&tab=${encodeURIComponent(tab)}&limit=${limit}`);
+    if (res && res.title) setCacheItem(key, res);
+    return res;
   },
   resolveUrl(url) {
     return request(`/api/resolve-url?url=${encodeURIComponent(url)}&device_id=${encodeURIComponent(getDeviceId())}`);
