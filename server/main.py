@@ -1081,14 +1081,18 @@ def logout_auth(request: Request, device_id: Optional[str] = None):
 def get_user_personalized_feed(
     request: Request,
     channels: Optional[str] = None,
-    device_id: Optional[str] = None
+    device_id: Optional[str] = None,
+    interests: Optional[str] = None,
+    refresh: Optional[bool] = False,
+    seed: Optional[int] = None
 ):
-    """Fetches this device's subscriptions & personalized videos when authenticated or given followed channels."""
+    """Fetches this device's subscriptions & personalized videos when authenticated or given followed channels/interests."""
     dev_id = extract_device_id(request, device_id)
-    cache_key = f"user_feed_{dev_id}"
-    cached = get_cached(cache_key)
-    if cached and not channels:
-        return cached
+    cache_key = f"user_feed_{dev_id}_{seed if seed and not refresh else 0}"
+    if not refresh and not channels and not interests:
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
 
     cookie_file = get_cookies_file(dev_id)
     clean_results = []
@@ -1191,63 +1195,47 @@ def get_user_personalized_feed(
     extra_channels = []
     if isinstance(channels, str) and channels.strip():
         extra_channels = [c.strip() for c in channels.split(",") if c.strip()][:8]
+    elif subscribed_channels:
+        extra_channels = [c["name"] for c in subscribed_channels[:8]]
 
-    if extra_channels:
-        opts = get_base_ydl_opts(dev_id)
-        opts["extract_flat"] = True
-        opts["playlist_items"] = "1-4"
-        with SafeYoutubeDL(opts) as ydl:
-            for c in extra_channels:
-                try:
-                    clean_c = c if c.startswith("@") or c.startswith("UC") else f"@{c.replace(' ', '')}"
-                    target = f"https://www.youtube.com/{clean_c}/videos"
-                    res = ydl.extract_info(target, download=False)
-                    entries = res.get("entries", []) if res else []
-                    for item in entries[:3]:
-                        if not item:
-                            continue
-                        v_id = item.get("id")
-                        if not v_id or v_id in seen_ids:
-                            continue
-                        seen_ids.add(v_id)
-                        dur = item.get("duration") or 0
-                        thumbs = item.get("thumbnails") or []
-                        thumbnail = thumbs[-1]["url"] if thumbs else f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg"
-                        c_name = item.get("uploader") or item.get("channel") or c
-                        c_id = item.get("channel_id") or ""
-                        avatar = resolve_channel_avatar(c_id, c_name)
+    if extra_channels and len(clean_results) < 20:
+        for c in extra_channels[:5]:
+            try:
+                clean_c = c if c.startswith("@") or c.startswith("UC") else f"@{c.replace(' ', '')}"
+                paged_ch = innertube_search_paged(query=f"{clean_c} videos", limit=5, only_shorts=False)
+                for item in paged_ch.get("videos", []):
+                    v_id = item.get("id")
+                    if not v_id or v_id in seen_ids:
+                        continue
+                    seen_ids.add(v_id)
+                    clean_results.append(item)
+            except Exception:
+                continue
 
-                        if c_name and c_name not in seen_channels and c_id not in seen_channels:
-                            if c_name: seen_channels.add(c_name)
-                            if c_id: seen_channels.add(c_id)
-                            subscribed_channels.append({
-                                "id": c_id,
-                                "name": c_name,
-                                "avatar": avatar
-                            })
-
-                        clean_results.append({
-                            "id": v_id,
-                            "title": item.get("title") or "Untitled",
-                            "channel": c_name,
-                            "channel_id": c_id,
-                            "channel_avatar": avatar,
-                            "duration": dur,
-                            "duration_string": str(item.get("duration_string") or ""),
-                            "view_count": item.get("view_count") or 0,
-                            "thumbnail": thumbnail,
-                            "url": f"https://www.youtube.com/watch?v={v_id}"
-                        })
-                except Exception:
-                    continue
+    # 3. Dynamic watch history / interest topics candidate generation
+    interest_list = [x.strip() for x in (interests or "").split(",") if len(x.strip()) > 1]
+    if interest_list and len(clean_results) < 25:
+        rng = random.Random(seed if seed is not None else int(time.time()))
+        chosen_kws = rng.sample(interest_list, min(2, len(interest_list)))
+        for kw in chosen_kws:
+            try:
+                paged_int = innertube_search_paged(query=kw, limit=10, only_shorts=False)
+                for item in paged_int.get("videos", []):
+                    v_id = item.get("id")
+                    if not v_id or v_id in seen_ids:
+                        continue
+                    seen_ids.add(v_id)
+                    clean_results.append(item)
+            except Exception:
+                continue
 
     out = {
         "authenticated": bool(cookie_file),
         "videos": clean_results,
         "subscribed_channels": subscribed_channels
     }
-    if clean_results and not channels:
-        set_cached(cache_key, out, ttl=300)
+    if clean_results and not channels and not refresh:
+        set_cached(cache_key, out, ttl=120)
     return out
 
 class SubscribePayload(BaseModel):
@@ -2119,21 +2107,56 @@ def stream_video_proxy(
 
 TRENDING_TOPIC_POOLS = {
     "all": [
-        "popular trending videos today",
-        "viral videos around the world",
+        "popular trending videos youtube",
+        "viral youtube videos today",
+        "popular creators new videos",
         "featured documentaries science space",
-        "top music entertainment highlights",
+        "top music entertainment trending hits",
         "trending tech gadgets review",
-        "best gaming moments esports",
-        "amazing talent performances",
-        "world cinema trailers 4k",
+        "best gaming moments gameplay highlights",
+        "amazing talent performances viral",
+        "world cinema trailers official 4k",
+        "interesting explainers knowledge facts",
+        "comedy sketches viral clips"
     ],
-    "music": ["official music video top hits", "trending songs billboard", "live concert performance", "indie chill lofi mix", "bollywood punjabi latest hits"],
-    "gaming": ["popular gaming gameplay", "esports tournament highlights", "open world rpg walkthrough", "indie games spotlight", "minecraft valorant best moments"],
-    "tech": ["latest tech reviews gadgets", "smartphone camera comparison", "ai hardware innovations", "pc build setup tour"],
-    "news": ["world news headlines today", "science discoveries space news", "global economy briefing", "sports breaking highlights"],
-    "podcasts": ["trending podcasts interview", "creator podcast full episode", "tech startup founder interview", "comedy podcast clips"],
-    "unwatched": ["top viral videos", "must watch short documentaries", "hidden gem educational videos", "creative filmmaking showcase"],
+    "music": [
+        "official music video top hits billboard",
+        "trending songs new release hits",
+        "live concert acoustic performance",
+        "indie chill lofi beats to relax",
+        "global top 50 music hits"
+    ],
+    "gaming": [
+        "popular gaming gameplay",
+        "esports tournament highlights",
+        "open world rpg gameplay walkthrough",
+        "indie games spotlight trending",
+        "minecraft valorant best moments"
+    ],
+    "tech": [
+        "latest tech gadgets review",
+        "smartphone review unboxing",
+        "ai innovations future tech",
+        "pc gaming setup desk tour"
+    ],
+    "news": [
+        "world news headlines today",
+        "science discoveries space exploration",
+        "global economy tech briefing",
+        "breaking sports highlights today"
+    ],
+    "podcasts": [
+        "trending podcasts full interview",
+        "creator podcast highlights clips",
+        "founder interview tech deep dive",
+        "comedy podcast best moments"
+    ],
+    "unwatched": [
+        "top viral videos",
+        "must watch short documentaries",
+        "hidden gem educational videos",
+        "creative filmmaking showcase"
+    ],
     "live": ["live stream now", "live music radio stream", "live gaming stream"],
 }
 
@@ -2153,14 +2176,18 @@ def get_trending(
     category: str = Query("all", description="all, shorts, music, gaming, tech, news, podcasts"),
     page: int = Query(1, description="Page number for continuous infinite feed"),
     next_token: Optional[str] = Query(None, description="Innertube continuation token"),
-    device_id: Optional[str] = Query(None)
+    device_id: Optional[str] = Query(None),
+    refresh: Optional[bool] = Query(False, description="Force fresh bypass cache on pull-to-refresh"),
+    seed: Optional[int] = Query(None, description="Randomization seed for refresh variations"),
+    interests: Optional[str] = Query(None, description="Comma-separated interest keywords / topics"),
+    channels: Optional[str] = Query(None, description="Comma-separated subscribed channel names/ids")
 ):
     cat = category.lower()
     dev_id = extract_device_id(request, device_id)
 
     # If authenticated device requests Home feed (page 1), automatically serve their authentic personalized feed!
     if cat == "all" and page == 1 and not next_token and get_cookies_file(dev_id):
-        user_feed = get_user_personalized_feed(request, device_id=dev_id)
+        user_feed = get_user_personalized_feed(request, device_id=dev_id, refresh=refresh, seed=seed)
         if user_feed and user_feed.get("videos"):
             return {
                 "category": category,
@@ -2170,11 +2197,11 @@ def get_trending(
             }
 
     if cat == "shorts":
-        res = get_shorts_feed(page=page, next_token=next_token)
+        res = get_shorts_feed(page=page, next_token=next_token, interests=interests, seed=str(seed) if seed else None)
         return {"category": category, "page": page, "next_token": res.get("next_token"), "videos": res.get("shorts", [])}
 
-    cache_key = f"trending_{cat}_{page}_{hash(next_token) if next_token else 0}"
-    if not next_token:
+    cache_key = f"trending_{cat}_{page}_{hash(next_token) if next_token else 0}_{seed if seed and not refresh else 0}"
+    if not next_token and not refresh:
         cached = get_cached(cache_key)
         if cached:
             return cached
@@ -2187,23 +2214,90 @@ def get_trending(
             paged = innertube_search_paged(limit=25, only_shorts=False, continuation=next_token)
             clean_results = paged.get("videos", [])
             out_token = paged.get("next_token")
+        else:
+            # Multi-Candidate YouTube Recommendation Engine for Page 1 / Dynamic Refresh
+            affinity_videos: List[Dict[str, Any]] = []
+            channel_videos: List[Dict[str, Any]] = []
+            trending_videos: List[Dict[str, Any]] = []
+            seen_ids = set()
 
-        if len(clean_results) < 8:
-            topics = TRENDING_TOPIC_POOLS.get(cat, [f"trending {cat} videos", f"popular {cat} showcase", f"best {cat} highlights"])
-            q = topics[(max(1, page) - 1) % len(topics)]
-            paged = innertube_search_paged(query=q, limit=25, only_shorts=False)
-            existing = {v["id"] for v in clean_results}
-            for v in paged.get("videos", []):
-                if v["id"] not in existing:
-                    clean_results.append(v)
-                    existing.add(v["id"])
-            if paged.get("next_token"):
-                out_token = paged.get("next_token")
+            # 1. Candidate Pool: User Watch History & Interests Affinity
+            interest_list = [x.strip() for x in (interests or "").split(",") if len(x.strip()) > 1]
+            if interest_list and cat == "all":
+                rng = random.Random(seed if seed is not None else int(time.time()))
+                chosen_kw = rng.choice(interest_list[:6])
+                try:
+                    paged_int = innertube_search_paged(query=chosen_kw, limit=12, only_shorts=False)
+                    for v in paged_int.get("videos", []):
+                        if v["id"] not in seen_ids:
+                            seen_ids.add(v["id"])
+                            affinity_videos.append(v)
+                except Exception as e_int:
+                    logger.warning(f"Affinity candidates retrieval warning: {e_int}")
+
+            # 2. Candidate Pool: Subscribed & Followed Channels
+            channel_list = [x.strip() for x in (channels or "").split(",") if len(x.strip()) > 1]
+            if channel_list and cat == "all":
+                rng = random.Random(seed if seed is not None else int(time.time()))
+                sample_channels = rng.sample(channel_list, min(3, len(channel_list)))
+                for ch in sample_channels:
+                    try:
+                        clean_ch = ch if ch.startswith("@") or ch.startswith("UC") else f"@{ch.replace(' ', '')}"
+                        paged_ch = innertube_search_paged(query=f"{clean_ch} videos", limit=4, only_shorts=False)
+                        for v in paged_ch.get("videos", []):
+                            if v["id"] not in seen_ids:
+                                seen_ids.add(v["id"])
+                                channel_videos.append(v)
+                    except Exception as e_ch:
+                        logger.warning(f"Channel candidates retrieval warning for {ch}: {e_ch}")
+
+            # 3. Candidate Pool: Dynamic Discovery & Trending Topics
+            topics = TRENDING_TOPIC_POOLS.get(cat, [f"trending {cat} videos", f"popular {cat} showcase"])
+            if refresh or seed or cat == "all":
+                seed_val = seed if seed is not None else int(time.time() * 1000)
+                rng = random.Random(seed_val)
+                # Sample 2 distinct topic seeds so every pull-to-refresh is fresh!
+                chosen_topics = rng.sample(topics, min(2, len(topics)))
+            else:
+                idx = (max(1, page) - 1) % len(topics)
+                chosen_topics = [topics[idx]]
+
+            for t_query in chosen_topics:
+                try:
+                    paged_tr = innertube_search_paged(query=t_query, limit=20, only_shorts=False)
+                    if not out_token and paged_tr.get("next_token"):
+                        out_token = paged_tr.get("next_token")
+                    for v in paged_tr.get("videos", []):
+                        if v["id"] not in seen_ids:
+                            seen_ids.add(v["id"])
+                            trending_videos.append(v)
+                except Exception as e_tr:
+                    logger.warning(f"Trending topic candidate error for {t_query}: {e_tr}")
+
+            # 4. YouTube Weighted Interleaving (Affinity -> Channel -> Trending Discovery)
+            interleaved: List[Dict[str, Any]] = []
+            a_idx = 0
+            c_idx = 0
+            t_idx = 0
+            total_items = len(affinity_videos) + len(channel_videos) + len(trending_videos)
+
+            while len(interleaved) < min(35, total_items) and (a_idx < len(affinity_videos) or c_idx < len(channel_videos) or t_idx < len(trending_videos)):
+                if a_idx < len(affinity_videos):
+                    interleaved.append(affinity_videos[a_idx])
+                    a_idx += 1
+                if c_idx < len(channel_videos):
+                    interleaved.append(channel_videos[c_idx])
+                    c_idx += 1
+                if t_idx < len(trending_videos):
+                    interleaved.append(trending_videos[t_idx])
+                    t_idx += 1
+
+            clean_results = interleaved if interleaved else trending_videos
 
         filtered_results = _filter_feed_spam(clean_results)
         result = {"category": category, "page": page, "next_token": out_token, "videos": filtered_results}
-        if not next_token and filtered_results:
-            set_cached(cache_key, result, ttl=240)
+        if not next_token and filtered_results and not refresh:
+            set_cached(cache_key, result, ttl=90)
         return result
     except Exception as e:
         logger.error(f"Error fetching trending: {e}")

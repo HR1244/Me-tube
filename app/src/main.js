@@ -477,26 +477,39 @@ function saveToWatchHistory(video) {
   } catch (e) {}
 }
 
-function getRecentInterestKeywords() {
+function getRecentUserAffinity() {
   const history = getWatchHistory();
-  if (history.length === 0) return null;
-  const keywords = [];
-  const recent = history.slice(0, 10);
-  for (const item of recent) {
-    if (item.channel && item.channel !== 'Creator' && item.channel !== 'Unknown Channel') {
-      keywords.push(item.channel);
+  const channels = [];
+  const topics = [];
+  const seenC = new Set();
+  const seenT = new Set();
+
+  for (const item of history.slice(0, 15)) {
+    if (item.channel && item.channel !== 'Creator' && item.channel !== 'Unknown Channel' && !seenC.has(item.channel)) {
+      seenC.add(item.channel);
+      channels.push(item.channel);
     }
     if (item.title) {
       const words = item.title
-        .replace(/[^\w\s]/gi, '')
+        .replace(/[^\w\s]/gi, ' ')
         .split(/\s+/)
-        .filter((w) => w.length > 3 && !['official', 'video', 'full', 'song', 'music', 'best', '2025', '2026', 'trending', 'shorts'].includes(w.toLowerCase()));
+        .filter((w) => w.length > 3 && !['official', 'video', 'full', 'song', 'music', 'best', '2024', '2025', '2026', 'trending', 'shorts', 'hindi', 'english', 'reaction'].includes(w.toLowerCase()));
       if (words.length > 0) {
-        keywords.push(words.slice(0, 2).join(' '));
+        const topic = words.slice(0, 2).join(' ');
+        if (!seenT.has(topic.toLowerCase())) {
+          seenT.add(topic.toLowerCase());
+          topics.push(topic);
+        }
       }
     }
   }
-  return keywords.length > 0 ? keywords[Math.floor(Math.random() * Math.min(keywords.length, 6))] : null;
+  return { channels, topics };
+}
+
+function getRecentInterestKeywords() {
+  const aff = getRecentUserAffinity();
+  const all = [...aff.channels, ...aff.topics];
+  return all.length > 0 ? all[Math.floor(Math.random() * Math.min(all.length, 6))] : null;
 }
 
 // =========================================================
@@ -597,15 +610,25 @@ function initNavigation() {
   // Bottom Tab Buttons
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
-      switchTab(btn.dataset.tab);
+      const target = btn.dataset.tab;
+      if (target === 'home' && state.activeTab === 'home') {
+        const vp = document.getElementById('content-viewport');
+        if (vp && vp.scrollTop > 50) {
+          vp.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          loadFeed(state.activeCategory || 'all', { refresh: true, forceRefresh: true });
+        }
+        return;
+      }
+      switchTab(target);
     });
   });
 
-  // Header Brand Logo click goes to Home
+  // Header Brand Logo click goes to Home & refreshes feed
   document.getElementById('brand-home-btn')?.addEventListener('click', () => {
     switchTab('home');
     state.searchQuery = '';
-    loadFeed('all');
+    loadFeed('all', { refresh: true, forceRefresh: true });
   });
 
   // Header Notifications shortcut: Open authentic notifications modal & clear badge dot
@@ -984,12 +1007,21 @@ function selectCategory(category) {
 }
 
 // =========================================================
-// 4. FEED RENDERING (CLEAN SPINNER ONLY, NO TEXT!)
+// 4. FEED RENDERING (YOUTUBE MULTI-CANDIDATE ALGORITHM & REFRESH)
 // =========================================================
-async function loadFeed(category = 'all') {
+let homeFeedRefreshCounter = 0;
+const sessionSeenFeedVideoIds = new Set();
+
+async function loadFeed(category = 'all', options = {}) {
+  const isRefresh = Boolean(options.refresh || options.forceRefresh);
   if (state.isLoadingFeed) return;
   if (state.searchQuery) return; // Do not overwrite active search results!
   state.isLoadingFeed = true;
+
+  if (isRefresh) {
+    homeFeedRefreshCounter++;
+    api.clearFeedCache?.();
+  }
 
   const thisFeedToken = ++currentFeedSessionToken;
   state.activeFeedSessionToken = thisFeedToken;
@@ -1005,10 +1037,10 @@ async function loadFeed(category = 'all') {
   state.hasMore = true;
   state.isLoadingMore = false;
 
-  // 1. Instant Cache-First (0ms Render on App Open & Category Switch)
+  // 1. Instant Cache-First: ONLY on initial cold boot, NEVER on pull-to-refresh
   const cacheKey = `metube_feed_cache_${category}`;
   let hadCache = false;
-  if (!state.searchQuery) {
+  if (!isRefresh && !state.searchQuery) {
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1033,59 +1065,44 @@ async function loadFeed(category = 'all') {
   }
 
   try {
-    // 1. Authenticated User Personalized Feed: Subscriptions & Watch History
+    const affinity = getRecentUserAffinity();
+    const subList = getSubscriptions().map(s => s.name || s.id).filter(Boolean);
+    const seed = Date.now() + homeFeedRefreshCounter * 9973;
+
+    // Rotate affinity topic based on refresh counter so every refresh brings new topics!
+    const activeTopic = affinity.topics.length > 0 ? affinity.topics[homeFeedRefreshCounter % affinity.topics.length] : null;
+    const activeChannel = affinity.channels.length > 0 ? affinity.channels[homeFeedRefreshCounter % affinity.channels.length] : null;
+    const interestTerms = [activeChannel, activeTopic, ...affinity.topics.slice(0, 3)].filter(Boolean).join(',');
+
+    // 1. Candidate Source: Authenticated / Personalized Subscriptions Feed
     const hasAccount = Boolean(localStorage.getItem('metube_account_name')) || Boolean(localStorage.getItem('metube_user_authenticated'));
     const userFeedPromise = (hasAccount || category === 'all' || category === 'subs')
-      ? api.getUserFeed().catch(() => null)
+      ? api.getUserFeed({
+          channels: subList.slice(0, 8).join(','),
+          interests: interestTerms,
+          refresh: isRefresh,
+          seed
+        }).catch(() => null)
       : Promise.resolve(null);
 
-    // 2. Watch-History-Driven Dynamic Personalization:
-    // If on "all" category, personalize using recent watch interests!
-    const interestKw = (category === 'all' && !state.searchQuery) ? getRecentInterestKeywords() : null;
+    // 2. Candidate Source: Trending & Discovery with Interest and Seed Rotation
+    const trendingPromise = api.getTrending(category, 1, '', {
+      refresh: isRefresh,
+      seed,
+      interests: interestTerms,
+      channels: subList.slice(0, 5).join(',')
+    }).catch(() => ({ videos: [] }));
 
-    let trendingPromise;
-    if (interestKw) {
-      trendingPromise = Promise.all([
-        api.search(interestKw, 1).catch(() => ({ videos: [] })),
-        api.getTrending(category, 1).catch(() => ({ videos: [] }))
-      ]).then(([searchRes, trendRes]) => {
-        const searchVids = (searchRes && searchRes.videos) || [];
-        const trendVids = (trendRes && trendRes.videos) || [];
-        const seen = new Set();
-        const merged = [];
-        let s = 0, t = 0;
-        while ((s < searchVids.length || t < trendVids.length) && merged.length < 30) {
-          if (s < searchVids.length) {
-            if (!seen.has(searchVids[s].id)) {
-              seen.add(searchVids[s].id);
-              merged.push(searchVids[s]);
-            }
-            s++;
-          }
-          if (t < trendVids.length) {
-            if (!seen.has(trendVids[t].id)) {
-              seen.add(trendVids[t].id);
-              merged.push(trendVids[t]);
-            }
-            t++;
-          }
-        }
-        return {
-          videos: merged.length > 0 ? merged : trendVids,
-          next_token: (trendRes && trendRes.next_token) || (searchRes && searchRes.next_token) || ''
-        };
-      }).catch(() => api.getTrending(category, 1));
-    } else {
-      trendingPromise = api.getTrending(category, 1);
-    }
+    // 3. Candidate Source: Shorts Carousel
+    const shortsPromise = (category === 'all' || category === 'shorts')
+      ? api.getShorts(1, { interests: interestTerms, seed, refresh: isRefresh })
+          .catch(() => api.getTrending('shorts', 1, '', { refresh: isRefresh, seed }).catch(() => ({ videos: [] })))
+      : Promise.resolve({ videos: [] });
 
-    const [trendingRes, shortsRes, userFeedRes] = await Promise.all([
+    const [userFeedRes, trendingRes, shortsRes] = await Promise.all([
+      userFeedPromise,
       trendingPromise,
-      category === 'all' || category === 'shorts'
-        ? api.getShorts(1, { interests: interestKw || '', seed: Date.now() })
-            .catch(() => api.getTrending('shorts', 1).catch(() => ({ videos: [] })))
-        : Promise.resolve({ videos: [] }),
-      userFeedPromise
+      shortsPromise
     ]);
 
     // Check if feed was superseded by search or a newer category request
@@ -1094,12 +1111,24 @@ async function loadFeed(category = 'all') {
       return;
     }
 
-    let finalVideos = [];
+    const userVideos = (userFeedRes && userFeedRes.videos) || [];
+    const trendVideos = (trendingRes && trendingRes.videos) || [];
     const seen = new Set();
+    const finalVideos = [];
 
-    // Prioritize authentic personalized feed videos (user's real YouTube account subscriptions & recommendations)
-    if (userFeedRes && userFeedRes.videos && userFeedRes.videos.length > 0) {
-      for (const v of userFeedRes.videos) {
+    // YouTube-Authentic Weighted Interleaving:
+    // Alternate User Affinity / Subscribed channels with fresh Trending Discovery
+    let u = 0, t = 0;
+    while ((u < userVideos.length || t < trendVideos.length) && finalVideos.length < 35) {
+      if (u < userVideos.length) {
+        const v = userVideos[u++];
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          finalVideos.push(v);
+        }
+      }
+      if (t < trendVideos.length) {
+        const v = trendVideos[t++];
         if (!seen.has(v.id)) {
           seen.add(v.id);
           finalVideos.push(v);
@@ -1107,25 +1136,20 @@ async function loadFeed(category = 'all') {
       }
     }
 
-    // Blend with trending/general recommendations
-    const genericVideos = (trendingRes && trendingRes.videos) || [];
-    for (const v of genericVideos) {
-      if (!seen.has(v.id) && finalVideos.length < 40) {
-        seen.add(v.id);
-        finalVideos.push(v);
-      }
-    }
-
+    const fallbackVideos = finalVideos.length > 0 ? finalVideos : trendVideos;
     if (state.searchQuery || state.activeFeedSessionToken !== thisFeedToken) {
       state.isLoadingFeed = false;
       return;
     }
 
-    state.videos = finalVideos.length > 0 ? finalVideos : genericVideos;
+    state.videos = fallbackVideos;
     state.feedNextToken = (trendingRes && trendingRes.next_token) || '';
     state.shorts = (shortsRes && (shortsRes.shorts || shortsRes.videos)) || [];
 
-    // Save to instant startup cache
+    // Remember seen videos for session
+    state.videos.forEach(v => sessionSeenFeedVideoIds.add(v.id));
+
+    // Update localStorage cache with the fresh feed
     if (!state.searchQuery && state.videos.length > 0) {
       try {
         localStorage.setItem(cacheKey, JSON.stringify({ videos: state.videos, shorts: state.shorts }));
@@ -1142,7 +1166,7 @@ async function loadFeed(category = 'all') {
         <button id="btn-retry-feed" style="background:var(--metube-red); color:#FFF; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer;">Retry</button>
       </div>
     `;
-    document.getElementById('btn-retry-feed')?.addEventListener('click', () => loadFeed(category));
+    document.getElementById('btn-retry-feed')?.addEventListener('click', () => loadFeed(category, { refresh: true }));
   } finally {
     if (state.activeFeedSessionToken === thisFeedToken) {
       state.isLoadingFeed = false;
@@ -6165,9 +6189,9 @@ function initPullToRefresh() {
 
     try {
       if (state.activeTab === 'home') {
-        await loadFeed(state.activeCategory || 'all');
+        await loadFeed(state.activeCategory || 'all', { refresh: true, forceRefresh: true });
       } else if (state.activeTab === 'subscriptions') {
-        await loadPersonalizedSubscriptionsFeed();
+        await loadPersonalizedSubscriptionsFeed({ refresh: true });
       } else if (state.activeTab === 'history') {
         loadHistoryView();
       }

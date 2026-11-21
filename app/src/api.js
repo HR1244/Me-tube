@@ -107,6 +107,18 @@ export function startServerKeepAlive() {
 
 // High-Speed In-Memory Cache with TTL
 const _apiCache = new Map();
+export function clearApiCache(prefix = '') {
+  if (!prefix) {
+    _apiCache.clear();
+    return;
+  }
+  for (const k of Array.from(_apiCache.keys())) {
+    if (k.startsWith(prefix)) {
+      _apiCache.delete(k);
+    }
+  }
+}
+
 function getCacheItem(key, maxAgeMs = 300000) {
   const item = _apiCache.get(key);
   if (!item) return null;
@@ -125,19 +137,29 @@ function setCacheItem(key, data) {
 }
 
 export const api = {
+  clearFeedCache() {
+    clearApiCache('trend_');
+    clearApiCache('user_feed_');
+    clearApiCache('shorts_');
+  },
   checkHealth() {
     return request('/api/health');
   },
-  async getTrending(category = 'all', page = 1, nextToken = '') {
+  async getTrending(category = 'all', page = 1, nextToken = '', options = {}) {
+    const isRefresh = Boolean(options.refresh || options.forceRefresh);
     const key = `trend_${category}_${page}_${nextToken}`;
-    if (page === 1 && !nextToken) {
-      const cached = getCacheItem(key, 180000);
+    if (!isRefresh && page === 1 && !nextToken) {
+      const cached = getCacheItem(key, 90000);
       if (cached) return cached;
     }
     const p = new URLSearchParams({ category, page: String(page), device_id: getDeviceId() });
     if (nextToken) p.set('next_token', nextToken);
+    if (isRefresh) p.set('refresh', '1');
+    if (options.seed) p.set('seed', String(options.seed));
+    if (options.interests) p.set('interests', options.interests);
+    if (options.channels) p.set('channels', options.channels);
     const res = await request(`/api/trending?${p.toString()}`);
-    if (page === 1 && !nextToken && res && res.videos?.length) {
+    if (!isRefresh && page === 1 && !nextToken && res && res.videos?.length) {
       setCacheItem(key, res);
     }
     return res;
@@ -253,9 +275,19 @@ export const api = {
   logout() {
     return request(`/api/auth/logout?device_id=${encodeURIComponent(getDeviceId())}`, { method: 'POST' });
   },
-  getUserFeed(channels = '') {
+  getUserFeed(channels = '', options = {}) {
+    let opts = options;
+    let chs = channels;
+    if (typeof channels === 'object' && channels !== null) {
+      opts = channels;
+      chs = opts.channels || '';
+    }
+    const isRefresh = Boolean(opts.refresh || opts.forceRefresh);
     const p = new URLSearchParams({ device_id: getDeviceId() });
-    if (channels) p.set('channels', channels);
+    if (chs) p.set('channels', chs);
+    if (opts.interests) p.set('interests', opts.interests);
+    if (isRefresh) p.set('refresh', '1');
+    if (opts.seed) p.set('seed', String(opts.seed));
     return request(`/api/user/feed?${p.toString()}`);
   },
   subscribe(channelId, channelName = '') {
