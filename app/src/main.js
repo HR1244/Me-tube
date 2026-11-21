@@ -1700,9 +1700,21 @@ export function minimizeToMiniPlayer() {
   setFullscreenLandscape(false);
   if (!modal || !state.activeVideo) return;
 
-  // Float seamlessly to bottom-right corner matching authentic YouTube
+  // Reset any drag inline styles and animate cleanly to floating miniplayer
+  modal.style.transition = 'all 0.28s cubic-bezier(0.2, 0.9, 0.2, 1)';
+  modal.style.transform = '';
+  modal.style.transformOrigin = '';
+  modal.style.borderRadius = '';
+  modal.style.opacity = '';
+
   modal.classList.add('mini-floating');
   modal.classList.add('open');
+
+  setTimeout(() => {
+    if (modal && modal.classList.contains('mini-floating')) {
+      modal.style.transition = '';
+    }
+  }, 300);
 
   const videoElem = document.getElementById('html5-video-element');
   const playing = state.playbackEngine === 'native' && videoElem ? !videoElem.paused : (!isMiniPaused && !isUserPaused);
@@ -1714,8 +1726,18 @@ export function minimizeToMiniPlayer() {
 export function expandFromMiniPlayer() {
   const modal = document.getElementById('player-modal');
   if (!modal) return;
+  modal.style.transition = 'all 0.28s cubic-bezier(0.2, 0.9, 0.2, 1)';
+  modal.style.transform = '';
+  modal.style.transformOrigin = '';
+  modal.style.borderRadius = '';
+  modal.style.opacity = '';
   modal.classList.remove('mini-floating');
   modal.classList.add('open');
+  setTimeout(() => {
+    if (modal && !modal.classList.contains('mini-floating')) {
+      modal.style.transition = '';
+    }
+  }, 300);
   syncNativeOverlayFlag();
 }
 
@@ -2327,7 +2349,6 @@ async function openVideoPlayer(video) {
   const modal = document.getElementById('player-modal');
   const titleElem = document.getElementById('player-video-title');
   const overlayTitleElem = document.getElementById('st-overlay-title');
-  const topbarTitleElem = document.getElementById('player-topbar-title');
   const viewsElem = document.getElementById('player-video-views');
   const channelNameElem = document.getElementById('player-channel-name');
   const channelAvatarImg = document.getElementById('player-channel-avatar-img');
@@ -2338,13 +2359,17 @@ async function openVideoPlayer(video) {
 
   if (modal) {
     modal.classList.remove('mini-floating');
+    modal.style.transition = '';
+    modal.style.transform = '';
+    modal.style.transformOrigin = '';
+    modal.style.borderRadius = '';
+    modal.style.opacity = '';
     modal.style.display = 'flex';
     modal.classList.add('open');
   }
   const safeTitle = video.title || 'Playing Video';
   if (titleElem) titleElem.textContent = safeTitle;
   if (overlayTitleElem) overlayTitleElem.textContent = safeTitle;
-  if (topbarTitleElem) topbarTitleElem.textContent = safeTitle;
   if (viewsElem) viewsElem.textContent = video.isExternal ? (video.channel || 'Universal Link Media') : formatViews(video.view_count);
 
   const commentCountElem = document.getElementById('player-comments-count');
@@ -2593,7 +2618,6 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
   const spinner = document.getElementById('player-video-spinner');
   const engineLabel = document.getElementById('engine-toggle-label');
   const customOverlay = document.getElementById('player-custom-overlay');
-  const legacyTopbar = document.getElementById('player-legacy-topbar');
 
   if (nativeBufferWatchdog) {
     clearTimeout(nativeBufferWatchdog);
@@ -2606,7 +2630,6 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     if (engineLabel) engineLabel.innerHTML = `${ICONS.youtube} <span>YouTube</span>`;
     if (spinner) spinner.style.display = 'none';
     if (customOverlay) customOverlay.style.display = 'none';
-    if (legacyTopbar) legacyTopbar.style.display = 'flex';
 
     ytIsPlaying = true;
     ytCurrentTimeSec = seekSeconds || 0;
@@ -2642,7 +2665,6 @@ function setupPlayerPlayback(video, seekSeconds = 0) {
     stopAllPlayback('main-native');
     if (engineLabel) engineLabel.innerHTML = `${ICONS.video} <span>Native</span>`;
     if (spinner) spinner.style.display = 'flex';
-    if (legacyTopbar) legacyTopbar.style.display = 'none';
     if (customOverlay) {
       customOverlay.style.display = 'flex';
       scheduleOverlayAutoHide();
@@ -2958,6 +2980,188 @@ function renderSuggestedVideos(videos) {
   });
 }
 
+let suppressMiniClick = false;
+
+function initPlayerDragMinimize() {
+  const modal = document.getElementById('player-modal');
+  const dragHandle = document.getElementById('player-drag-handle-zone');
+  const mediaBox = document.getElementById('player-media-box');
+  const detailsScroll = document.querySelector('.player-details-scroll');
+  if (!modal) return;
+
+  let startY = 0;
+  let startX = 0;
+  let isDraggingDown = false;
+  let directionLocked = false;
+  let isFromDetails = false;
+
+  let miniStartX = 0;
+  let miniStartY = 0;
+  let isMiniSwiping = false;
+  let miniSwipeLocked = false;
+
+  function onTouchStart(e) {
+    if (!modal.classList.contains('open')) return;
+
+    if (modal.classList.contains('mini-floating')) {
+      const touch = e.touches[0];
+      miniStartX = touch.clientX;
+      miniStartY = touch.clientY;
+      isMiniSwiping = false;
+      miniSwipeLocked = false;
+      return;
+    }
+
+    if (state.fullscreenLandscape) return;
+
+    const touch = e.touches[0];
+    startY = touch.clientY;
+    startX = touch.clientX;
+    isDraggingDown = false;
+    directionLocked = false;
+
+    // Check if touch originates inside detailsScroll
+    isFromDetails = Boolean(detailsScroll && (detailsScroll === e.target || detailsScroll.contains(e.target)));
+  }
+
+  function onTouchMove(e) {
+    if (!modal.classList.contains('open')) return;
+
+    // 1. MINI-PLAYER SWIPE-TO-DISMISS
+    if (modal.classList.contains('mini-floating')) {
+      const touch = e.touches[0];
+      const diffX = touch.clientX - miniStartX;
+      const diffY = touch.clientY - miniStartY;
+
+      if (!miniSwipeLocked) {
+        if (Math.abs(diffX) > 8 || Math.abs(diffY) > 8) {
+          miniSwipeLocked = true;
+          if (diffX > 8 && diffX > Math.abs(diffY) * 1.1) {
+            isMiniSwiping = true;
+            suppressMiniClick = true;
+          }
+        }
+      }
+
+      if (isMiniSwiping && diffX > 0) {
+        if (e.cancelable) e.preventDefault();
+        modal.style.transition = 'none';
+        modal.style.transform = `translateX(${diffX}px)`;
+        modal.style.opacity = `${Math.max(0.15, 1 - diffX / 190)}`;
+      }
+      return;
+    }
+
+    if (state.fullscreenLandscape) return;
+
+    // 2. FULL PLAYER DRAG-DOWN TO MINIMIZE
+    const touch = e.touches[0];
+    const diffY = touch.clientY - startY;
+    const diffX = touch.clientX - startX;
+
+    if (!directionLocked) {
+      if (Math.abs(diffY) > 8 || Math.abs(diffX) > 8) {
+        directionLocked = true;
+        if (diffY > 10 && diffY > Math.abs(diffX) * 1.1) {
+          // If starting from scrollable details, only drag down if at the very top
+          if (isFromDetails) {
+            if (detailsScroll && detailsScroll.scrollTop <= 2) {
+              isDraggingDown = true;
+            } else {
+              isDraggingDown = false;
+            }
+          } else {
+            isDraggingDown = true;
+          }
+        } else {
+          isDraggingDown = false;
+        }
+      }
+    }
+
+    if (isDraggingDown && diffY > 0) {
+      if (e.cancelable) e.preventDefault();
+      const windowH = window.innerHeight || 800;
+      const progress = Math.min(Math.max(diffY / (windowH * 0.45), 0), 1);
+      const scale = 1 - progress * 0.35;
+      const translateX = progress * (window.innerWidth * 0.2);
+      const translateY = diffY;
+      const borderRadius = Math.round(progress * 14);
+
+      modal.style.transition = 'none';
+      modal.style.transformOrigin = 'bottom right';
+      modal.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
+      modal.style.borderRadius = `${borderRadius}px`;
+    }
+  }
+
+  function onTouchEnd(e) {
+    // 1. MINI-PLAYER SWIPE-TO-DISMISS END
+    if (modal.classList.contains('mini-floating')) {
+      if (isMiniSwiping) {
+        isMiniSwiping = false;
+        const diffX = e.changedTouches[0].clientX - miniStartX;
+        if (diffX > 60) {
+          modal.style.transition = 'transform 0.22s ease-out, opacity 0.22s ease-out';
+          modal.style.transform = 'translateX(130%)';
+          modal.style.opacity = '0';
+          setTimeout(() => {
+            stopAllPlayback();
+            hideMiniPlayer();
+            modal.classList.remove('open');
+            modal.style.transition = '';
+            modal.style.transform = '';
+            modal.style.opacity = '';
+            syncNativeOverlayFlag();
+            setTimeout(() => { suppressMiniClick = false; }, 100);
+          }, 230);
+          return;
+        } else {
+          modal.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.9, 0.2, 1), opacity 0.22s ease';
+          modal.style.transform = 'translateY(0) scale(1)';
+          modal.style.opacity = '1';
+          setTimeout(() => {
+            modal.style.transition = '';
+            suppressMiniClick = false;
+          }, 230);
+          return;
+        }
+      }
+      return;
+    }
+
+    // 2. FULL PLAYER DRAG-DOWN END
+    if (isDraggingDown) {
+      isDraggingDown = false;
+      directionLocked = false;
+      const diffY = e.changedTouches[0].clientY - startY;
+      if (diffY > 75) {
+        minimizeToMiniPlayer();
+      } else {
+        // Snap back cleanly to fullscreen
+        modal.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.9, 0.2, 1), border-radius 0.22s ease';
+        modal.style.transform = 'translate3d(0, 0, 0) scale(1)';
+        modal.style.borderRadius = '0px';
+        setTimeout(() => {
+          modal.style.transition = '';
+          modal.style.transform = '';
+          modal.style.borderRadius = '';
+          modal.style.transformOrigin = '';
+        }, 230);
+      }
+    }
+  }
+
+  // Attach touch listeners
+  const touchTargets = [dragHandle, mediaBox, detailsScroll, modal].filter(Boolean);
+  touchTargets.forEach(el => {
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  });
+}
+
 function initPlayerControls() {
   const modal = document.getElementById('player-modal');
   const videoElem = document.getElementById('html5-video-element');
@@ -2973,6 +3177,9 @@ function initPlayerControls() {
 
   if (bgAudioBtn) bgAudioBtn.classList.toggle('active', Boolean(state.isAudioMode));
 
+  // Initialize YouTube-authentic drag-to-minimize and floating swipe-to-dismiss
+  initPlayerDragMinimize();
+
   document.getElementById('btn-minimize-player')?.addEventListener('click', () => {
     minimizeToMiniPlayer();
   });
@@ -2980,12 +3187,16 @@ function initPlayerControls() {
   // Floating Mini-Player Click & Action Handlers
   modal?.addEventListener('click', (e) => {
     if (!modal.classList.contains('mini-floating')) return;
+    if (suppressMiniClick) return;
 
     if (e.target.closest('#btn-mini-float-close')) {
       e.stopPropagation();
       stopAllPlayback();
       hideMiniPlayer();
       modal.classList.remove('open');
+      modal.style.transition = '';
+      modal.style.transform = '';
+      modal.style.opacity = '';
       syncNativeOverlayFlag();
       return;
     }
@@ -5551,6 +5762,13 @@ window.handleAndroidBack = function() {
   }
   const playerModal = document.getElementById('player-modal');
   if (playerModal && playerModal.classList.contains('open')) {
+    if (playerModal.classList.contains('mini-floating')) {
+      stopAllPlayback();
+      hideMiniPlayer();
+      playerModal.classList.remove('open');
+      syncNativeOverlayFlag();
+      return true;
+    }
     // Minimize to mini-player so video audio keeps playing seamlessly in background!
     minimizeToMiniPlayer();
     return true;

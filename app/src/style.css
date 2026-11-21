@@ -2333,12 +2333,7 @@ body.theme-light .nav-item.active .nav-you-avatar-initial {
 
 /* Snaptube Custom Player Overlay & Action Strip */
 .player-top-bar {
-  padding: max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 8px) 12px 6px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #000;
-  border-bottom: 1px solid #1c1c1c;
+  display: none !important;
 }
 
 .player-video-wrapper {
@@ -2353,6 +2348,18 @@ body.theme-light .nav-item.active .nav-you-avatar-initial {
   overflow: hidden;
   flex-shrink: 0 !important;
   z-index: 10;
+  margin-top: 0;
+  padding-top: max(var(--safe-top, 0px), env(safe-area-inset-top, 0px), 0px);
+}
+
+.player-drag-handle-zone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  z-index: 32;
+  touch-action: none;
 }
 
 /* =========================================================
@@ -2369,8 +2376,8 @@ body.theme-light .nav-item.active .nav-you-avatar-initial {
   box-shadow: 0 8px 26px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4) !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
   z-index: 9995 !important;
-  transform: translateY(0) scale(1) !important;
-  transition: all 0.28s cubic-bezier(0.2, 0.9, 0.2, 1) !important;
+  transform: translateY(0) scale(1);
+  transition: all 0.28s cubic-bezier(0.2, 0.9, 0.2, 1);
   cursor: pointer !important;
 }
 
@@ -2382,6 +2389,7 @@ body.theme-system .player-modal.mini-floating {
 }
 
 .player-modal.mini-floating .player-top-bar,
+.player-modal.mini-floating .player-drag-handle-zone,
 .player-modal.mini-floating .player-details-scroll,
 .player-modal.mini-floating .st-settings-backdrop,
 .player-modal.mini-floating .st-player-overlay {
