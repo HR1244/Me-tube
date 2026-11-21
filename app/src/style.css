@@ -1615,9 +1615,11 @@ body.is-mobile-device .phone-home-indicator {
    FEED CONTENT SCROLLER & VIDEO CARDS
    ========================================================= */
 .app-content-viewport {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior-y: contain;
   padding-bottom: calc(var(--safe-bottom, 0px) + 58px);
   -webkit-overflow-scrolling: touch;
 }

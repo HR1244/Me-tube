@@ -2185,17 +2185,6 @@ def get_trending(
     cat = category.lower()
     dev_id = extract_device_id(request, device_id)
 
-    # If authenticated device requests Home feed (page 1), automatically serve their authentic personalized feed!
-    if cat == "all" and page == 1 and not next_token and get_cookies_file(dev_id):
-        user_feed = get_user_personalized_feed(request, device_id=dev_id, refresh=refresh, seed=seed)
-        if user_feed and user_feed.get("videos"):
-            return {
-                "category": category,
-                "page": 1,
-                "next_token": None,
-                "videos": user_feed["videos"]
-            }
-
     if cat == "shorts":
         res = get_shorts_feed(page=page, next_token=next_token, interests=interests, seed=str(seed) if seed else None)
         return {"category": category, "page": page, "next_token": res.get("next_token"), "videos": res.get("shorts", [])}
@@ -2220,6 +2209,21 @@ def get_trending(
             channel_videos: List[Dict[str, Any]] = []
             trending_videos: List[Dict[str, Any]] = []
             seen_ids = set()
+
+            # 0. Candidate Pool: Authenticated User Account Subscriptions & History
+            if get_cookies_file(dev_id) and cat == "all":
+                try:
+                    user_feed = get_user_personalized_feed(request, device_id=dev_id, refresh=refresh, seed=seed)
+                    u_vids = user_feed.get("videos", [])
+                    if u_vids:
+                        rng = random.Random(seed if seed is not None else int(time.time()))
+                        sampled_user = rng.sample(u_vids, min(6, len(u_vids)))
+                        for v in sampled_user:
+                            if v["id"] not in seen_ids:
+                                seen_ids.add(v["id"])
+                                channel_videos.append(v)
+                except Exception as e_uf:
+                    logger.warning(f"Error blending user account feed: {e_uf}")
 
             # 1. Candidate Pool: User Watch History & Interests Affinity
             interest_list = [x.strip() for x in (interests or "").split(",") if len(x.strip()) > 1]

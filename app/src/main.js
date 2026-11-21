@@ -1111,10 +1111,16 @@ async function loadFeed(category = 'all', options = {}) {
       return;
     }
 
-    const userVideos = (userFeedRes && userFeedRes.videos) || [];
-    const trendVideos = (trendingRes && trendingRes.videos) || [];
+    let userVideos = (userFeedRes && userFeedRes.videos) || [];
+    let trendVideos = (trendingRes && trendingRes.videos) || [];
     const seen = new Set();
     const finalVideos = [];
+
+    // On pull-to-refresh, rotate user account videos so the exact same upload isn't stuck at #1
+    if (isRefresh && userVideos.length > 2) {
+      const offset = (homeFeedRefreshCounter * 3) % userVideos.length;
+      userVideos = [...userVideos.slice(offset), ...userVideos.slice(0, offset)];
+    }
 
     // YouTube-Authentic Weighted Interleaving:
     // Alternate User Affinity / Subscribed channels with fresh Trending Discovery
@@ -6142,43 +6148,64 @@ function initPullToRefresh() {
   let currentY = 0;
   let isPulling = false;
   let isRefreshing = false;
-  const PULL_THRESHOLD = 70;
+  let hasTriggeredHaptic = false;
+  const PULL_THRESHOLD = 46;
 
   viewport.addEventListener('touchstart', (e) => {
     if (isRefreshing) return;
-    if (viewport.scrollTop <= 2) {
+    if (viewport.scrollTop <= 4) {
       startY = e.touches[0].clientY;
       currentY = startY;
       isPulling = true;
+      hasTriggeredHaptic = false;
     } else {
       isPulling = false;
     }
   }, { passive: true });
 
   viewport.addEventListener('touchmove', (e) => {
-    if (!isPulling || isRefreshing) return;
+    if (isRefreshing) return;
     currentY = e.touches[0].clientY;
+
+    // Dynamically catch gesture if user scrolled up to the top mid-drag
+    if (!isPulling && viewport.scrollTop <= 2 && currentY > startY) {
+      startY = currentY;
+      isPulling = true;
+      hasTriggeredHaptic = false;
+    }
+
+    if (!isPulling) return;
     const diff = currentY - startY;
 
-    if (diff > 8 && viewport.scrollTop <= 2) {
-      const pull = Math.min(100, (diff - 8) * 0.42);
+    if (diff > 4 && viewport.scrollTop <= 4) {
+      // Prevent browser native overscroll/bounce from intercepting pull-to-refresh
+      if (e.cancelable) e.preventDefault();
+
+      const pull = Math.min(80, (diff - 4) * 0.52);
       const progress = Math.min(1, pull / PULL_THRESHOLD);
-      const rotation = pull * 3.6;
+      const rotation = pull * 4.2;
 
       spinner.style.display = 'flex';
       spinner.style.transition = 'none';
-      spinner.style.transform = `translateX(-50%) translateY(${pull}px) scale(${0.5 + progress * 0.5})`;
-      spinner.style.opacity = String(progress);
+      spinner.style.transform = `translateX(-50%) translateY(${pull}px) scale(${0.55 + progress * 0.45})`;
+      spinner.style.opacity = String(Math.max(0.2, progress));
 
       const icon = spinner.querySelector('.yt-pull-arrow-icon');
       if (icon) {
         icon.style.transform = `rotate(${rotation}deg)`;
       }
+
+      if (progress >= 1 && !hasTriggeredHaptic) {
+        hasTriggeredHaptic = true;
+        if (navigator.vibrate) {
+          try { navigator.vibrate(12); } catch (_) {}
+        }
+      }
     } else {
       spinner.style.opacity = '0';
       spinner.style.transform = 'translateX(-50%) translateY(0px) scale(0.5)';
     }
-  }, { passive: true });
+  }, { passive: false });
 
   const finishRefresh = async () => {
     isRefreshing = true;
@@ -6188,7 +6215,7 @@ function initPullToRefresh() {
     spinner.style.opacity = '1';
 
     try {
-      if (state.activeTab === 'home') {
+      if (!state.activeTab || state.activeTab === 'home') {
         await loadFeed(state.activeCategory || 'all', { refresh: true, forceRefresh: true });
       } else if (state.activeTab === 'subscriptions') {
         await loadPersonalizedSubscriptionsFeed({ refresh: true });
@@ -6213,9 +6240,9 @@ function initPullToRefresh() {
     if (!isPulling || isRefreshing) return;
     isPulling = false;
     const diff = currentY - startY;
-    const pull = (diff - 8) * 0.42;
+    const pull = (diff - 4) * 0.52;
 
-    if (diff > 8 && pull >= PULL_THRESHOLD && viewport.scrollTop <= 2) {
+    if (diff > 8 && (pull >= 38 || diff >= 70) && viewport.scrollTop <= 4) {
       finishRefresh();
     } else {
       spinner.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s ease';
